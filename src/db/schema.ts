@@ -20,6 +20,8 @@ export const tokens = sqliteTable('tokens', {
   enabled: integer('enabled').default(1).notNull(),
   lastSource: text('last_source'),
   lastQuoteAt: integer('last_quote_at'),
+  /** §2.4：主池选举时刻，用于 6 小时粘性 */
+  primaryElectedAt: integer('primary_elected_at'),
   failCount: integer('fail_count').default(0).notNull(),
 });
 
@@ -122,6 +124,28 @@ export const alerts = sqliteTable('alerts', {
   delivered: text('delivered'),                      // JSON: 各渠道投递结果
   ackedAt: integer('acked_at'),
 });
+
+/**
+ * OHLCV 回填任务。必须可断点续传 —— GT 免费档只有 5 req/min，
+ * 100 个代币的全量回填要 10 小时以上，中途重启不能从头再来。
+ */
+export const backfillJobs = sqliteTable('backfill_jobs', {
+  tokenId: text('token_id').notNull(),
+  timeframe: text('timeframe').notNull(),        // '5m'（rolling_90d）| '1h'（all_time）
+  poolAddress: text('pool_address').notNull(),
+  status: text('status').notNull(),              // 'pending' | 'running' | 'done' | 'failed'
+  targetSinceTs: integer('target_since_ts').notNull(),
+  /** 已回填到的最旧时刻；续传时从这里继续往前翻 */
+  oldestDoneTs: integer('oldest_done_ts'),
+  pagesDone: integer('pages_done').default(0).notNull(),
+  pagesEstimated: integer('pages_estimated').default(0).notNull(),
+  candlesWritten: integer('candles_written').default(0).notNull(),
+  /** GT 历史深度不足以覆盖 target 时置 1，UI 需明确标识数据不完整 */
+  reachedSourceLimit: integer('reached_source_limit').default(0).notNull(),
+  lastError: text('last_error'),                 // 已掩码
+  startedAt: integer('started_at'),
+  updatedAt: integer('updated_at'),
+}, (t) => [primaryKey({ columns: [t.tokenId, t.timeframe] })]);
 
 /** §4.4：数据源健康，供 /api/health 与 UI 顶部指标条使用 */
 export const sourceHealth = sqliteTable('source_health', {

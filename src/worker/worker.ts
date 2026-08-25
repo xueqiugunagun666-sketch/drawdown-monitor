@@ -8,6 +8,8 @@ import { mask } from '../lib/mask.ts';
 import { runMigrations } from '../db/migrate.ts';
 import { getDbPath } from '../db/index.ts';
 import { pollOnce, refreshNativePrices } from './poller.ts';
+import { runBackfillStep, backfillProgress } from './backfill.ts';
+import { backfillNativePrices } from '../sources/nativeHistory.ts';
 import * as repo from '../db/repo.ts';
 
 const log = makeLogger('worker');
@@ -55,6 +57,39 @@ async function main(): Promise<void> {
     void refreshNativePrices();
   }, cfg.polling.nativePriceIntervalSeconds * 1000);
 
+  // 原生币历史：回填出的 USD candle 要靠它推导 native 计价（§2.3）。
+  // 每 symbol 一次请求，很便宜，启动时跑一遍即可。
+  try {
+    await backfillNativePrices();
+  } catch (err) {
+    log.exception('原生币历史回填失败，native 计价的 ATH 将不完整', err);
+  }
+
+  // OHLCV 回填独立于轮询循环推进：GT 限流 5 req/min，
+  // 全量回填要数小时，不能阻塞 30 秒的行情轮询。
+  const backfillLoop = async () => {
+    while (!stopping) {
+      let worked = false;
+      try {
+        worked = await runBackfillStep();
+      } catch (err) {
+        log.exception('回填步骤异常', err);
+      }
+      if (!worked) {
+        // 队列空，等一会儿再看有没有新加的币
+        await new Promise((r) => setTimeout(r, 30_000));
+      }
+    }
+  };
+  void backfillLoop();
+
+  const progressTimer = setInterval(() => {
+    const p = backfillProgress();
+    if (p.pagesTotal > 0 && p.done < p.jobs) {
+      log.info(`回填进度 ${p.pct}% (${p.pagesDone}/${p.pagesTotal} 页, ${p.done}/${p.jobs} 任务完成, 预计还需 ${p.etaMinutes} 分钟)`);
+    }
+  }, 120_000);
+
   const loop = async () => {
     while (!stopping) {
       const started = Date.now();
@@ -69,6 +104,7 @@ async function main(): Promise<void> {
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     }
     clearInterval(nativeTimer);
+    clearInterval(progressTimer);
   };
 
   const shutdown = (sig: string) => {

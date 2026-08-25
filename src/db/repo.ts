@@ -2,9 +2,10 @@
  * 数据访问层。better-sqlite3 是同步的，这里全部同步函数。
  */
 import { eq, and, gte, desc, isNull, or } from 'drizzle-orm';
-import { getDb } from './index.ts';
+import { getDb, getRawDb } from './index.ts';
 import {
   tokens, pools, candles, athState, alertRules, alertStates, alerts, sourceHealth, pollRuns,
+  backfillJobs,
 } from './schema.ts';
 import { Decimal, priceToText, priceFromText } from '../lib/decimal.ts';
 import { nowSec, align5m } from '../lib/time.ts';
@@ -153,21 +154,24 @@ export function getCandles(tokenId: string, timeframe = '5m', sinceTs = 0) {
     .orderBy(candles.ts).all();
 }
 
-export function saveAth(tokenId: string, mode: string, quoteMode: string, r: AthResult): void {
+export function saveAth(
+  tokenId: string, mode: string, quoteMode: string, r: AthResult, backfillPartial = false,
+): void {
   getDb().insert(athState).values({
     tokenId, mode, quoteMode,
     athRaw: r.athRaw ? priceToText(r.athRaw) : null,
     athRobust: r.athRobust ? priceToText(r.athRobust) : null,
     athTs: r.athTs, athLiquidity: r.athLiquidity, volH1AtAth: r.volH1AtAth,
     athConfidence: r.athConfidence, verdictBasis: r.verdictBasis,
-    backfillPartial: 0, updatedAt: nowSec(),
+    backfillPartial: backfillPartial ? 1 : 0, updatedAt: nowSec(),
   }).onConflictDoUpdate({
     target: [athState.tokenId, athState.mode, athState.quoteMode],
     set: {
       athRaw: r.athRaw ? priceToText(r.athRaw) : null,
       athRobust: r.athRobust ? priceToText(r.athRobust) : null,
       athTs: r.athTs, athLiquidity: r.athLiquidity, volH1AtAth: r.volH1AtAth,
-      athConfidence: r.athConfidence, verdictBasis: r.verdictBasis, updatedAt: nowSec(),
+      athConfidence: r.athConfidence, verdictBasis: r.verdictBasis,
+      backfillPartial: backfillPartial ? 1 : 0, updatedAt: nowSec(),
     },
   }).run();
 }
@@ -286,4 +290,174 @@ export function finishPollRun(id: number, covered: number, errors: string[]): vo
 
 export function getLastPollRun() {
   return getDb().select().from(pollRuns).orderBy(desc(pollRuns.id)).limit(1).get();
+}
+
+// ---------- 回填任务 ----------
+
+export type BackfillJob = typeof backfillJobs.$inferSelect;
+
+export function upsertBackfillJob(j: typeof backfillJobs.$inferInsert): void {
+  getDb().insert(backfillJobs).values(j).onConflictDoUpdate({
+    target: [backfillJobs.tokenId, backfillJobs.timeframe], set: j,
+  }).run();
+}
+
+export function getBackfillJob(tokenId: string, timeframe: string): BackfillJob | undefined {
+  return getDb().select().from(backfillJobs)
+    .where(and(eq(backfillJobs.tokenId, tokenId), eq(backfillJobs.timeframe, timeframe))).get();
+}
+
+export function listBackfillJobs(): BackfillJob[] {
+  return getDb().select().from(backfillJobs).all();
+}
+
+/** 取下一个待处理任务：先到先服务，'running' 优先于 'pending'（续传未完成的） */
+export function nextBackfillJob(): BackfillJob | undefined {
+  const running = getDb().select().from(backfillJobs)
+    .where(eq(backfillJobs.status, 'running')).orderBy(backfillJobs.startedAt).limit(1).get();
+  if (running) return running;
+  return getDb().select().from(backfillJobs)
+    .where(eq(backfillJobs.status, 'pending')).orderBy(backfillJobs.startedAt).limit(1).get();
+}
+
+export function updateBackfillJob(tokenId: string, timeframe: string, patch: Partial<BackfillJob>): void {
+  getDb().update(backfillJobs).set({ ...patch, updatedAt: nowSec() })
+    .where(and(eq(backfillJobs.tokenId, tokenId), eq(backfillJobs.timeframe, timeframe))).run();
+}
+
+/**
+ * 批量写入回填出的 candle。
+ * 用 DO NOTHING —— 实时轮询写的 candle 带流动性与成交笔数（ath_confidence='verified'），
+ * 回填数据只有 OHLCV 六字段，绝不能把已有的实时数据覆盖成 inferred。
+ */
+export function insertBackfillCandles(
+  tokenId: string,
+  timeframe: string,
+  rows: Array<{ ts: number; o: string; h: string; l: string; c: string; volumeUsd: number }>,
+): number {
+  const db = getRawDb();
+  const stmt = db.prepare(
+    `INSERT INTO candles (token_id, timeframe, ts, o, h, l, c, volume_usd, source)
+     VALUES (?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(token_id, timeframe, ts) DO NOTHING`,
+  );
+  let written = 0;
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      written += stmt.run(tokenId, timeframe, r.ts, r.o, r.h, r.l, r.c, r.volumeUsd, 'geckoterminal').changes;
+    }
+  });
+  tx();
+  return written;
+}
+
+/** 给回填出的 candle 补上 native 计价（§2.3：由 USD 除以原生币报价推导） */
+export function fillNativeForCandles(tokenId: string, timeframe: string, series: Map<number, string>): number {
+  const db = getRawDb();
+  const rows = db.prepare(
+    `SELECT ts, o, h, l, c FROM candles
+     WHERE token_id = ? AND timeframe = ? AND c IS NOT NULL AND c_native IS NULL`,
+  ).all(tokenId, timeframe) as Array<{ ts: number; o: string; h: string; l: string; c: string }>;
+  if (rows.length === 0) return 0;
+
+  const stmt = db.prepare(
+    `UPDATE candles SET o_native=?, h_native=?, l_native=?, c_native=?
+     WHERE token_id=? AND timeframe=? AND ts=?`,
+  );
+  let n = 0;
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      const nat = series.get(r.ts);
+      if (!nat) continue;   // 该时刻没有原生币报价 -> 留 null，不猜
+      const d = new Decimal(nat);
+      if (d.lte(0)) continue;
+      stmt.run(
+        new Decimal(r.o).div(d).toString(), new Decimal(r.h).div(d).toString(),
+        new Decimal(r.l).div(d).toString(), new Decimal(r.c).div(d).toString(),
+        tokenId, timeframe, r.ts,
+      );
+      n++;
+    }
+  });
+  tx();
+  return n;
+}
+
+/**
+ * 把 5m candle 汇总成 1h —— all_time 模式读的是 1h 序列，
+ * 回填只覆盖到回填那一刻，之后必须靠实时数据滚动补齐。
+ *
+ * 只重算最近 hours 小时，且不覆盖回填写入的更早数据。
+ * o 取该小时首根的 o，c 取末根的 c，h/l 取极值，volume 求和。
+ */
+export function rollup5mTo1h(tokenId: string, hours = 3): number {
+  const db = getRawDb();
+  const since = Math.floor(nowSec() / 3600) * 3600 - hours * 3600;
+  const rows = db.prepare(
+    `SELECT ts, o, h, l, c, o_native, h_native, l_native, c_native,
+            volume_usd, liquidity_primary, liquidity_total, txn_count
+     FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts >= ? ORDER BY ts`,
+  ).all(tokenId, since) as Array<Record<string, string | number | null>>;
+  if (rows.length === 0) return 0;
+
+  const buckets = new Map<number, typeof rows>();
+  for (const r of rows) {
+    const hour = Math.floor(Number(r.ts) / 3600) * 3600;
+    const list = buckets.get(hour) ?? [];
+    list.push(r);
+    buckets.set(hour, list);
+  }
+
+  const stmt = db.prepare(
+    `INSERT INTO candles (token_id, timeframe, ts, o, h, l, c,
+       o_native, h_native, l_native, c_native, volume_usd,
+       liquidity_primary, liquidity_total, txn_count, source)
+     VALUES (?,'1h',?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(token_id, timeframe, ts) DO UPDATE SET
+       o=excluded.o, h=excluded.h, l=excluded.l, c=excluded.c,
+       o_native=excluded.o_native, h_native=excluded.h_native,
+       l_native=excluded.l_native, c_native=excluded.c_native,
+       volume_usd=excluded.volume_usd,
+       liquidity_primary=excluded.liquidity_primary,
+       liquidity_total=excluded.liquidity_total,
+       txn_count=excluded.txn_count, source=excluded.source`,
+  );
+
+  const maxOf = (list: typeof rows, key: string) => {
+    let best: Decimal | null = null;
+    for (const r of list) {
+      const d = priceFromText(r[key] as string | null);
+      if (d && (!best || d.gt(best))) best = d;
+    }
+    return best ? priceToText(best) : null;
+  };
+  const minOf = (list: typeof rows, key: string) => {
+    let best: Decimal | null = null;
+    for (const r of list) {
+      const d = priceFromText(r[key] as string | null);
+      if (d && (!best || d.lt(best))) best = d;
+    }
+    return best ? priceToText(best) : null;
+  };
+
+  let n = 0;
+  const tx = db.transaction(() => {
+    for (const [hour, list] of buckets) {
+      const first = list[0]!, last = list[list.length - 1]!;
+      const volume = list.reduce((sum, r) => sum + (Number(r.volume_usd) || 0), 0);
+      const txn = list.reduce((sum, r) => sum + (Number(r.txn_count) || 0), 0);
+      // 流动性取该小时最后一次观测值（存量指标，不能求和）
+      const liqP = last.liquidity_primary as number | null;
+      const liqT = last.liquidity_total as number | null;
+      stmt.run(
+        tokenId, hour,
+        first.o, maxOf(list, 'h'), minOf(list, 'l'), last.c,
+        first.o_native, maxOf(list, 'h_native'), minOf(list, 'l_native'), last.c_native,
+        volume, liqP, liqT, txn, 'rollup',
+      );
+      n++;
+    }
+  });
+  tx();
+  return n;
 }

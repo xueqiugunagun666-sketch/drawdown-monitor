@@ -102,3 +102,31 @@ test('堆在大量 candle 下与全排序结果一致', () => {
   const expected = candles.map((c) => c.c).sort((a, b) => b.cmp(a))[k - 1]!;
   assert.equal(r.athRobust?.toString(), expected.toString());
 });
+
+test('vol_h1_at_ath 按时间戳取窗口，稀疏 candle 不撑大分母', () => {
+  // GT 会省略无成交 candle。这里 ATH 两侧各只有 2 根，其余时段缺失。
+  // 若按数组下标 ±6 取，会把 3 小时外的数据算进来。
+  const sparse: AthCandle[] = [
+    C(0, '1', '1', 100),
+    C(3600 * 3, '1', '1', 999999),          // 3 小时前，不应计入
+    C(3600 * 4 - 600, '1', '1', 50),        // ATH 前 10 分钟
+    C(3600 * 4, '9', '9', 100),             // ATH
+    C(3600 * 4 + 600, '1', '1', 50),        // ATH 后 10 分钟
+    C(3600 * 8, '1', '1', 999999),          // 4 小时后，不应计入
+  ];
+  const r = computeAth(sparse, 1, 300);
+  assert.equal(r.athTs, 3600 * 4);
+  // 窗口 [ATH-1800, ATH+1800] 内只有 50+100+50=200，归一 ×3600/3900
+  const expected = 200 * (3600 / 3900);
+  assert.ok(Math.abs(r.volH1AtAth! - expected) < 1e-6,
+    `应为 ${expected}，实际 ${r.volH1AtAth}（若为百万级说明按下标取了窗口）`);
+});
+
+test('1h 粒度下 vol_h1_at_ath 仍归一到每小时口径', () => {
+  const hourly: AthCandle[] = [];
+  for (let i = 0; i < 13; i++) hourly.push(C(i * 3600, '1', i === 6 ? '9' : '1', 120));
+  const r = computeAth(hourly, 1, 3600);
+  assert.equal(r.athTs, 6 * 3600);
+  // 13 根 ×120 = 1560，覆盖 13 小时，归一到 1 小时 -> 120
+  assert.ok(Math.abs(r.volH1AtAth! - 120) < 1e-6, `应为 120，实际 ${r.volH1AtAth}`);
+});

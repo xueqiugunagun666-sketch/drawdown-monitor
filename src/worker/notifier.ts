@@ -28,11 +28,16 @@ function buildMessage(a: FiredAlert): string {
   const sym = a.token.symbol ?? q.symbol ?? a.token.address.slice(0, 8);
   const lines: string[] = [];
 
-  lines.push(`${sym} 回撤 -${a.drawdownUsd.toFixed(1)}%  (${a.token.chain})`);
+  lines.push(`${sym} 回撤 -${a.drawdownUsd.toFixed(1)}%  (${a.token.chain})`);   // 触发时回撤必然 >= 阈值，为正
   lines.push('');
   lines.push(`价格   $${formatPrice(a.priceUsd, 6)}  ←  ATH $${formatPrice(a.athUsd, 6)}`);
   lines.push(`USD 回撤      -${a.drawdownUsd.toFixed(1)}%`);
-  if (a.athTs) lines.push(`高点时间   ${humanAgo(a.athTs)} (${fmtUtc(a.athTs)})  [since_added]`);
+  if (a.drawdownNative) {
+    // 另一计价下现价可能高于其 ATH 基准，此时回撤为负，应显示 +X%
+    const n = a.drawdownNative.toNumber();
+    lines.push(`原生币计价回撤 ${n >= 0 ? '-' : '+'}${Math.abs(n).toFixed(1)}%`);
+  }
+  if (a.athTs) lines.push(`高点时间   ${humanAgo(a.athTs)} (${fmtUtc(a.athTs)})  [${a.athMode}]`);
   lines.push('');
 
   const liqNow = Math.round(q.liquidityTotal).toLocaleString();
@@ -119,6 +124,18 @@ export async function deliver(a: FiredAlert): Promise<DeliveryResult[]> {
     log.info(`报警 ${a.id} 已投递 Telegram`);
   }
   return results;
+}
+
+/** 发一条纯文本通知（失联告警等），不关联具体 alert */
+export async function notifyPlain(text: string): Promise<boolean> {
+  try {
+    await sendTelegram(text);
+    log.info('已发送通知');
+    return true;
+  } catch (err) {
+    log.exception('通知发送失败', err);
+    return false;
+  }
 }
 
 export { buildMessage };

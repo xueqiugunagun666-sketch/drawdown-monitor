@@ -11,7 +11,8 @@ import { nowSec } from '../lib/time.ts';
 import { fetchQuote, SOURCE_ID } from '../sources/dexscreener.ts';
 import { fetchNativePrices, saveNativePrices, getLatestNativePrice, type NativeSymbol } from '../sources/nativePrices.ts';
 import { processQuote } from './engine.ts';
-import { deliver } from './notifier.ts';
+import { enqueueBackfill } from './backfill.ts';
+import { deliver, notifyPlain } from './notifier.ts';
 import * as repo from '../db/repo.ts';
 import type { ChainId } from '../sources/types.ts';
 
@@ -54,7 +55,11 @@ export async function pollOnce(): Promise<void> {
       const nativeUsd = getLatestNativePrice(nativeSymbol);
 
       try {
-        const quote = await fetchQuote(chain, token.address, nativeUsd);
+        const storedPrimary = repo.getPrimaryPoolAddress(token.id);
+        const preferred = storedPrimary && token.primaryElectedAt
+          ? { address: storedPrimary, electedAt: token.primaryElectedAt }
+          : null;
+        const quote = await fetchQuote(chain, token.address, nativeUsd, preferred);
         repo.markQuoteSuccess(token.id, quote);
         repo.recordSourceOk(SOURCE_ID);
         covered++;
@@ -63,6 +68,11 @@ export async function pollOnce(): Promise<void> {
         const fired = processQuote(token, quote);
         for (const alert of fired) {
           await deliver(alert);
+        }
+
+        // 主池已知后才能排回填（OHLCV 是按池取的）
+        if (!repo.getBackfillJob(token.id, '5m')) {
+          enqueueBackfill(token.id, quote.primaryPool.address);
         }
       } catch (err) {
         const msg = safeErrorMessage(err);
@@ -90,13 +100,19 @@ async function checkStale(): Promise<void> {
     (t) => t.frozen === 0 && (t.lastQuoteAt === null || t.lastQuoteAt < cutoff),
   );
 
+  const fresh: string[] = [];
   for (const t of stale) {
     if (staleNotified.has(t.id)) continue;
     staleNotified.add(t.id);
     const since = t.lastQuoteAt ? `${Math.floor((nowSec() - t.lastQuoteAt) / 60)} 分钟` : '从未成功';
     log.error(`数据源失联: ${t.id} 已 ${since} 无有效报价（连续失败 ${t.failCount} 次）`);
+    fresh.push(`${t.symbol ?? t.id}（${since}无报价，连续失败 ${t.failCount} 次）`);
   }
   if (stale.length > 0) {
     log.error(`共 ${stale.length} 个代币失联，UI 需高亮`);
+  }
+  // §4.4：失联要发通知，不能只写日志 —— 静默失效比误报危险
+  if (fresh.length > 0) {
+    await notifyPlain(`数据源失联\n\n${fresh.join('\n')}\n\n超过 ${cfg.polling.staleMinutes} 分钟无有效报价。`);
   }
 }

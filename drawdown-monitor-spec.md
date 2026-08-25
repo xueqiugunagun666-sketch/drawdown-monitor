@@ -47,7 +47,21 @@
 
 `rolling_90d` 的实现：维护 90 天 5m candle，ATH = 窗口内最大值，窗口滑出时重算。为避免每轮全量扫描，用**单调递减队列**维护窗口最大值，O(1) 更新。
 
-冷启动回填：通过 GeckoTerminal OHLCV 端点（`/networks/{network}/pools/{pool}/ohlcv/{timeframe}`，支持 day/hour/minute + aggregate，最多回溯 6 个月）拉取。90 天窗口在 6 个月覆盖范围内，**回填必然完整**——这是选 90d 的另一个好处，不存在 `all_time` 那种数据不全的问题。
+冷启动回填：通过 GeckoTerminal OHLCV 端点（`/networks/{network}/pools/{pool}/ohlcv/{timeframe}`，支持 day/hour/minute + aggregate，最多回溯 6 个月）拉取。
+
+**两条序列，粒度不同**（实测每次请求最多返回 1000 根）：
+
+| 服务的模式 | 序列 | 覆盖 | 请求数 |
+|---|---|---|---|
+| `rolling_90d` / `since_added` | **5m** | 90 天 | 26 |
+| `all_time` | **1h** | 180 天（GT 历史深度上限） | 5 |
+
+`all_time` 不用 5m：那要 52 次请求，而找历史最高点用小时级足够。
+`rolling_90d` 必须用 5m —— 与实时段粒度一致，否则窗口滑动时 ATH 的严格度会悄悄改变（§2.2）。
+
+**回填必须可断点续传**：GT 免费档实测持续可用速率仅 **5 req/min**（12 秒间隔时成功率 100%，8 req/min 降到 88%）。每代币 31 次请求，100 个代币约 **10 小时**，中途重启不能从头再来。用 `backfill_jobs` 表记录 `oldest_done_ts` 逐页续传，且回填循环独立于 30 秒行情轮询，不得互相阻塞。
+
+**GT 会省略无成交的 candle**，返回序列存在间隔。任何按「前后 N 根」取窗口的逻辑都必须按**时间戳**而非数组下标，否则稀疏数据下窗口会横跨数小时。
 
 `all_time` 模式下若建池早于 6 个月，标记 `backfill_partial = true`，UI 上明确标识，不要假装数据完整。
 
@@ -89,8 +103,21 @@ priceNative = priceUsd / nativeCoinUsdPrice
 > 原因（Phase 0 实测）：DexScreener 的 `priceNative` 是**该池报价代币计价**，不是链原生币计价——USDC 池里 `priceNative == priceUsd`。同一个 BONK 在 USDC 池与 SOL 池之间，该字段相差 9717%。叠加 §2.4 的 primary pool 每 6 小时重选，一旦主池从 SOL 池切到 USDC 池，`drawdown_native` 的含义会**静默改变**，直接产生错误报警。GT 的 `base_token_price_native_currency` 语义正确，但其免费限流实测仅 5–8 req/min，不足以支撑实时轮询。
 
 **`native_prices` 表**存 ETH / BNB / SOL 的 USD 报价：
-- **实时**：60s 刷新
-- **历史**：从 CoinGecko `market_chart` 拉 90 天小时级，**插值到 5m**
+- **实时**：60s 刷新，`source='coingecko'`
+- **历史**：CoinGecko `market_chart` 的粒度随 `days` 变化（实测），因此分两段写入且精度必须可分辨：
+
+| 区间 | days | 原始粒度 | source | 服务的模式 |
+|---|---|---|---|---|
+| 0–90 天 | 90 | **小时级**（2161 点） | `coingecko_hourly` | `rolling_90d` / `since_added` |
+| 90–180 天 | 180 | **日级**（181 点） | `coingecko_daily` | 仅 `all_time`，精度较低 |
+
+均插值到 5m。写入顺序为先日级后小时级，重叠区间由小时级覆盖；实时值永不被历史覆盖。
+
+> **回填出的 candle 必须逐页补 native 计价**（`priceNative = priceUsd / nativeUsd(ts)`）。
+> 漏补的话 native 的 ATH 窗口会比 USD 短几个数量级，而且从 `ath_confidence` 上完全看不出来。
+>
+> CoinGecko 免费档限流很紧：实时报价与历史回填若各自直连会互相打成 429，
+> 所有 CoinGecko 请求必须走同一个限流队列。
 - 各链原生币映射：ethereum → ETH，base → ETH，bsc → BNB，solana → SOL，robinhood → ETH
 
 **默认 `quote_mode = 'usd'`；`drawdown_native` 为展示字段**，报警消息里两个都带上。
@@ -145,6 +172,11 @@ DexScreener 会对某些池给出错误的报价代币定价，导致该池的 *
 - 每个代币选一个 `primary_pool` = **离群剔除后**流动性最高的池（**从 `/token-pairs/v1` 结果中选，不能用 `/tokens/v1`**）
 - 每 6 小时重新评估（避免频繁抖动）
 - 若 primary pool 流动性掉到全部池子的 50% 以下，立即切换并在 UI 标记「主池已迁移」——这本身就是值得关注的信号
+
+> ⚠️ **待定**：「占全部池子 50%」这条规则只在存在单一主导池时成立。实测流动性分散的代币
+> （BONK：30 个池、领先池仅占 20%、领先/第二仅 1.19x）**永远无法满足该条件**，
+> 导致粘性从不生效、每轮都在重新选举，两池流动性一旦交叉就会无阻尼翻转。
+> 待确认改为「领先池的 50%」或其他判据。
 - 价格取 primary pool，流动性同时记录两个值
 
 **`candles` 与 `snapshot` 同时存 `liquidity_primary` 与 `liquidity_total`。**

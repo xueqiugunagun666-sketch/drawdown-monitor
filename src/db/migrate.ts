@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS tokens (
   id TEXT PRIMARY KEY, chain TEXT NOT NULL, address TEXT NOT NULL,
   symbol TEXT, name TEXT, decimals INTEGER, added_at INTEGER NOT NULL,
   note TEXT, tags TEXT, frozen INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
-  last_source TEXT, last_quote_at INTEGER, fail_count INTEGER NOT NULL DEFAULT 0
+  last_source TEXT, last_quote_at INTEGER, primary_elected_at INTEGER,
+  fail_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS pools (
   id TEXT PRIMARY KEY,
@@ -65,6 +66,15 @@ CREATE TABLE IF NOT EXISTS alerts (
   verdict TEXT, verdict_basis TEXT, delivered TEXT, acked_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_fired ON alerts(fired_at DESC);
+CREATE TABLE IF NOT EXISTS backfill_jobs (
+  token_id TEXT NOT NULL, timeframe TEXT NOT NULL, pool_address TEXT NOT NULL,
+  status TEXT NOT NULL, target_since_ts INTEGER NOT NULL, oldest_done_ts INTEGER,
+  pages_done INTEGER NOT NULL DEFAULT 0, pages_estimated INTEGER NOT NULL DEFAULT 0,
+  candles_written INTEGER NOT NULL DEFAULT 0,
+  reached_source_limit INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT, started_at INTEGER, updated_at INTEGER,
+  PRIMARY KEY (token_id, timeframe)
+);
 CREATE TABLE IF NOT EXISTS source_health (
   source_id TEXT PRIMARY KEY, last_ok_at INTEGER, last_fail_at INTEGER,
   last_fail_kind TEXT, last_fail_message TEXT,
@@ -77,9 +87,36 @@ CREATE TABLE IF NOT EXISTS poll_runs (
 );
 `;
 
+/**
+ * 新增列的补丁。CREATE TABLE IF NOT EXISTS 对已存在的表不会加列，
+ * 而删库重来在有真实数据后是不可接受的。这里逐列检查后 ALTER。
+ */
+const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
+  ['pools', 'price_usd', 'TEXT'],
+  ['pools', 'is_outlier', 'INTEGER NOT NULL DEFAULT 0'],
+  ['tokens', 'primary_elected_at', 'INTEGER'],
+  ['candles', 'liquidity_primary', 'REAL'],
+  ['candles', 'liquidity_total', 'REAL'],
+  ['candles', 'source', 'TEXT'],
+  ['ath_state', 'vol_h1_at_ath', 'REAL'],
+  ['ath_state', 'ath_confidence', 'TEXT'],
+  ['ath_state', 'verdict_basis', 'TEXT'],
+  ['alert_rules', 'ath_sustain_candles', 'INTEGER NOT NULL DEFAULT 3'],
+  ['alert_states', 'rearm_since_ts', 'INTEGER'],
+  ['alerts', 'verdict_basis', 'TEXT'],
+];
+
 export function runMigrations(): void {
   const db = getRawDb();
   db.exec(DDL);
+
+  for (const [table, column, ddl] of ADDED_COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (cols.length === 0) continue;                       // 表还不存在
+    if (cols.some((c) => c.name === column)) continue;     // 列已存在
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    log.info(`已补列 ${table}.${column}`);
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

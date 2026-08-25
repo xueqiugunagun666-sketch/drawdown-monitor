@@ -29,7 +29,7 @@
     }
   },
   "defaultRule": {
-    "athMode": "since_added",
+    "athMode": "rolling_90d",
     "quoteMode": "usd",
     "levels": [
       80

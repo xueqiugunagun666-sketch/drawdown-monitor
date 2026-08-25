@@ -1,13 +1,13 @@
 /**
  * 回撤引擎 —— 规格 §7。
  *
- * Phase 1 范围：since_added 模式、USD 计价、单档 80%。
- * rolling_90d / all_time（需 OHLCV 回填）与原生币计价的 ATH 属 Phase 2。
+ * 每轮报价：写 candle -> 更新三种 ATH 模式 × 两种计价 -> 逐规则逐档位评估状态机。
+ * 规则用自己指定的 ath_mode / quote_mode 取 ATH；报警消息里两种计价都带上（§2.3）。
  */
 import { Decimal, priceFromText, drawdownPct } from '../lib/decimal.ts';
 import { nowSec } from '../lib/time.ts';
 import { makeLogger } from '../lib/log.ts';
-import { computeAth, type AthCandle } from './ath.ts';
+import { computeForMode, specFor, ATH_MODES, QUOTE_MODES, type AthMode, type QuoteMode } from './athModes.ts';
 import { evaluate } from './stateMachine.ts';
 import * as repo from '../db/repo.ts';
 import type { TokenQuote } from '../sources/types.ts';
@@ -26,51 +26,64 @@ export interface FiredAlert {
   athTs: number | null;
   quote: TokenQuote;
   athLiquidity: number | null;
+  athMode: AthMode;
+  quoteMode: QuoteMode;
 }
-
-/** Phase 1 只算 since_added + usd */
-const PHASE1_MODE = 'since_added';
-const PHASE1_QUOTE_MODE = 'usd';
 
 export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
   // 1. 写入/更新当前 5m candle
   repo.upsertCandle(token.id, quote);
 
-  // 2. 主池迁移检测（§2.4）—— 迁移本身是值得关注的信号，必须可见
-  const prevPrimary = repo.getPrimaryPoolAddress(token.id);
-  if (prevPrimary && prevPrimary !== quote.primaryPool.address) {
-    log.warn(`${token.id} 主池已迁移`, {
-      from: prevPrimary, to: quote.primaryPool.address,
-      dex: quote.primaryPool.dex, liquidityUsd: Math.round(quote.primaryPool.liquidityUsd),
-    });
-  }
+  // 2. 主池同步。迁移的判定与日志在适配器里（它掌握全部池的流动性占比），
+  //    这里只负责记录选举时刻，供下一轮的 6 小时粘性判断
   repo.syncPools(token.id, quote);
+  if (quote.primaryReelected) {
+    repo.updateTokenMeta(token.id, { primaryElectedAt: nowSec() });
+  }
 
-  // 3. 更新 ATH（回填与实时共用 computeAth，见 §2.2）
-  const rows = repo.getCandles(token.id, '5m', 0);
-  const athCandles: AthCandle[] = rows.flatMap((r) => {
-    const h = priceFromText(r.h), c = priceFromText(r.c);
-    return h && c ? [{ ts: r.ts, h, c, volumeUsd: r.volumeUsd, liquidityTotal: r.liquidityTotal }] : [];
-  });
+  // 2b. 汇总 5m -> 1h：all_time 读的是 1h 序列，回填只覆盖到回填那一刻，
+  //     之后要靠实时数据滚动补齐，否则 all_time 会永远停在回填时的高点
+  repo.rollup5mTo1h(token.id, 3);
 
+  // 3. 更新全部 ATH 模式 × 计价模式（§2.1：三种同时计算并存储）
   const rules = repo.getRulesFor(token.id);
   const k = rules[0]?.athSustainCandles ?? 3;
-  const ath = computeAth(athCandles, k);
-  repo.saveAth(token.id, PHASE1_MODE, PHASE1_QUOTE_MODE, ath);
+  const now = nowSec();
 
-  if (!ath.athRobust) {
-    // 合格 candle 不足 k 根，还不能判定回撤 —— 不是错误，但也不能假装有 ATH
-    return [];
+  for (const mode of ATH_MODES) {
+    // §2.1：数据源历史深度不够时必须标出来，不能假装窗口是完整的。
+    // since_added 的窗口起点由我们自己决定，不存在数据源覆盖不到的问题。
+    const job = repo.getBackfillJob(token.id, specFor(mode).timeframe);
+    const partial = mode !== 'since_added' && job?.reachedSourceLimit === 1;
+    for (const qm of QUOTE_MODES) {
+      const r = computeForMode(token.id, mode, qm, k, token.addedAt, now);
+      repo.saveAth(token.id, mode, qm, r, partial);
+    }
   }
 
-  // 4. 逐规则、逐档位评估
+  // 4. 逐规则、逐档位评估 —— 每条规则用它自己指定的 ath_mode / quote_mode
   const fired: FiredAlert[] = [];
-  const now = nowSec();
 
   for (const rule of rules) {
     if (rule.type !== 'drawdown') continue;   // bounce 是 Phase 3
-    const drawdown = drawdownPct(ath.athRobust, quote.priceUsd);
+
+    const mode = rule.athMode as AthMode;
+    const qm = rule.quoteMode as QuoteMode;
+    const ath = repo.getAth(token.id, mode, qm);
+    const athRobust = priceFromText(ath?.athRobust ?? null);
+    if (!athRobust) continue;   // 合格 candle 不足 k 根，还不能判定回撤
+
+    const price = qm === 'usd' ? quote.priceUsd : quote.priceNative;
+    if (!price) continue;       // native 报价缺失时不猜，宁可不判
+
+    const drawdown = drawdownPct(athRobust, price);
     if (!drawdown) continue;
+
+    // 展示用：另一种计价下的回撤，两个都带进报警消息
+    const otherQm: QuoteMode = qm === 'usd' ? 'native' : 'usd';
+    const otherAth = priceFromText(repo.getAth(token.id, mode, otherQm)?.athRobust ?? null);
+    const otherPrice = otherQm === 'usd' ? quote.priceUsd : quote.priceNative;
+    const drawdownOther = otherAth && otherPrice ? drawdownPct(otherAth, otherPrice) : null;
 
     let levels: number[];
     try {
@@ -103,44 +116,46 @@ export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
 
       if (!res.fire) continue;
 
-      const athUsd = ath.athRobust;
-      // Phase 2 才有 native 计价的 ATH 序列。在那之前 drawdown_native 保持 null ——
-      // 拿 USD 的 ATH 去和 native 的现价相除会得到一个看似合理、实则无意义的数字。
-      const drawdownNative = null;
+      const athUsd = athRobust;
+      const drawdownUsdVal = qm === 'usd' ? drawdown : drawdownOther;
+      const drawdownNative = qm === 'native' ? drawdown : drawdownOther;
 
       const id = `${token.id}:${rule.id}:${level}:${now}`;
       const alert: FiredAlert = {
-        id, token, level, drawdownUsd: drawdown, drawdownNative,
-        priceUsd: quote.priceUsd, athUsd, athTs: ath.athTs, quote,
-        athLiquidity: ath.athLiquidity,
+        id, token, level,
+        drawdownUsd: drawdownUsdVal ?? drawdown, drawdownNative,
+        priceUsd: quote.priceUsd, athUsd, athTs: ath?.athTs ?? null, quote,
+        athLiquidity: ath?.athLiquidity ?? null,
+        athMode: mode, quoteMode: qm,
       };
       repo.insertAlert({
         id, tokenId: token.id, ruleId: rule.id, type: 'drawdown', level,
         firedAt: now,
         priceUsd: quote.priceUsd.toString(),
         athUsd: athUsd.toString(),
-        drawdownUsd: drawdown.toString(),
-        drawdownNative: null,
+        drawdownUsd: (drawdownUsdVal ?? drawdown).toString(),
+        drawdownNative: drawdownNative ? drawdownNative.toString() : null,
         snapshot: JSON.stringify({
           liquidityPrimary: quote.liquidityPrimary,
           liquidityTotal: quote.liquidityTotal,
-          athLiquidity: ath.athLiquidity,
-          volH1AtAth: ath.volH1AtAth,
+          athLiquidity: ath?.athLiquidity ?? null,
+          volH1AtAth: ath?.volH1AtAth ?? null,
           volumeH1: quote.volume.h1,
           volumeH24: quote.volume.h24,
           txnsH1: quote.txns.h1,
-          athConfidence: ath.athConfidence,
+          athConfidence: ath?.athConfidence ?? null,
+          athMode: mode, quoteMode: qm,
           crossValidated: quote.crossValidated,
           primaryPool: quote.primaryPool.address,
           primaryOverTotal: quote.liquidityTotal > 0 ? quote.liquidityPrimary / quote.liquidityTotal : null,
         }),
         verdict: null,          // Phase 3
-        verdictBasis: ath.verdictBasis,
+        verdictBasis: ath?.verdictBasis ?? null,
         delivered: null,
         ackedAt: null,
       });
       fired.push(alert);
-      log.warn(`${token.id} 触发 ${level}% 档报警，回撤 ${drawdown.toFixed(2)}%`);
+      log.warn(`${token.id} 触发 ${level}% 档报警，回撤 ${drawdown.toFixed(2)}% (${mode}/${qm})`);
     }
   }
 

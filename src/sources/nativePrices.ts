@@ -4,10 +4,9 @@
  * 实时：CoinGecko simple/price，60s 刷新，写入 native_prices 表。
  * 历史回填（Phase 2）：market_chart 90 天小时级，插值到 5m。
  */
-import { httpGet } from '../lib/http.ts';
+import { cgGet, apiBase } from './coingecko.ts';
 import { parsePrice, priceToText, type Decimal } from '../lib/decimal.ts';
 import { SourceError } from '../lib/errors.ts';
-import { getSecrets } from '../lib/config.ts';
 import { getRawDb } from '../db/index.ts';
 import { align5m } from '../lib/time.ts';
 
@@ -21,25 +20,12 @@ const COINGECKO_IDS: Record<NativeSymbol, string> = {
 };
 
 export async function fetchNativePrices(): Promise<Record<NativeSymbol, Decimal>> {
-  const { coingeckoApiKey } = getSecrets();
   const ids = NATIVE_SYMBOLS.map((s) => COINGECKO_IDS[s]).join(',');
-  const base = coingeckoApiKey
-    ? 'https://pro-api.coingecko.com/api/v3/simple/price'
-    : 'https://api.coingecko.com/api/v3/simple/price';
-  const keyParam = coingeckoApiKey ? `&x_cg_pro_api_key=${coingeckoApiKey}` : '';
-  const url = `${base}?ids=${ids}&vs_currencies=usd${keyParam}`;
-
-  const res = await httpGet(url);
-  if (res.status === 429) {
-    throw new SourceError({ sourceId: 'coingecko', kind: 'rate_limited', message: 'CoinGecko 429 限流' });
-  }
-  if (res.status !== 200) {
-    throw new SourceError({ sourceId: 'coingecko', kind: 'http_error', message: `CoinGecko HTTP ${res.status}` });
-  }
+  const body = await cgGet(`${apiBase()}/simple/price?ids=${ids}&vs_currencies=usd`, 'simple/price');
 
   let parsed: Record<string, { usd?: number | string }>;
   try {
-    parsed = JSON.parse(res.body);
+    parsed = JSON.parse(body);
   } catch {
     throw new SourceError({ sourceId: 'coingecko', kind: 'malformed', message: 'CoinGecko 响应不是合法 JSON' });
   }

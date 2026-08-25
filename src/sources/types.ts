@@ -51,6 +51,10 @@ export interface TokenQuote {
   medianPriceUsd: Decimal;
   /** 池数 < 3 时无法交叉验证，UI 需标注「无交叉验证」 */
   crossValidated: boolean;
+  /** §2.4：本轮重新选举了主池（沿用粘性主池时为 false） */
+  primaryReelected: boolean;
+  /** 上一个主池地址，仅在本轮发生迁移时非空 */
+  previousPrimary: string | null;
   fetchedAt: number;
   source: string;
 }

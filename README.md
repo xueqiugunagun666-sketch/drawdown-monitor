@@ -2,13 +2,16 @@
 
 设计规格见 [`drawdown-monitor-spec.md`](./drawdown-monitor-spec.md)，那是唯一的需求来源。
 
-## 当前进度：Phase 1（最小闭环）
+## 当前进度：Phase 2（数据准确性）
 
-已实现：SQLite schema、DexScreener 适配器、30 秒全量轮询、`since_added` ATH、
-单档 80% 回撤 + 状态机去重、Telegram 单频道推送、极简 Web 列表页。
+Phase 1：SQLite schema、DexScreener 适配器、30 秒全量轮询、`since_added` ATH、
+单档 80% 回撤 + 状态机去重、Telegram 推送、Web 列表页。
 
-未实现（后续 Phase）：OHLCV 回填与 `rolling_90d` / `all_time`、原生币计价的 ATH、
-抄底可行性快照与 verdict 分类、多档位与多频道路由、反弹确认报警、K 线与详情页、PWA。
+Phase 2：GeckoTerminal OHLCV 回填（可断点续传）、`rolling_90d` + `all_time`、
+原生币计价的完整序列、主池 6 小时粘性选举、5m→1h 汇总、失联通知、回填进度 UI。
+
+未实现（后续 Phase）：抄底可行性快照与 verdict 分类、多档位与多频道路由、
+反弹确认报警、K 线与详情页、PWA。
 
 ## 快速开始
 
@@ -54,4 +57,9 @@ npm run dev                 # 另开一个终端，Web UI on :3000
   同一个 BONK 在 USDC 池与 SOL 池之间该字段相差 9717%。故 `priceNative` 自行推导。
 - 部分池的 USD 价格与流动性会被虚高约 **4950 倍**（实测 JUP、BONK），
   按流动性直接选主池会正好选中它 —— 需先做中位数离群剔除，见 §2.4。
-- GeckoTerminal 免费档实测持续可用速率仅 **5–8 req/min**（文档称 30）。
+- GeckoTerminal 免费档实测持续可用速率仅 **5 req/min**（12 秒间隔成功率 100%，8 req/min 降到 88%）。
+  每代币 31 次请求（5m/90天 26 次 + 1h/180天 5 次），100 个代币全量回填约 **10 小时**，
+  因此回填必须可断点续传、且独立于行情轮询。
+- **GT 会省略无成交的 candle**，序列有间隔。按「前后 N 根」取窗口必须按时间戳而非数组下标。
+- CoinGecko `market_chart` 的粒度随 `days` 变化：90 天是小时级，180 天只有日级。
+- CoinGecko 免费档限流很紧，实时报价与历史回填必须共用一个限流队列，否则互相打成 429。

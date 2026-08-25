@@ -36,9 +36,18 @@ export interface AthResult {
   volFloor: number;
 }
 
-/** 前后各 6 根 + 自身 = 13 根 = 65 分钟，归一到 60 分钟 */
-const H1_HALF_WINDOW = 6;
-const H1_NORMALIZE = 12 / 13;
+/**
+ * §2.5 的替代分母窗口：ATH candle 前后各 6 格 + 自身 = 13 格。
+ *
+ * 必须按**时间戳**取，不能按数组下标 —— GeckoTerminal 会省略无成交的 candle，
+ * 稀疏数据下 ±6 个下标可能横跨数小时，分母虚大会让 volume_ratio 偏小、
+ * verdict 偏悲观。缺失的 candle 本就代表零成交，按时间戳取窗口天然正确。
+ *
+ * 归一到恰好 3600 秒，因此对任何 timeframe 都得到「ATH 附近的每小时成交量」，
+ * 与分子 vol_h1_now 口径一致。5m 时归一系数即 3600/3900 = 12/13。
+ */
+const H1_HALF_SLOTS = 6;
+const H1_TARGET_SECONDS = 3600;
 
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
@@ -97,8 +106,9 @@ class TopKHeap {
 /**
  * @param candles 窗口内的 candle，必须按 ts 升序
  * @param k ath_sustain_candles
+ * @param tfSeconds candle 的时间粒度（5m=300, 1h=3600），用于 vol_h1_at_ath 的窗口换算
  */
-export function computeAth(candles: AthCandle[], k: number): AthResult {
+export function computeAth(candles: AthCandle[], k: number, tfSeconds = 300): AthResult {
   const empty: AthResult = {
     athRaw: null, athRobust: null, athTs: null, athLiquidity: null,
     volH1AtAth: null, athConfidence: 'inferred', verdictBasis: 'volume_proxy',
@@ -129,18 +139,23 @@ export function computeAth(candles: AthCandle[], k: number): AthResult {
     return { ...empty, athRaw, qualifyingCount, volFloor };
   }
 
-  const idx = candles.findIndex((c) => c.ts === kth.ts);
-  const athCandle = idx >= 0 ? candles[idx]! : null;
+  const athCandle = candles.find((c) => c.ts === kth.ts) ?? null;
   const athLiquidity = athCandle?.liquidityTotal ?? null;
 
-  // §2.5 替代分母：ATH candle 前后各 6 根，归一到 60 分钟
+  // §2.5 替代分母：按时间戳取 ATH 前后各 6 格，归一到 3600 秒
   let volH1AtAth: number | null = null;
-  if (idx >= 0) {
-    const lo = Math.max(0, idx - H1_HALF_WINDOW);
-    const hi = Math.min(candles.length - 1, idx + H1_HALF_WINDOW);
+  if (athCandle) {
+    const half = H1_HALF_SLOTS * tfSeconds;
+    const lo = kth.ts - half;
+    const hi = kth.ts + half;
     let sum = 0;
-    for (let i = lo; i <= hi; i++) sum += candles[i]!.volumeUsd ?? 0;
-    volH1AtAth = sum * H1_NORMALIZE;
+    for (const c of candles) {
+      if (c.ts < lo) continue;
+      if (c.ts > hi) break;
+      sum += c.volumeUsd ?? 0;
+    }
+    const windowSeconds = (2 * H1_HALF_SLOTS + 1) * tfSeconds;
+    volH1AtAth = sum * (H1_TARGET_SECONDS / windowSeconds);
   }
 
   const hasLiquidity = athLiquidity !== null && athLiquidity > 0;
