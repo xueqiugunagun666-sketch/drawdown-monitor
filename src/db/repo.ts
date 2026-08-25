@@ -101,6 +101,13 @@ export function syncPools(tokenId: string, q: TokenQuote): void {
   });
 }
 
+/** 主池的 DexScreener 实时价，作为回填数据的量级参照 */
+export function getPrimaryPoolPrice(tokenId: string): Decimal | null {
+  const row = getDb().select().from(pools)
+    .where(and(eq(pools.tokenId, tokenId), eq(pools.isPrimary, 1))).get();
+  return priceFromText(row?.priceUsd ?? null);
+}
+
 export function listPools(tokenId: string) {
   return getDb().select().from(pools).where(eq(pools.tokenId, tokenId))
     .orderBy(desc(pools.liquidityUsd)).all();

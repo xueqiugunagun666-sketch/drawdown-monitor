@@ -12,6 +12,13 @@
  * 每次请求覆盖的时间跨度：
  *   5m -> 1000 根 ≈ 3.47 天   （90 天需 26 次）
  *   1h -> 1000 根 ≈ 41.6 天   （180 天需 5 次）
+ *
+ * **必须按代币地址取价，不能用 token=base。**
+ * GeckoTerminal 与 DexScreener 对同一个池的 base/quote 判定可能相反：
+ * 实测 bsc 池 0x595d70…，DexScreener 认为 base 是「牛来」，
+ * GT 认为 base 是 QQQB（池名就叫 "QQQB / 牛来"）。
+ * 此时 token=base 取回来的是对手方的价格（$711 而非 $0.042），
+ * 差 16861 倍，ATH 被撑到天上，直接产生一条 -99.99% 的假报警。
  */
 import PQueue from 'p-queue';
 import { httpGet, sleep } from '../lib/http.ts';
@@ -51,14 +58,15 @@ interface OhlcvRow extends Array<number> {}
 
 /**
  * 拉一页 OHLCV。
+ * @param tokenAddress **我们要的那个代币**的地址。GT 支持在 token 参数里直接传地址，
+ *                     这样无论它在该池里被判定为 base 还是 quote，取到的都是它自己的价格。
  * @param beforeTimestamp 秒级；返回该时刻**及之前**的数据（边界包含）
- * @param currency 'usd' 取 USD 计价；'token' 取报价代币计价（本项目只用 usd，
- *                 native 计价按 §2.3 由 USD 除以原生币报价推导）
  */
 export async function fetchOHLCVPage(
   network: string,
   poolAddress: string,
   timeframe: Timeframe,
+  tokenAddress: string,
   beforeTimestamp?: number,
 ): Promise<Candle[]> {
   const tf = TF_PATH[timeframe];
@@ -66,7 +74,7 @@ export async function fetchOHLCVPage(
     aggregate: String(tf.aggregate),
     limit: String(MAX_LIMIT),
     currency: 'usd',
-    token: 'base',
+    token: tokenAddress,
   });
   if (beforeTimestamp !== undefined) params.set('before_timestamp', String(beforeTimestamp));
   const url =
@@ -142,6 +150,7 @@ export async function fetchOHLCVRange(
   network: string,
   poolAddress: string,
   timeframe: Timeframe,
+  tokenAddress: string,
   sinceTs: number,
   onPage?: (candles: Candle[], oldestTs: number) => void,
 ): Promise<Candle[]> {
@@ -150,7 +159,7 @@ export async function fetchOHLCVRange(
   let before: number | undefined;
 
   for (let page = 0; page < 60; page++) {
-    const batch = await fetchOHLCVPage(network, poolAddress, timeframe, before);
+    const batch = await fetchOHLCVPage(network, poolAddress, timeframe, tokenAddress, before);
     if (batch.length === 0) break;
 
     // before_timestamp 边界包含 -> 相邻页首尾重复 1 根，去重

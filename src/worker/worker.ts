@@ -58,12 +58,12 @@ async function main(): Promise<void> {
   }, cfg.polling.nativePriceIntervalSeconds * 1000);
 
   // 原生币历史：回填出的 USD candle 要靠它推导 native 计价（§2.3）。
-  // 每 symbol 一次请求，很便宜，启动时跑一遍即可。
-  try {
-    await backfillNativePrices();
-  } catch (err) {
+  // **不能 await** —— CoinGecko 免费档一限流就是几十秒的退避，
+  // 挡在这里会让核心的价格轮询迟迟起不来。它只影响 native 计价这个展示字段，
+  // 在后台慢慢跑就行。
+  void backfillNativePrices().catch((err: unknown) => {
     log.exception('原生币历史回填失败，native 计价的 ATH 将不完整', err);
-  }
+  });
 
   // OHLCV 回填独立于轮询循环推进：GT 限流 5 req/min，
   // 全量回填要数小时，不能阻塞 30 秒的行情轮询。

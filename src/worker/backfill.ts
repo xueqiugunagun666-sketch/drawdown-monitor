@@ -16,7 +16,7 @@ import { getConfig } from '../lib/config.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
 import { nowSec } from '../lib/time.ts';
-import { priceToText } from '../lib/decimal.ts';
+import { priceToText, type Decimal } from '../lib/decimal.ts';
 import { fetchOHLCVPage, estimateRequests } from '../sources/geckoterminal.ts';
 import { loadNativeSeries } from '../sources/nativeHistory.ts';
 import type { NativeSymbol } from '../sources/nativePrices.ts';
@@ -85,7 +85,9 @@ export async function runBackfillStep(): Promise<boolean> {
   try {
     // 续传：从已完成的最旧时刻继续往前翻
     const before = job.oldestDoneTs ?? undefined;
-    const page = await fetchOHLCVPage(network, job.poolAddress, job.timeframe as Timeframe, before);
+    const page = await fetchOHLCVPage(
+      network, job.poolAddress, job.timeframe as Timeframe, token.address, before,
+    );
 
     if (page.length === 0) {
       // GT 没有更早的数据了
@@ -100,6 +102,19 @@ export async function runBackfillStep(): Promise<boolean> {
         log.info(`${job.tokenId} ${job.timeframe} 回填完成`);
       }
       return true;
+    }
+
+    // 兜底校验：第一页是最新的数据，它的价格必须和 DexScreener 的实时价同一量级。
+    // 对不上说明取到的根本不是这个代币的价格（例如 GT 与 DexScreener 对该池的
+    // base/quote 判定相反），此时宁可让回填失败并报错，也绝不能把污染数据写进库 ——
+    // 那会把 ATH 撑到天上，直接产生一条 -99.99% 的假报警。
+    if (job.oldestDoneTs === null) {
+      const guard = magnitudeMismatch(repo.getPrimaryPoolPrice(job.tokenId), page[page.length - 1]!.c);
+      if (guard) {
+        repo.updateBackfillJob(job.tokenId, job.timeframe, { status: 'failed', lastError: guard });
+        log.error(`${job.tokenId} ${job.timeframe} 回填数据与实时价量级不符，已拒收: ${guard}`);
+        return true;
+      }
     }
 
     const written = repo.insertBackfillCandles(
@@ -151,6 +166,21 @@ export async function runBackfillStep(): Promise<boolean> {
     log.warn(`${job.tokenId} ${job.timeframe} 回填出错，将续传: ${msg}`);
     return true;
   }
+}
+
+/** 回填数据允许与实时价相差的最大倍数。真实波动远不到这个量级，
+ *  而 base/quote 取反那类错误动辄上千倍。 */
+const MAX_PRICE_MAGNITUDE_RATIO = 10;
+
+/**
+ * 比对回填出的最新价与实时价。一致返回 null；对不上返回可读的原因。
+ * 纯函数，便于测试。
+ */
+export function magnitudeMismatch(live: Decimal | null, backfilled: Decimal): string | null {
+  if (!live || live.lte(0) || backfilled.lte(0)) return null;   // 没有参照物就不拦
+  const ratio = backfilled.gt(live) ? backfilled.div(live) : live.div(backfilled);
+  if (ratio.lte(MAX_PRICE_MAGNITUDE_RATIO)) return null;
+  return `回填价 ${backfilled.toSignificantDigits(6)} 与实时价 ${live.toSignificantDigits(6)} 相差 ${ratio.toSignificantDigits(4)} 倍`;
 }
 
 /** 回填整体进度，供 UI 与 /api/health */
