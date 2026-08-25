@@ -15,8 +15,8 @@
  *
  * **必须按代币地址取价，不能用 token=base。**
  * GeckoTerminal 与 DexScreener 对同一个池的 base/quote 判定可能相反：
- * 实测 bsc 池 0x595d70…，DexScreener 认为 base 是「牛来」，
- * GT 认为 base 是 QQQB（池名就叫 "QQQB / 牛来"）。
+ * 实测某 bsc 池：DexScreener 认为 base 是我们要的那个代币，
+ * GT 却认为 base 是对手方（GT 给出的池名恰好是反过来的）。
  * 此时 token=base 取回来的是对手方的价格（$711 而非 $0.042），
  * 差 16861 倍，ATH 被撑到天上，直接产生一条 -99.99% 的假报警。
  */

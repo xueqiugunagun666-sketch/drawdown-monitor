@@ -15,8 +15,8 @@ test('剧烈但合理的波动仍放行（回填与实时之间可能隔了几�
   assert.equal(magnitudeMismatch(D('0.042'), D('0.0084')), null);  // 1/5
 });
 
-test('牛来场景：GT 与 DexScreener 的 base/quote 判定相反，取到对手方价格', () => {
-  // 实测：实时价 0.04201，回填回来 708.34（QQQB 的价格），差 16861 倍
+test('GT 与 DexScreener 的 base/quote 判定相反时，取到的是对手方价格', () => {
+  // 线上真实事故的回归用例：实时价 0.04201，回填回来 708.34（对手方代币的价格），差 16861 倍
   const msg = magnitudeMismatch(D('0.04201'), D('708.341042377765'));
   assert.ok(msg, '必须拦下');
   assert.match(msg!, /相差/);
