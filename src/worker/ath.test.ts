@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { Decimal } from '../lib/decimal.ts';
 import { computeAth, type AthCandle } from './ath.ts';
 
-const C = (ts: number, h: string, c: string, vol: number, liq: number | null = 10000): AthCandle => ({
-  ts, h: new Decimal(h), c: new Decimal(c), volumeUsd: vol, liquidityTotal: liq,
+const C = (
+  ts: number, h: string, c: string, vol: number,
+  liq: number | null = 10000, mc: number | null = 1_000_000,
+): AthCandle => ({
+  ts, h: new Decimal(h), c: new Decimal(c), volumeUsd: vol, liquidityTotal: liq, marketCapUsd: mc,
 });
 
 test('合格 candle 不足 k 根时 ath_robust 为 null（不得瞎给值）', () => {
@@ -154,4 +157,23 @@ test('all_time 必须 >= rolling_90d：1h 粒度会漏掉小时内尖峰', () =>
   // 修复后的取法：两者取高，保证 all_time >= rolling_90d
   const allTime = from1h.athRobust!.gt(from5m.athRobust!) ? from1h : from5m;
   assert.equal(allTime.athRobust!.toString(), from5m.athRobust!.toString());
+});
+
+test('ATH 时刻的市值随高点一起记录；回填段为 null', () => {
+  const realtime = [
+    C(0, '5', '5', 1000, 50000, 9_000_000),
+    C(300, '7', '7', 1000, 60000, 12_600_000),
+    C(600, '6', '6', 1000, 55000, 10_800_000),
+  ];
+  const r = computeAth(realtime, 3, 300);
+  // 第 3 高 close = 5，对应第一根
+  assert.equal(r.athMarketCap, 9_000_000);
+
+  const backfilled = [
+    C(0, '5', '5', 1000, null, null),
+    C(300, '7', '7', 1000, null, null),
+    C(600, '6', '6', 1000, null, null),
+  ];
+  assert.equal(computeAth(backfilled, 3, 300).athMarketCap, null,
+    '回填出的高点没有市值，必须是 null，不能编');
 });

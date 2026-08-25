@@ -50,10 +50,33 @@ function buildMessage(a: FiredAlert): string {
   lines.push(`1h 成交   ${q.txns.h1.buys + q.txns.h1.sells} 笔 (买 ${q.txns.h1.buys} / 卖 ${q.txns.h1.sells})`);
   lines.push(`24h 量   $${Math.round(q.volume.h24).toLocaleString()}`);
   // 市值优先用流通市值；数据源没给就退回 FDV，并标注清楚是哪个
-  if (q.marketCapUsd) {
-    lines.push(`市值     $${Math.round(q.marketCapUsd).toLocaleString()}`);
+  const mcNow = q.marketCapUsd;
+  if (mcNow) {
+    lines.push(`市值     $${Math.round(mcNow).toLocaleString()}`);
   } else if (q.fdvUsd) {
     lines.push(`FDV      $${Math.round(q.fdvUsd).toLocaleString()}  (无流通市值数据)`);
+  }
+
+  /*
+   * 市值回撤。
+   *
+   * 供应量不变时，市值回撤在数学上等于价格回撤（市值 = 价格 × 供应量），
+   * 单列出来没有信息量。它的价值恰恰在供应量变过的时候 —— 增发、销毁、解锁。
+   *
+   * 因此：ATH 时刻的市值已知才算；未知时**不拿价格反推**。
+   * 反推等于假设供应量不变，那算出来的就是价格回撤换个标签，是在糊弄。
+   */
+  if (mcNow && a.athMarketCap && a.athMarketCap > 0) {
+    const mcDd = (1 - mcNow / a.athMarketCap) * 100;
+    lines.push(`市值回撤   ${mcDd >= 0 ? '-' : '+'}${Math.abs(mcDd).toFixed(1)}%  (高点时 $${Math.round(a.athMarketCap).toLocaleString()})`);
+
+    // 两者背离说明供应量变过，这本身值得留意
+    const gap = Math.abs(mcDd - a.drawdownUsd.toNumber());
+    if (gap >= 3) {
+      lines.push(`  与价格回撤差 ${gap.toFixed(1)} 个点 —— 供应量有变动(增发/销毁)`);
+    }
+  } else if (mcNow) {
+    lines.push(`市值回撤   未知 (高点来自历史回填，当时市值无记录)`);
   }
 
   const ratio = q.liquidityTotal > 0 ? q.liquidityPrimary / q.liquidityTotal : 1;

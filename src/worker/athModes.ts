@@ -46,7 +46,7 @@ function toAthCandles(rows: CandleRow[], quoteMode: QuoteMode): AthCandle[] {
     const h = priceFromText(quoteMode === 'usd' ? r.h : r.hNative);
     const c = priceFromText(quoteMode === 'usd' ? r.c : r.cNative);
     if (!h || !c) continue;
-    out.push({ ts: r.ts, h, c, volumeUsd: r.volumeUsd, liquidityTotal: r.liquidityTotal });
+    out.push({ ts: r.ts, h, c, volumeUsd: r.volumeUsd, liquidityTotal: r.liquidityTotal, marketCapUsd: r.marketCapUsd });
   }
   return out;
 }

@@ -29,6 +29,8 @@ export interface FiredAlert {
   athTs: number | null;
   quote: TokenQuote;
   athLiquidity: number | null;
+  /** ATH 时刻的市值；回填出的高点为 null */
+  athMarketCap: number | null;
   athMode: AthMode;
   quoteMode: QuoteMode;
 }
@@ -158,6 +160,7 @@ export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
         drawdownUsd: drawdownUsdVal ?? drawdown, drawdownNative,
         priceUsd: quote.priceUsd, athUsd, athTs: ath?.athTs ?? null, quote,
         athLiquidity: ath?.athLiquidity ?? null,
+        athMarketCap: ath?.athMarketCap ?? null,
         athMode: mode, quoteMode: qm,
       };
       repo.insertAlert({
@@ -171,6 +174,8 @@ export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
           liquidityPrimary: quote.liquidityPrimary,
           liquidityTotal: quote.liquidityTotal,
           athLiquidity: ath?.athLiquidity ?? null,
+          athMarketCap: ath?.athMarketCap ?? null,
+          marketCapNow: quote.marketCapUsd,
           volH1AtAth: ath?.volH1AtAth ?? null,
           volumeH1: quote.volume.h1,
           volumeH24: quote.volume.h24,

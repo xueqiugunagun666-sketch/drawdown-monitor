@@ -131,7 +131,7 @@ export function upsertCandle(tokenId: string, q: TokenQuote): void {
       o: price, h: price, l: price, c: price,
       oNative: nat, hNative: nat, lNative: nat, cNative: nat,
       volumeUsd: q.volume.m5, liquidityPrimary: q.liquidityPrimary,
-      liquidityTotal: q.liquidityTotal,
+      liquidityTotal: q.liquidityTotal, marketCapUsd: q.marketCapUsd,
       txnCount: q.txns.m5.buys + q.txns.m5.sells, source: q.source,
     }).run();
     return;
@@ -142,7 +142,7 @@ export function upsertCandle(tokenId: string, q: TokenQuote): void {
   const patch: Record<string, unknown> = {
     h: priceToText(hi), l: priceToText(lo), c: price,
     volumeUsd: q.volume.m5, liquidityPrimary: q.liquidityPrimary,
-    liquidityTotal: q.liquidityTotal,
+    liquidityTotal: q.liquidityTotal, marketCapUsd: q.marketCapUsd,
     txnCount: q.txns.m5.buys + q.txns.m5.sells, source: q.source,
   };
   if (nat) {
@@ -185,7 +185,8 @@ export function saveAth(
     tokenId, mode, quoteMode,
     athRaw: r.athRaw ? priceToText(r.athRaw) : null,
     athRobust: r.athRobust ? priceToText(r.athRobust) : null,
-    athTs: r.athTs, athLiquidity: r.athLiquidity, volH1AtAth: r.volH1AtAth,
+    athTs: r.athTs, athLiquidity: r.athLiquidity, athMarketCap: r.athMarketCap,
+    volH1AtAth: r.volH1AtAth,
     athConfidence: r.athConfidence, verdictBasis: r.verdictBasis,
     backfillPartial: backfillPartial ? 1 : 0, updatedAt: nowSec(),
   }).onConflictDoUpdate({
@@ -193,7 +194,8 @@ export function saveAth(
     set: {
       athRaw: r.athRaw ? priceToText(r.athRaw) : null,
       athRobust: r.athRobust ? priceToText(r.athRobust) : null,
-      athTs: r.athTs, athLiquidity: r.athLiquidity, volH1AtAth: r.volH1AtAth,
+      athTs: r.athTs, athLiquidity: r.athLiquidity, athMarketCap: r.athMarketCap,
+      volH1AtAth: r.volH1AtAth,
       athConfidence: r.athConfidence, verdictBasis: r.verdictBasis,
       backfillPartial: backfillPartial ? 1 : 0, updatedAt: nowSec(),
     },

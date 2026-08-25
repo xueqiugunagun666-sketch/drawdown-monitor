@@ -61,6 +61,13 @@ export default async function TokenPage({
   const athRaw = priceFromText(ath?.athRaw ?? null);
   const dd = price && athRobust ? drawdownPct(athRobust, price) : null;
 
+  // 市值回撤：只在 ATH 时刻的市值已知时才算。
+  // 未知时不用价格反推 —— 那等于假设供应量不变，算出来就是价格回撤换个标签。
+  const mcNow = repo.listPools(tokenId).length > 0 ? lastRow?.marketCapUsd ?? null : null;
+  const mcDd = mcNow && ath?.athMarketCap && ath.athMarketCap > 0
+    ? (1 - mcNow / ath.athMarketCap) * 100 : null;
+  const mcGap = mcDd !== null && dd ? Math.abs(mcDd - dd.toNumber()) : null;
+
   const spikeGap = athRaw && athRobust && athRobust.gt(0)
     ? athRaw.minus(athRobust).div(athRobust).mul(100) : null;
 
@@ -114,7 +121,7 @@ export default async function TokenPage({
         ))}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4 text-sm">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4 text-sm">
         <div><div className="text-xs text-neutral-500">当前价</div>
           <div className="tabular-nums">{price ? formatPrice(price, 6) : '—'}</div></div>
         <div><div className="text-xs text-neutral-500">ATH (robust)</div>
@@ -126,6 +133,18 @@ export default async function TokenPage({
             {fmtDd(dd)}</div></div>
         <div><div className="text-xs text-neutral-500">流动性(总)</div>
           <div className="tabular-nums">${Math.round(liqTotal).toLocaleString()}</div></div>
+        <div><div className="text-xs text-neutral-500">市值回撤</div>
+          <div className="tabular-nums">
+            {mcDd !== null
+              ? <span className={mcDd >= 80 ? 'text-red-400' : mcDd >= 50 ? 'text-amber-400' : 'text-neutral-300'}>
+                  {mcDd >= 0 ? '-' : '+'}{Math.abs(mcDd).toFixed(1)}%
+                </span>
+              : <span className="text-neutral-600 text-xs">高点市值未记录</span>}
+          </div>
+          {mcDd !== null && mcGap !== null && mcGap >= 3 && (
+            <div className="text-xs text-amber-500/80 mt-0.5">与价格差 {mcGap.toFixed(1)}pp，供应量有变动</div>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2 mb-3 text-xs">

@@ -18,8 +18,10 @@ export interface AthCandle {
   h: Decimal;
   c: Decimal;
   volumeUsd: number | null;
-  /** 回填段为 null —— GT OHLCV 不提供流动性 */
+  /** 回填段为 null —— OHLCV 不提供流动性 */
   liquidityTotal: number | null;
+  /** 回填段为 null —— OHLCV 不提供市值 */
+  marketCapUsd: number | null;
 }
 
 export interface AthResult {
@@ -27,6 +29,8 @@ export interface AthResult {
   athRobust: Decimal | null;
   athTs: number | null;
   athLiquidity: number | null;
+  /** ATH 时刻的市值；回填出的高点为 null，此时**不得**用价格反推 */
+  athMarketCap: number | null;
   /** ATH candle 前后各 6 根（共 13 根 65 分钟）的 volume 之和，已归一到 60 分钟 */
   volH1AtAth: number | null;
   athConfidence: 'verified' | 'inferred';
@@ -111,7 +115,7 @@ class TopKHeap {
 export function computeAth(candles: AthCandle[], k: number, tfSeconds = 300): AthResult {
   const empty: AthResult = {
     athRaw: null, athRobust: null, athTs: null, athLiquidity: null,
-    volH1AtAth: null, athConfidence: 'inferred', verdictBasis: 'volume_proxy',
+    athMarketCap: null, volH1AtAth: null, athConfidence: 'inferred', verdictBasis: 'volume_proxy',
     qualifyingCount: 0, volFloor: 0,
   };
   if (candles.length === 0 || k < 1) return empty;
@@ -141,6 +145,7 @@ export function computeAth(candles: AthCandle[], k: number, tfSeconds = 300): At
 
   const athCandle = candles.find((c) => c.ts === kth.ts) ?? null;
   const athLiquidity = athCandle?.liquidityTotal ?? null;
+  const athMarketCap = athCandle?.marketCapUsd ?? null;
 
   // §2.5 替代分母：按时间戳取 ATH 前后各 6 格，归一到 3600 秒
   let volH1AtAth: number | null = null;
@@ -164,6 +169,7 @@ export function computeAth(candles: AthCandle[], k: number, tfSeconds = 300): At
     athRobust: kth.c,
     athTs: kth.ts,
     athLiquidity,
+    athMarketCap,
     volH1AtAth,
     // 流动性已知 = 该 ATH candle 来自实时轮询；来自 OHLCV 回填则只有六字段
     athConfidence: hasLiquidity ? 'verified' : 'inferred',

@@ -81,7 +81,7 @@ function fakeAlert(index: number): FiredAlert | null {
     drawdownUsd: drawdown, drawdownNative: null,
     priceUsd: price, athUsd: ath,
     athTs: nowSec() - (index + 1) * 3600,
-    quote, athLiquidity: liqTotal * 1.6,
+    quote, athLiquidity: liqTotal * 1.6, athMarketCap: null,
     athMode: 'rolling_90d', quoteMode: 'usd',
   };
 }

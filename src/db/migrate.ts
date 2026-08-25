@@ -28,13 +28,13 @@ CREATE TABLE IF NOT EXISTS candles (
   token_id TEXT NOT NULL, timeframe TEXT NOT NULL, ts INTEGER NOT NULL,
   o TEXT, h TEXT, l TEXT, c TEXT,
   o_native TEXT, h_native TEXT, l_native TEXT, c_native TEXT,
-  volume_usd REAL, liquidity_primary REAL, liquidity_total REAL,
+  volume_usd REAL, liquidity_primary REAL, liquidity_total REAL, market_cap_usd REAL,
   txn_count INTEGER, source TEXT,
   PRIMARY KEY (token_id, timeframe, ts)
 );
 CREATE TABLE IF NOT EXISTS ath_state (
   token_id TEXT NOT NULL, mode TEXT NOT NULL, quote_mode TEXT NOT NULL,
-  ath_raw TEXT, ath_robust TEXT, ath_ts INTEGER, ath_liquidity REAL,
+  ath_raw TEXT, ath_robust TEXT, ath_ts INTEGER, ath_liquidity REAL, ath_market_cap REAL,
   vol_h1_at_ath REAL, ath_confidence TEXT, verdict_basis TEXT,
   backfill_partial INTEGER NOT NULL DEFAULT 0, updated_at INTEGER,
   PRIMARY KEY (token_id, mode, quote_mode)
@@ -97,6 +97,8 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['tokens', 'primary_elected_at', 'INTEGER'],
   ['candles', 'liquidity_primary', 'REAL'],
   ['candles', 'liquidity_total', 'REAL'],
+  ['candles', 'market_cap_usd', 'REAL'],
+  ['ath_state', 'ath_market_cap', 'REAL'],
   ['candles', 'source', 'TEXT'],
   ['ath_state', 'vol_h1_at_ath', 'REAL'],
   ['ath_state', 'ath_confidence', 'TEXT'],

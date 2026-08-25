@@ -50,6 +50,7 @@ export const candles = sqliteTable('candles', {
   volumeUsd: real('volume_usd'),
   liquidityPrimary: real('liquidity_primary'),
   liquidityTotal: real('liquidity_total'),
+  marketCapUsd: real('market_cap_usd'),   // 回填段为 NULL（OHLCV 不含市值）
   txnCount: integer('txn_count'),                    // 回填段为 NULL（GT OHLCV 不提供）
   source: text('source'),
 }, (t) => [primaryKey({ columns: [t.tokenId, t.timeframe, t.ts] })]);
@@ -62,6 +63,7 @@ export const athState = sqliteTable('ath_state', {
   athRobust: text('ath_robust'),                     // §2.2：合格 candle 中第 k 高的 close
   athTs: integer('ath_ts'),
   athLiquidity: real('ath_liquidity'),               // 回填段为 NULL
+  athMarketCap: real('ath_market_cap'),              // 同上；为 NULL 时不能用价格反推，见 notifier
   volH1AtAth: real('vol_h1_at_ath'),                 // §2.5 替代分母，已归一到 60 分钟
   athConfidence: text('ath_confidence'),             // 'verified' | 'inferred'
   verdictBasis: text('verdict_basis'),               // 'liquidity' | 'volume_proxy'
