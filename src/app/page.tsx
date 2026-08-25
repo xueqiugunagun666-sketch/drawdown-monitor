@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import Nav from '../components/Nav.tsx';
+import TokenActions from '../components/TokenActions.tsx';
 import { getConfig } from '../lib/config.ts';
 import { priceFromText, drawdownPct, formatPrice } from '../lib/decimal.ts';
 import { nowSec, humanAgo } from '../lib/time.ts';
@@ -67,6 +69,7 @@ export default function Home() {
 
   return (
     <main className="p-4 md:p-8 max-w-[1600px] mx-auto">
+      <Nav current="/" />
       <h1 className="text-xl font-semibold mb-1">回撤监控</h1>
       <p className="text-xs text-neutral-500 mb-4">
         当前规则 · {MODE_LABEL[activeMode]}（{activeMode}）· {cfg.defaultRule.quoteMode.toUpperCase()} 计价 ·
@@ -138,6 +141,8 @@ export default function Home() {
                     </Link>
                     <div className="text-xs text-neutral-500">{t.chain}</div>
                     {t.note && <div className="text-xs text-neutral-600 max-w-[200px] mt-1">{t.note}</div>}
+                    <TokenActions tokenId={t.id} symbol={t.symbol} note={t.note}
+                      frozen={t.frozen === 1} enabled={t.enabled === 1} />
                   </td>
                   <td className="py-2 pr-4 tabular-nums">{price ? `$${formatPrice(price, 6)}` : '—'}</td>
                   <td className={`py-2 pr-4 tabular-nums font-medium ${ddColor(active.dd?.toNumber() ?? null)}`}>
@@ -198,7 +203,7 @@ export default function Home() {
 
       {tokens.length === 0 && (
         <p className="text-sm text-neutral-500 mt-6">
-          清单为空。用 <code className="text-neutral-400">npm run token:add -- &lt;chain&gt; &lt;address&gt; &quot;备注&quot;</code> 添加。
+          清单为空。<Link href="/add" className="text-sky-400 hover:underline">去加币</Link>。
         </p>
       )}
     </main>

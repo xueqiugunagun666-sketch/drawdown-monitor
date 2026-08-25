@@ -43,6 +43,8 @@ export function addToken(input: {
 
 export function deleteToken(id: string): void {
   const db = getDb();
+  db.delete(backfillJobs).where(eq(backfillJobs.tokenId, id)).run();
+  db.delete(alerts).where(eq(alerts.tokenId, id)).run();
   db.delete(alertStates).where(eq(alertStates.tokenId, id)).run();
   db.delete(athState).where(eq(athState.tokenId, id)).run();
   db.delete(candles).where(eq(candles.tokenId, id)).run();

@@ -22,24 +22,35 @@ Phase 3：多档位阶梯 [80/85/90/95]、代币详情页（K 线 + ATH 线 + �
 
 ```bash
 npm install
-cp .env.example .env        # 填入 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID / ACCESS_TOKEN
-npm run db:migrate
-npm run token:add -- solana <地址> "为什么关注它"
-npm run worker              # 独立进程，30 秒一轮
-npm run dev                 # 另开一个终端，Web UI on :3000
+cp .env.example .env        # 填入 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+npm start                   # 同时启动 worker 与 Web UI
 ```
+
+然后打开 http://localhost:3000 ，其余操作都在网页上完成。
+macOS 也可以直接**双击 `start.command`**，它会自动装依赖、启动、并打开浏览器。
+
+## 网页能做什么
+
+| 页面 | 用途 |
+|---|---|
+| `/` 看板 | 按回撤排序的清单；每行可改备注 / 冻结 / 停用 / 删除；回填进度；失联与错误横幅 |
+| `/token/[id]` 详情 | K 线 + ATH 线 + 各档阈值线 + 报警标记；三种 ATH 模式与双计价切换；池子列表；报警历史 |
+| `/add` 加币 | 粘地址或链接（DexScreener / GeckoTerminal / GMGN），批量、自动识别链、备注必填 |
+| `/alerts` 报警 | 时间倒序，展开看触发时的完整快照 |
+| `/settings` 设置 | 档位、ATH 模式、计价、确认次数、迟滞、冷却、最低流动性、k 值 |
 
 ## 命令
 
 | 命令 | 说明 |
 |---|---|
-| `npm run worker` | 轮询 + 回撤引擎 + 通知（独立进程） |
-| `npm run dev` | Web UI |
+| `npm start` | **同时启动 worker 与 Web UI**（日常用这个） |
+| `npm run worker` | 只启 worker |
+| `npm run dev` | 只启 Web UI |
 | `npm test` | 单元 + 集成测试 |
 | `npm run typecheck` | tsc --noEmit |
 | `npm run check:sources` | 数据源冒烟测试，不写库 |
 | `npm run check:outliers` | 检查各代币跨池价格一致性（§2.4 离群池） |
-| `npm run token:add` | 加币，备注必填 |
+| `npm run token:add` | 命令行加币（网页 `/add` 更方便） |
 
 ## 几条不可违反的约定
 

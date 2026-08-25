@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "tsx scripts/start.ts",
     "worker": "tsx --env-file-if-exists=.env src/worker/worker.ts",
     "worker:dev": "tsx watch --env-file-if-exists=.env src/worker/worker.ts",
     "db:generate": "drizzle-kit generate",
@@ -15,7 +15,8 @@
     "test": "tsx --test src/lib/*.test.ts src/sources/*.test.ts src/worker/*.test.ts",
     "check:sources": "tsx --env-file-if-exists=.env scripts/check-sources.ts",
     "check:outliers": "tsx --env-file-if-exists=.env scripts/check-pool-outliers.ts",
-    "token:add": "tsx --env-file-if-exists=.env scripts/add-token.ts"
+    "token:add": "tsx --env-file-if-exists=.env scripts/add-token.ts",
+    "start:prod": "next start"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

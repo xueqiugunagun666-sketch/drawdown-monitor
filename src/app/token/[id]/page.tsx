@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import Nav from '../../../components/Nav.tsx';
 import Chart, { type PriceLine } from './Chart.tsx';
 import { getConfig } from '../../../lib/config.ts';
 import { priceFromText, drawdownPct, formatPrice } from '../../../lib/decimal.ts';
@@ -89,7 +90,7 @@ export default async function TokenPage({
 
   return (
     <main className="p-4 md:p-8 max-w-[1400px] mx-auto">
-      <Link href="/" className="text-xs text-neutral-500 hover:text-neutral-300">&larr; 返回列表</Link>
+      <Nav current="/" />
       <h1 className="text-xl font-semibold mt-2">
         {token.symbol ?? token.address.slice(0, 10)}
         <span className="ml-2 text-sm font-normal text-neutral-500">{token.chain}</span>
