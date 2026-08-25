@@ -1,0 +1,56 @@
+{
+  "chains": {
+    "ethereum": {
+      "dexscreenerId": "ethereum",
+      "geckoId": "eth",
+      "nativeSymbol": "ETH"
+    },
+    "base": {
+      "dexscreenerId": "base",
+      "geckoId": "base",
+      "nativeSymbol": "ETH"
+    },
+    "bsc": {
+      "dexscreenerId": "bsc",
+      "geckoId": "bsc",
+      "nativeSymbol": "BNB"
+    },
+    "solana": {
+      "dexscreenerId": "solana",
+      "geckoId": "solana",
+      "nativeSymbol": "SOL"
+    },
+    "robinhood": {
+      "dexscreenerId": "robinhood",
+      "geckoId": "robinhood",
+      "nativeSymbol": "ETH",
+      "evmChainId": 4663,
+      "preferredSource": "dexscreener"
+    }
+  },
+  "defaultRule": {
+    "athMode": "since_added",
+    "quoteMode": "usd",
+    "levels": [
+      80
+    ],
+    "confirmTicks": 2,
+    "hysteresis": 15,
+    "rearmMinutes": 60,
+    "minLiquidityUsd": 5000,
+    "athSustainCandles": 3,
+    "cooldownMinutes": 30,
+    "poolPriceDeviationMax": 1.5
+  },
+  "polling": {
+    "intervalSeconds": 30,
+    "nativePriceIntervalSeconds": 60,
+    "frozenIntervalSeconds": 21600,
+    "staleMinutes": 15,
+    "maxConcurrency": 6
+  },
+  "retention": {
+    "candles5mDays": 120,
+    "candles1hDays": null
+  }
+}

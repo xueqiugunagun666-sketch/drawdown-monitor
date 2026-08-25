@@ -1,0 +1,19 @@
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# 密钥：只提交 .env.example
+.env
+.env.local
+.env.*.local
+
+# SQLite 数据与备份
+data/*.db
+data/*.db-wal
+data/*.db-shm
+backups/
+
+.DS_Store
+*.log
