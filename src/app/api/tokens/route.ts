@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { checkAuth } from '../../../lib/auth.ts';
+import { readName } from '../../../lib/user.ts';
 import * as repo from '../../../db/repo.ts';
 import { CHAIN_IDS } from '../../../sources/types.ts';
 
@@ -38,8 +39,9 @@ export async function POST(req: Request) {
   const errors = items.map(validate).map((e, i) => (e ? `第 ${i + 1} 个: ${e}` : null)).filter(Boolean);
   if (errors.length > 0) return NextResponse.json({ error: errors.join('；') }, { status: 400 });
 
+  const createdBy = readName(req);
   const added = items.map((i) =>
-    repo.addToken({ chain: i.chain!, address: i.address!, note: i.note!.trim() }),
+    repo.addToken({ chain: i.chain!, address: i.address!, note: i.note!.trim(), createdBy }),
   );
   // 回填任务由 worker 在首次成功取价、确定主池后自动排队（OHLCV 是按池取的）
   return NextResponse.json({ tokens: added, count: added.length }, { status: 201 });

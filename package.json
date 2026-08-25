@@ -20,7 +20,8 @@
     "check:telegram": "tsx --env-file-if-exists=.env scripts/check-telegram.ts",
     "test:alerts": "tsx --env-file-if-exists=.env scripts/send-test-alerts.ts",
     "repair": "tsx --env-file-if-exists=.env scripts/repair-token.ts",
-    "bench": "tsx --env-file-if-exists=.env scripts/bench-engine.ts"
+    "bench": "tsx --env-file-if-exists=.env scripts/bench-engine.ts",
+    "backup:pull": "bash scripts/pull-backup.sh"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

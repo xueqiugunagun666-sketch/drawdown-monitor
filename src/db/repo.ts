@@ -5,7 +5,7 @@ import { eq, and, gte, desc, isNull, or } from 'drizzle-orm';
 import { getDb, getRawDb } from './index.ts';
 import {
   tokens, pools, candles, athState, alertRules, alertStates, alerts, sourceHealth, pollRuns,
-  backfillJobs,
+  backfillJobs, events,
 } from './schema.ts';
 import { Decimal, priceToText, priceFromText } from '../lib/decimal.ts';
 import { nowSec, align5m } from '../lib/time.ts';
@@ -29,13 +29,14 @@ export function getToken(id: string): TokenRow | undefined {
 }
 
 export function addToken(input: {
-  chain: string; address: string; note: string; tags?: string[];
+  chain: string; address: string; note: string; tags?: string[]; createdBy?: string | null;
 }): TokenRow {
   const id = `${input.chain}:${input.address}`;
   const row = {
     id, chain: input.chain, address: input.address, symbol: null, name: null, decimals: null,
     addedAt: nowSec(), note: input.note, tags: JSON.stringify(input.tags ?? []),
     frozen: 0, enabled: 1, lastSource: null, lastQuoteAt: null, failCount: 0,
+    createdBy: input.createdBy ?? null,
   };
   getDb().insert(tokens).values(row).onConflictDoNothing().run();
   return getToken(id)!;
@@ -486,4 +487,39 @@ export function rollup5mTo1h(tokenId: string, hours = 3): number {
   });
   tx();
   return n;
+}
+
+// ---------- 日程 ----------
+
+export type EventRow = typeof events.$inferSelect;
+
+export function listEvents(opts: { includePast?: boolean } = {}): EventRow[] {
+  const db = getDb();
+  const rows = db.select().from(events).orderBy(events.atTs).all();
+  if (opts.includePast) return rows;
+  // 默认只看未来与刚过去 24 小时内的 —— 否则陈年事件会越堆越多
+  const cutoff = nowSec() - 86400;
+  return rows.filter((r) => r.atTs >= cutoff);
+}
+
+export function getEvent(id: string): EventRow | undefined {
+  return getDb().select().from(events).where(eq(events.id, id)).get();
+}
+
+export function upsertEvent(e: typeof events.$inferInsert): void {
+  getDb().insert(events).values(e).onConflictDoUpdate({ target: events.id, set: e }).run();
+}
+
+export function deleteEvent(id: string): void {
+  getDb().delete(events).where(eq(events.id, id)).run();
+}
+
+/** 待提醒的事件：启用、且尚有未发出的提醒点 */
+export function listEventsForReminder(): EventRow[] {
+  return getDb().select().from(events).where(eq(events.enabled, 1)).orderBy(events.atTs).all();
+}
+
+export function markReminded(id: string, offsets: number[]): void {
+  getDb().update(events).set({ remindedOffsets: JSON.stringify(offsets) })
+    .where(eq(events.id, id)).run();
 }

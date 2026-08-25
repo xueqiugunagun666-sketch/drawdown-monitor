@@ -48,6 +48,9 @@
 | `src/sources/poolSelection.ts` | 离群池剔除，**纯函数** |
 | `src/lib/decimal.ts` | 价格运算入口 |
 | `src/lib/mask.ts` | 密钥掩码，**所有输出的唯一出口** |
+| `src/lib/timezone.ts` | 时区换算（日历用），**纯函数** |
+| `src/lib/eventInput.ts` | 日程输入校验，**纯函数** |
+| `src/worker/reminders.ts` | 日程提醒 |
 | `src/db/repo.ts` | 全部 SQL |
 
 标了「纯函数」的都有对应 `.test.ts`，改逻辑先看测试。
@@ -102,6 +105,15 @@
 | 市值回撤用价格反推 | 等于假设供应量不变，算出来就是价格回撤换标签 | ATH 时刻市值未知就显示「未知」，不编 |
 | 掩码正则用了 `\b` | `.../bot123456789:AAH...` 里 `t` 与 `1` 同为词字符，**真实 Telegram URL 反而匹配不上** | 去掉词边界断言 |
 | worker 启动 `await` 原生币历史回填 | CoinGecko 一限流就把**价格轮询**一起堵住 | 改为后台执行 |
+
+### 日历 / 用户名
+
+| 坑 | 修法 |
+|---|---|
+| 用 `CET` / `EST` 这类缩写做时区换算 | **缩写不含夏令时信息**（CET 冬 UTC+1、夏 CEST UTC+2），一年里有半年差 1 小时。必须用 IANA 时区名让系统处理 |
+| `NextResponse.cookies.set` 里手动 `encodeURIComponent` | Next 自己会编码，双重编码后读出来是 `%25E8%2580...`。去掉手动那次；**不要靠解码两次兼容**，那会让「100%赢」这类名字出错 |
+| 日程链接直接渲染成 `<a>` | 必须校验只放行 http/https，否则 `javascript:` 就是 XSS |
+| 改期后旧提醒记录还在 | 时间或提醒点变更时清空 `reminded_offsets`，否则新提醒点不触发 |
 
 ### 前端
 

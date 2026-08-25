@@ -9,6 +9,8 @@ import { runMigrations } from '../db/migrate.ts';
 import { getDbPath } from '../db/index.ts';
 import { pollOnce, refreshNativePrices } from './poller.ts';
 import { runBackfillStep, backfillProgress } from './backfill.ts';
+import { dueReminders, confirmSent } from './reminders.ts';
+import { notifyPlain } from './notifier.ts';
 import { backfillNativePrices } from '../sources/nativeHistory.ts';
 import * as repo from '../db/repo.ts';
 
@@ -84,6 +86,29 @@ async function main(): Promise<void> {
   };
   void backfillLoop();
 
+  // 日程提醒：每分钟检查一次。与行情轮询分开 —— 提醒不该受数据源抖动影响
+  const reminderTimer = setInterval(() => {
+    void (async () => {
+      let due;
+      try {
+        due = dueReminders();
+      } catch (err) {
+        log.exception('日程提醒检查失败', err);
+        return;
+      }
+      for (const { event, offset, message } of due) {
+        const ok = await notifyPlain(message);
+        if (ok) {
+          confirmSent(event, offset);
+          log.info(`已推送日程提醒: ${event.title}（提前 ${offset} 分钟）`);
+        } else {
+          // 投递失败不标记，下一分钟重试；超过容忍窗口后会自动跳过
+          log.warn(`日程提醒投递失败，稍后重试: ${event.title}`);
+        }
+      }
+    })();
+  }, 60_000);
+
   const progressTimer = setInterval(() => {
     const p = backfillProgress();
     if (p.pagesTotal > 0 && p.done < p.jobs) {
@@ -106,6 +131,7 @@ async function main(): Promise<void> {
     }
     clearInterval(nativeTimer);
     clearInterval(progressTimer);
+    clearInterval(reminderTimer);
   };
 
   const shutdown = (sig: string) => {

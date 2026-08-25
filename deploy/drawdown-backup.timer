@@ -1,10 +1,12 @@
 [Unit]
-Description=每天备份一次数据库
+Description=定期备份数据库
 
 [Timer]
-OnCalendar=daily
+# 每 6 小时一次。真正不可再生的是代币清单、备注和日程 ——
+# candle 丢了能重新回填，那些丢了只能靠记忆。
+OnCalendar=00/6:00
 Persistent=true
-RandomizedDelaySec=600
+RandomizedDelaySec=300
 
 [Install]
 WantedBy=timers.target

@@ -143,6 +143,9 @@ export default function Home() {
                     {/* 备注用琥珀色：报警弹出来时最需要回忆的就是当初为什么关注它，
                             混在灰字里会被忽略 */}
                     {t.note && <div className="text-xs text-amber-500/90 max-w-[200px] mt-1">{t.note}</div>}
+                    {t.createdBy && (
+                      <div className="text-xs text-neutral-600 mt-0.5">由 {t.createdBy} 添加</div>
+                    )}
                     <TokenActions tokenId={t.id} symbol={t.symbol} note={t.note}
                       frozen={t.frozen === 1} enabled={t.enabled === 1} />
                   </td>

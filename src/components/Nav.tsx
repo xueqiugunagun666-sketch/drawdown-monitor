@@ -1,8 +1,10 @@
 import Link from 'next/link';
+import UserBadge from './UserBadge.tsx';
 
 const LINKS: Array<[href: string, label: string]> = [
   ['/', '看板'],
   ['/add', '加币'],
+  ['/calendar', '日历'],
   ['/alerts', '报警'],
   ['/settings', '设置'],
 ];
@@ -18,6 +20,9 @@ export default function Nav({ current }: { current: string }) {
           {label}
         </Link>
       ))}
+      <div className="ml-auto">
+        <UserBadge />
+      </div>
     </nav>
   );
 }

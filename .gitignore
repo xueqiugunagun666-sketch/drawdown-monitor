@@ -17,3 +17,6 @@ backups/
 
 .DS_Store
 *.log
+
+# 从服务器拉下来的异地备份副本
+backups-remote/

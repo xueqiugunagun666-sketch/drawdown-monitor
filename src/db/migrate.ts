@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS alerts (
   verdict TEXT, verdict_basis TEXT, delivered TEXT, acked_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_fired ON alerts(fired_at DESC);
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, at_ts INTEGER NOT NULL,
+  input_tz TEXT NOT NULL, category TEXT,
+  priority TEXT NOT NULL DEFAULT 'normal', note TEXT, links TEXT,
+  remind_offsets TEXT NOT NULL, reminded_offsets TEXT,
+  created_by TEXT, created_at INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_events_at ON events(at_ts);
 CREATE TABLE IF NOT EXISTS backfill_jobs (
   token_id TEXT NOT NULL, timeframe TEXT NOT NULL, pool_address TEXT NOT NULL,
   status TEXT NOT NULL, target_since_ts INTEGER NOT NULL, oldest_done_ts INTEGER,
@@ -99,6 +107,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['candles', 'liquidity_total', 'REAL'],
   ['candles', 'market_cap_usd', 'REAL'],
   ['ath_state', 'ath_market_cap', 'REAL'],
+  ['tokens', 'created_by', 'TEXT'],
   ['candles', 'source', 'TEXT'],
   ['ath_state', 'vol_h1_at_ath', 'REAL'],
   ['ath_state', 'ath_confidence', 'TEXT'],

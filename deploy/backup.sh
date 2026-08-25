@@ -6,7 +6,7 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${APP_DIR}/data/monitor.db"
 OUT_DIR="${APP_DIR}/backups"
-KEEP_DAYS=7
+KEEP_DAYS=14   # 每 6 小时一次 x 14 天 = 56 份，压缩后约 350MB，50G 盘绰绰有余
 
 [ -f "$DB" ] || { echo "数据库不存在: $DB"; exit 0; }
 mkdir -p "$OUT_DIR"

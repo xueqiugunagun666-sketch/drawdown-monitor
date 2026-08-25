@@ -23,6 +23,7 @@ export const tokens = sqliteTable('tokens', {
   /** §2.4：主池选举时刻，用于 6 小时粘性 */
   primaryElectedAt: integer('primary_elected_at'),
   failCount: integer('fail_count').default(0).notNull(),
+  createdBy: text('created_by'),          // 谁加的（署名，非身份）
 });
 
 export const pools = sqliteTable('pools', {
@@ -125,6 +126,30 @@ export const alerts = sqliteTable('alerts', {
   verdictBasis: text('verdict_basis'),               // 'liquidity' | 'volume_proxy'
   delivered: text('delivered'),                      // JSON: 各渠道投递结果
   ackedAt: integer('acked_at'),
+});
+
+/**
+ * 项目日程 —— mint / 发行 / 上所等时间点。
+ *
+ * at_ts 一律存 UTC 秒。input_tz 记录录入时选的时区，
+ * 编辑时按原时区回显，展示时统一换算成北京时间。
+ */
+export const events = sqliteTable('events', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  atTs: integer('at_ts').notNull(),               // UTC 秒
+  inputTz: text('input_tz').notNull(),            // IANA 时区名
+  category: text('category'),
+  priority: text('priority').default('normal').notNull(),
+  note: text('note'),
+  links: text('links'),                           // JSON: [{label, url}]
+  /** 提前多久提醒，JSON 数字数组（分钟），0 表示到点 */
+  remindOffsets: text('remind_offsets').notNull(),
+  /** 已发出的提醒，JSON 数字数组 —— 去重用，防止重启后重复推 */
+  remindedOffsets: text('reminded_offsets'),
+  createdBy: text('created_by'),
+  createdAt: integer('created_at').notNull(),
+  enabled: integer('enabled').default(1).notNull(),
 });
 
 /**
