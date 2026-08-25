@@ -107,3 +107,27 @@ export function evaluate(cur: StateSnapshot, p: EvalParams): EvalResult {
 export function initialState(): StateSnapshot {
   return { state: 'ARMED', hitCount: 0, rearmSinceTs: null, localLow: null, localLowTs: null, lastFiredAt: null };
 }
+
+/**
+ * 某个 (token, rule, level) 第一次出现时的初始状态。
+ *
+ * **关键：已经跌破的档位不能从 ARMED 开始。**
+ * 报警的语义是「它刚跌破 X%」，不是「它现在低于 X%」。
+ * 加一个已经 -91% 的币时，70/80/85/90 四档都满足条件，若都从 ARMED 起步，
+ * 就会被 cooldown 排着队每 30 分钟推一条 —— 把用户早就知道的事重复告知，
+ * 是最典型的狼来了。
+ *
+ * 因此初始就置为 FIRED（视为在我们开始看之前已经触发过）。
+ * 日后价格回升越过迟滞带再跌回来，会正常重新武装并触发 —— 那才是新信息。
+ *
+ * lastFiredAt 留空：它并没有真的推送过，不应占用 cooldown 配额。
+ */
+export function seedState(drawdown: Decimal, level: number, price: Decimal, now: number): StateSnapshot {
+  if (drawdown.gte(level)) {
+    return {
+      state: 'FIRED', hitCount: 0, rearmSinceTs: null,
+      localLow: price, localLowTs: now, lastFiredAt: null,
+    };
+  }
+  return initialState();
+}

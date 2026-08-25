@@ -11,7 +11,7 @@ import {
   computeForMode, specFor, ATH_MODES, QUOTE_MODES, ROLLING_WINDOW_SECONDS,
   type AthMode, type QuoteMode,
 } from './athModes.ts';
-import { evaluate } from './stateMachine.ts';
+import { evaluate, seedState } from './stateMachine.ts';
 import * as repo from '../db/repo.ts';
 import type { TokenQuote } from '../sources/types.ts';
 import type { TokenRow } from '../db/repo.ts';
@@ -127,8 +127,15 @@ export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
       continue;
     }
 
+    // 首次为该代币建立状态时，已跌破的档位直接置为 FIRED，不追溯报警
+    const seeded: number[] = [];
     for (const level of levels) {
-      const cur = repo.getAlertState(token.id, rule.id, level);
+      let cur = repo.getAlertStateOrNull(token.id, rule.id, level);
+      if (cur === null) {
+        cur = seedState(drawdown, level, price, now);
+        repo.saveAlertState(token.id, rule.id, level, cur);
+        if (cur.state === 'FIRED') seeded.push(level);
+      }
       const res = evaluate(cur, {
         drawdown,
         price: quote.priceUsd,
@@ -149,6 +156,7 @@ export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
       }
 
       if (!res.fire) continue;
+
 
       const athUsd = athRobust;
       const drawdownUsdVal = qm === 'usd' ? drawdown : drawdownOther;
@@ -193,6 +201,15 @@ export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
       });
       fired.push(alert);
       log.warn(`${token.id} 触发 ${level}% 档报警，回撤 ${drawdown.toFixed(2)}% (${mode}/${qm})`);
+    }
+
+    // 规则 4：不追溯报警这件事必须让人看得见，否则会以为系统漏报了
+    if (seeded.length > 0) {
+      log.info(
+        `${token.id} 首次建立状态时回撤已达 ${drawdown.toFixed(1)}%，` +
+        `${seeded.join('/')}% 档视为加入前已触发，不追溯推送；` +
+        `日后回升再跌破会正常报警`,
+      );
     }
   }
 

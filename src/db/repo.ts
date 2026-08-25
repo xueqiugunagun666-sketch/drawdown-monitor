@@ -227,13 +227,12 @@ export function upsertRule(r: typeof alertRules.$inferInsert): void {
   getDb().insert(alertRules).values(r).onConflictDoUpdate({ target: alertRules.id, set: r }).run();
 }
 
-export function getAlertState(tokenId: string, ruleId: string, level: number): StateSnapshot {
+/** 没有状态行时返回 null —— 调用方据此决定初始状态，见 engine 的 seedState */
+export function getAlertStateOrNull(tokenId: string, ruleId: string, level: number): StateSnapshot | null {
   const row = getDb().select().from(alertStates)
     .where(and(eq(alertStates.tokenId, tokenId), eq(alertStates.ruleId, ruleId), eq(alertStates.level, level)))
     .get();
-  if (!row) {
-    return { state: 'ARMED', hitCount: 0, rearmSinceTs: null, localLow: null, localLowTs: null, lastFiredAt: null };
-  }
+  if (!row) return null;
   return {
     state: row.state as 'ARMED' | 'FIRED',
     hitCount: row.hitCount,
@@ -242,6 +241,11 @@ export function getAlertState(tokenId: string, ruleId: string, level: number): S
     localLowTs: row.localLowTs,
     lastFiredAt: row.lastFiredAt,
   };
+}
+
+export function getAlertState(tokenId: string, ruleId: string, level: number): StateSnapshot {
+  return getAlertStateOrNull(tokenId, ruleId, level)
+    ?? { state: 'ARMED', hitCount: 0, rearmSinceTs: null, localLow: null, localLowTs: null, lastFiredAt: null };
 }
 
 export function saveAlertState(tokenId: string, ruleId: string, level: number, s: StateSnapshot): void {

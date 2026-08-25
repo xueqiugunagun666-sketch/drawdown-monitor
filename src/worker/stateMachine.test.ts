@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Decimal } from '../lib/decimal.ts';
-import { evaluate, initialState, type EvalParams, type StateSnapshot } from './stateMachine.ts';
+import { evaluate, initialState, seedState, type EvalParams, type StateSnapshot } from './stateMachine.ts';
 
 const base = (over: Partial<EvalParams> = {}): EvalParams => ({
   drawdown: new Decimal(85), price: new Decimal('0.001'), liquidityTotal: 100000,
@@ -115,4 +115,46 @@ test('阈值边界：79.98 / 80.02 不因浮点抖动', () => {
   assert.equal(evaluate(st, base({ drawdown: new Decimal('79.98') })).next.hitCount, 0);
   assert.equal(evaluate(st, base({ drawdown: new Decimal('80.00') })).next.hitCount, 1);
   assert.equal(evaluate(st, base({ drawdown: new Decimal('80.02') })).next.hitCount, 1);
+});
+
+test('新加入时已跌破的档位不追溯报警', () => {
+  // 加一个已经 -91% 的币：70/80/85/90 四档都满足条件
+  const dd = new Decimal(91);
+  const price = new Decimal('0.001');
+  for (const level of [70, 80, 85, 90]) {
+    const s = seedState(dd, level, price, 1_000_000);
+    assert.equal(s.state, 'FIRED', `${level}% 档应视为加入前已触发`);
+    assert.equal(s.lastFiredAt, null, '并未真的推送过，不应占用 cooldown 配额');
+    assert.equal(s.localLow?.toString(), '0.001', '应开始追踪局部低点');
+  }
+  // 95 档尚未跌破，正常武装
+  const s95 = seedState(dd, 95, price, 1_000_000);
+  assert.equal(s95.state, 'ARMED');
+});
+
+test('被 seed 成 FIRED 的档位不会立刻推送', () => {
+  const dd = new Decimal(91);
+  const price = new Decimal('0.001');
+  const st = seedState(dd, 80, price, 1_000_000);
+  for (let i = 0; i < 10; i++) {
+    const r = evaluate(st, base({ drawdown: dd, price, now: 1_000_000 + i * 30 }));
+    assert.equal(r.fire, false, '加入前就跌破的档位不该报警');
+  }
+});
+
+test('seed 成 FIRED 后，回升越过迟滞带再跌破会正常报警', () => {
+  const price = new Decimal('0.001');
+  let st = seedState(new Decimal(91), 80, price, 1_000_000);
+  assert.equal(st.state, 'FIRED');
+
+  // 回升到 -60%（<= 80-15），持续满 rearm_minutes 后重新武装
+  let r = evaluate(st, base({ drawdown: new Decimal(60), now: 1_000_100 }));
+  r = evaluate(r.next, base({ drawdown: new Decimal(60), now: 1_000_100 + 3600 }));
+  assert.equal(r.next.state, 'ARMED', '回升够久应重新武装');
+
+  // 再次跌破，连续两次确认后触发 —— 这才是新信息
+  r = evaluate(r.next, base({ drawdown: new Decimal(85), now: 1_000_100 + 3700 }));
+  assert.equal(r.fire, false, '第一次只确认');
+  r = evaluate(r.next, base({ drawdown: new Decimal(85), now: 1_000_100 + 3730 }));
+  assert.equal(r.fire, true, '第二次确认后应正常报警');
 });

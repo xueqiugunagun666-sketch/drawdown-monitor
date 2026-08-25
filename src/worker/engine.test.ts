@@ -278,3 +278,77 @@ test('数据源确实还有更早数据却拿不到时，仍要标记不完整',
   assert.equal(r90?.backfillPartial, 1,
     '建池到最早 candle 之间差 30 天，这是真的缺数据，必须标出来');
 });
+
+test('线上复现：新加入的币已跌 91%，不应连推多档', () => {
+  const addr = 'AlreadyDumped999999999999999999999999999999';
+  repo.upsertRule({
+    id: 'dumped', tokenId: `${CHAIN}:${addr}`, type: 'drawdown',
+    athMode: 'since_added', quoteMode: 'usd',
+    levels: JSON.stringify([70, 80, 85, 90, 95]),
+    confirmTicks: 2, hysteresis: 15, rearmMinutes: 60,
+    minLiquidityUsd: 5000, athSustainCandles: 3, cooldownMinutes: 30,
+    bouncePct: 25, channels: JSON.stringify(['telegram']), enabled: 1,
+  });
+  repo.addToken({ chain: CHAIN, address: addr, note: '加进来时就已经腰斩再腰斩' });
+  const token = repo.getToken(`${CHAIN}:${addr}`)!;
+  const t0 = align5m(2_600_000_000);
+
+  // 关键：高点来自**历史回填**，不是实时看着它跌的。
+  // 实时轮询从第一轮起价格就已经在低位 —— 这才是线上的真实场景。
+  repo.insertBackfillCandles(`${CHAIN}:${addr}`, '5m',
+    Array.from({ length: 20 }, (_, i) => ({
+      ts: t0 + i * 300, o: '1.00', h: '1.00', l: '1.00', c: '1.00', volumeUsd: 5000,
+    })));
+
+  let total = 0;
+  // 模拟 4 小时实时轮询，全程 -91%。旧逻辑会被 cooldown 排队推出 4 条
+  for (let i = 20; i < 20 + 480; i++) {
+    total += processQuote(token, withAddr(quote('0.09', t0 + i * 300), addr)).length;
+  }
+  assert.equal(total, 0, `已跌破的档位不该追溯推送，实际推了 ${total} 条`);
+
+  const states = [70, 80, 85, 90].map((l) => repo.getAlertState(`${CHAIN}:${addr}`, 'dumped', l));
+  assert.ok(states.every((s) => s.state === 'FIRED'), '这些档位应为 FIRED（视为加入前已触发）');
+  assert.equal(repo.getAlertState(`${CHAIN}:${addr}`, 'dumped', 95).state, 'ARMED',
+    '95 档尚未跌破，应保持武装');
+});
+
+test('继续下跌到尚未触发的档位时，仍会正常报警', () => {
+  const addr = 'AlreadyDumped999999999999999999999999999999';
+  const token = repo.getToken(`${CHAIN}:${addr}`)!;
+  const t0 = align5m(2_600_000_000) + (20 + 480) * 300;
+
+  // 从 -91% 继续跌到 -96%，跨过尚未触发的 95 档
+  const fired: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    for (const a of processQuote(token, withAddr(quote('0.04', t0 + i * 300), addr))) {
+      fired.push(a.level);
+    }
+  }
+  assert.deepEqual(fired, [95], '只有真正新跌破的 95 档该报警');
+});
+
+test('看着它跌下去的，仍然正常报警（不能因为修 bug 把正常场景也压掉）', () => {
+  const addr = 'DroppedWhileWatching00000000000000000000000';
+  repo.upsertRule({
+    id: 'watch', tokenId: `${CHAIN}:${addr}`, type: 'drawdown',
+    athMode: 'since_added', quoteMode: 'usd', levels: JSON.stringify([80]),
+    confirmTicks: 2, hysteresis: 15, rearmMinutes: 60,
+    minLiquidityUsd: 5000, athSustainCandles: 3, cooldownMinutes: 0,
+    bouncePct: 25, channels: JSON.stringify(['telegram']), enabled: 1,
+  });
+  repo.addToken({ chain: CHAIN, address: addr, note: '加进来时还在高位' });
+  const token = repo.getToken(`${CHAIN}:${addr}`)!;
+  const t0 = align5m(2_700_000_000);
+
+  // 加进来时价格正常，状态以 ARMED 建立
+  for (let i = 0; i < 5; i++) processQuote(token, withAddr(quote('1.00', t0 + i * 300), addr));
+  assert.equal(repo.getAlertState(`${CHAIN}:${addr}`, 'watch', 80).state, 'ARMED');
+
+  // 然后我们看着它跌 —— 这是真信号，必须报
+  let fired = 0;
+  for (let i = 5; i < 10; i++) {
+    fired += processQuote(token, withAddr(quote('0.15', t0 + i * 300), addr)).length;
+  }
+  assert.equal(fired, 1, '看着它跌破阈值必须报警一次');
+});

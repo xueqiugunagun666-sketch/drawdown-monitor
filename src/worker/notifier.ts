@@ -95,6 +95,9 @@ function buildMessage(a: FiredAlert): string {
     lines.push('');
     lines.push(`备注: ${a.token.note}`);
   }
+  if (a.token.createdBy) {
+    lines.push(`由 ${a.token.createdBy} 标记`);
+  }
   // 合约地址单独一行，方便直接复制去别处查
   lines.push('');
   lines.push(`合约  ${a.token.address}`);
