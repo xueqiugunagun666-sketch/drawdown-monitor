@@ -1,0 +1,12 @@
+[Unit]
+Description=Drawdown Monitor 每日备份
+
+[Service]
+Type=oneshot
+User=drawdown
+Group=drawdown
+WorkingDirectory=/opt/drawdown-monitor
+ExecStart=/opt/drawdown-monitor/deploy/backup.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=drawdown-backup

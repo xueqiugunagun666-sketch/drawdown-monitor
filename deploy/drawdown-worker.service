@@ -1,0 +1,31 @@
+[Unit]
+Description=Drawdown Monitor Worker (轮询 + 回撤引擎 + 通知)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=drawdown
+Group=drawdown
+WorkingDirectory=/opt/drawdown-monitor
+EnvironmentFile=/opt/drawdown-monitor/.env
+ExecStart=/usr/bin/npm run worker
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=drawdown-worker
+
+# 崩溃循环时别把日志刷爆
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# 基本加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/drawdown-monitor/data /opt/drawdown-monitor/backups
+
+[Install]
+WantedBy=multi-user.target

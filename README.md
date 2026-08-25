@@ -18,7 +18,18 @@ Phase 3：多档位阶梯 [80/85/90/95]、代币详情页（K 线 + ATH 线 + �
 相关数据字段（`verdict_basis`、`vol_h1_at_ath`、`local_low`）仍在计算并存库，
 日后要加是现成的。
 
-## 快速开始
+## 部署到服务器
+
+见 [deploy/README.md](./deploy/README.md)。一条命令：
+
+```bash
+sudo bash deploy/install.sh
+```
+
+**服务器地域必须在境外**（新加坡 / 东京 / 香港）。国内地域连不上
+DexScreener、GeckoTerminal、Telegram —— 脚本第一步就会检测并中止。
+
+## 本机快速开始
 
 ```bash
 npm install
