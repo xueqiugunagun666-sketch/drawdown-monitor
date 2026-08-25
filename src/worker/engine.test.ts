@@ -128,3 +128,61 @@ test('合格 candle 不足 k 根时不报警', () => {
   const ath = repo.getAth(`${CHAIN}:${addr3}`, 'since_added', 'usd');
   assert.equal(ath?.athRobust, null, 'ath_robust 应为 null 而不是瞎给一个值');
 });
+
+test('多档位：各档独立触发一次，受 cooldown 间隔约束', () => {
+  const addr = 'MultiLevelToken444444444444444444444444444444';
+  repo.upsertRule({
+    id: 'multi', tokenId: `${CHAIN}:${addr}`, type: 'drawdown',
+    athMode: 'since_added', quoteMode: 'usd', levels: JSON.stringify([80, 85, 90, 95]),
+    confirmTicks: 1, hysteresis: 15, rearmMinutes: 60,
+    minLiquidityUsd: 5000, athSustainCandles: 3,
+    cooldownMinutes: 0,     // 本测试关心分档，不关心冷却间隔
+    bouncePct: 25, channels: JSON.stringify(['telegram']), enabled: 1,
+  });
+  repo.addToken({ chain: CHAIN, address: addr, note: '多档位测试' });
+  const token = repo.getToken(`${CHAIN}:${addr}`)!;
+  const t0 = align5m(2_100_000_000);
+  const q = (price: string, i: number) => ({ ...quote(price, t0 + i * 300), address: addr });
+
+  for (let i = 0; i < 5; i++) processQuote(token, q('1.00', i));
+
+  // 跌 82% -> 只有 80 档触发
+  const r1 = processQuote(token, q('0.18', 5));
+  assert.deepEqual(r1.map((a) => a.level), [80]);
+
+  // 跌 88% -> 85 档触发，80 档已 FIRED 不重复
+  const r2 = processQuote(token, q('0.12', 6));
+  assert.deepEqual(r2.map((a) => a.level), [85]);
+
+  // 跌 96% -> 90 与 95 同轮触发
+  const r3 = processQuote(token, q('0.04', 7));
+  assert.deepEqual(r3.map((a) => a.level).sort((a, b) => a - b), [90, 95]);
+
+  // 继续下跌不再有新报警
+  let extra = 0;
+  for (let i = 8; i < 20; i++) extra += processQuote(token, q('0.03', i)).length;
+  assert.equal(extra, 0, '四档都已触发，不得再报');
+
+  const levels = repo.listAlerts().filter((a) => a.tokenId === `${CHAIN}:${addr}`).map((a) => a.level).sort((x, y) => (x ?? 0) - (y ?? 0));
+  assert.deepEqual(levels, [80, 85, 90, 95]);
+});
+
+test('cooldown 会把同一轮的多档触发拉开', () => {
+  const addr = 'CooldownToken5555555555555555555555555555555';
+  repo.upsertRule({
+    id: 'cd', tokenId: `${CHAIN}:${addr}`, type: 'drawdown',
+    athMode: 'since_added', quoteMode: 'usd', levels: JSON.stringify([80, 85, 90, 95]),
+    confirmTicks: 1, hysteresis: 15, rearmMinutes: 60,
+    minLiquidityUsd: 5000, athSustainCandles: 3,
+    cooldownMinutes: 30, bouncePct: 25, channels: JSON.stringify(['telegram']), enabled: 1,
+  });
+  repo.addToken({ chain: CHAIN, address: addr, note: '冷却测试' });
+  const token = repo.getToken(`${CHAIN}:${addr}`)!;
+  const t0 = align5m(2_200_000_000);
+  const q = (price: string, i: number) => ({ ...quote(price, t0 + i * 300), address: addr });
+
+  for (let i = 0; i < 5; i++) processQuote(token, q('1.00', i));
+  // 一步跌到 -96%：四档都够条件，但 cooldown 只放行一档
+  const r = processQuote(token, q('0.04', 5));
+  assert.equal(r.length, 1, `cooldown 内同一代币只应触发一档，实际 ${r.length}`);
+});

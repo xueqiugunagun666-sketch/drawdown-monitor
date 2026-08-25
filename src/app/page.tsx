@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { getConfig } from '../lib/config.ts';
 import { priceFromText, drawdownPct, formatPrice } from '../lib/decimal.ts';
 import { nowSec, humanAgo } from '../lib/time.ts';
@@ -131,7 +132,10 @@ export default function Home() {
               return (
                 <tr key={t.id} className="border-b border-neutral-900 align-top">
                   <td className="py-2 pr-4">
-                    <div className="font-medium">{t.symbol ?? '—'}</div>
+                    <Link href={`/token/${encodeURIComponent(t.id)}`}
+                      className="font-medium hover:text-sky-400 hover:underline">
+                      {t.symbol ?? t.address.slice(0, 8)}
+                    </Link>
                     <div className="text-xs text-neutral-500">{t.chain}</div>
                     {t.note && <div className="text-xs text-neutral-600 max-w-[200px] mt-1">{t.note}</div>}
                   </td>

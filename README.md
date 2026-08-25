@@ -10,8 +10,13 @@ Phase 1：SQLite schema、DexScreener 适配器、30 秒全量轮询、`since_ad
 Phase 2：GeckoTerminal OHLCV 回填（可断点续传）、`rolling_90d` + `all_time`、
 原生币计价的完整序列、主池 6 小时粘性选举、5m→1h 汇总、失联通知、回填进度 UI。
 
-未实现（后续 Phase）：抄底可行性快照与 verdict 分类、多档位与多频道路由、
-反弹确认报警、K 线与详情页、PWA。
+Phase 3：多档位阶梯 [80/85/90/95]、代币详情页（K 线 + ATH 线 + 阈值线 + 报警标记、
+三种 ATH 模式与双计价切换、池子列表、报警历史）。
+
+**已砍掉（v1 不做）**：verdict 分类、反弹确认报警、多频道路由、PWA + Web Push。
+这些属于决策辅助而非价格跟踪；报警消息已带足够的原始指标供人工判断。
+相关数据字段（`verdict_basis`、`vol_h1_at_ath`、`local_low`）仍在计算并存库，
+日后要加是现成的。
 
 ## 快速开始
 

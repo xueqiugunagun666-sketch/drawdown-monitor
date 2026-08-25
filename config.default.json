@@ -32,7 +32,10 @@
     "athMode": "rolling_90d",
     "quoteMode": "usd",
     "levels": [
-      80
+      80,
+      85,
+      90,
+      95
     ],
     "confirmTicks": 2,
     "hysteresis": 15,
