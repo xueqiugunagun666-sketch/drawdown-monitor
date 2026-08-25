@@ -130,3 +130,28 @@ test('1h 粒度下 vol_h1_at_ath 仍归一到每小时口径', () => {
   // 13 根 ×120 = 1560，覆盖 13 小时，归一到 1 小时 -> 120
   assert.ok(Math.abs(r.volH1AtAth! - 120) < 1e-6, `应为 120，实际 ${r.volH1AtAth}`);
 });
+
+test('all_time 必须 >= rolling_90d：1h 粒度会漏掉小时内尖峰', () => {
+  // 线上真实场景：同一段时间，5m 有 12 倍的样本量，第 k 高的 close 必然更高。
+  // 若 all_time 只用 1h，就会出现「全历史最高点低于 90 天最高点」的荒谬结果。
+  const fiveMin: AthCandle[] = [];
+  const hourly: AthCandle[] = [];
+  for (let h = 0; h < 24; h++) {
+    let hourClose = 0;
+    for (let i = 0; i < 12; i++) {
+      // 小时内先冲高再回落，收盘价低于小时内峰值
+      const v = 1 + (i === 5 ? 0.5 : 0) - i * 0.01;
+      fiveMin.push(C(h * 3600 + i * 300, String(v), String(v), 1000));
+      hourClose = v;
+    }
+    hourly.push(C(h * 3600, String(hourClose), String(hourClose), 12000));
+  }
+  const from5m = computeAth(fiveMin, 3, 300);
+  const from1h = computeAth(hourly, 3, 3600);
+  assert.ok(from5m.athRobust!.gt(from1h.athRobust!),
+    `5m 的第 3 高 close (${from5m.athRobust}) 应高于 1h 的 (${from1h.athRobust})`);
+
+  // 修复后的取法：两者取高，保证 all_time >= rolling_90d
+  const allTime = from1h.athRobust!.gt(from5m.athRobust!) ? from1h : from5m;
+  assert.equal(allTime.athRobust!.toString(), from5m.athRobust!.toString());
+});

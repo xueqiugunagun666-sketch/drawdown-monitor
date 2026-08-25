@@ -163,6 +163,21 @@ export function getCandles(tokenId: string, timeframe = '5m', sinceTs = 0) {
     .orderBy(candles.ts).all();
 }
 
+/** 该代币最早的池子创建时间 —— 用于判断「数据是否真的不完整」 */
+export function getEarliestPoolCreatedAt(tokenId: string): number | null {
+  const rows = getDb().select().from(pools).where(eq(pools.tokenId, tokenId)).all();
+  const times = rows.map((r) => r.createdAt).filter((t): t is number => typeof t === 'number' && t > 0);
+  return times.length > 0 ? Math.min(...times) : null;
+}
+
+/** 某粒度下最早一根 candle 的时刻 */
+export function getOldestCandleTs(tokenId: string, timeframe: string): number | null {
+  const row = getRawDb().prepare(
+    'SELECT MIN(ts) t FROM candles WHERE token_id = ? AND timeframe = ?',
+  ).get(tokenId, timeframe) as { t: number | null } | undefined;
+  return row?.t ?? null;
+}
+
 export function saveAth(
   tokenId: string, mode: string, quoteMode: string, r: AthResult, backfillPartial = false,
 ): void {

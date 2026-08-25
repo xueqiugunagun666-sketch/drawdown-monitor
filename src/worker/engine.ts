@@ -7,7 +7,10 @@
 import { Decimal, priceFromText, drawdownPct } from '../lib/decimal.ts';
 import { nowSec } from '../lib/time.ts';
 import { makeLogger } from '../lib/log.ts';
-import { computeForMode, specFor, ATH_MODES, QUOTE_MODES, type AthMode, type QuoteMode } from './athModes.ts';
+import {
+  computeForMode, specFor, ATH_MODES, QUOTE_MODES, ROLLING_WINDOW_SECONDS,
+  type AthMode, type QuoteMode,
+} from './athModes.ts';
 import { evaluate } from './stateMachine.ts';
 import * as repo from '../db/repo.ts';
 import type { TokenQuote } from '../sources/types.ts';
@@ -30,6 +33,37 @@ export interface FiredAlert {
   quoteMode: QuoteMode;
 }
 
+/** 回填止步处与窗口起点相差多久算「真的缺数据」 */
+const COVERAGE_TOLERANCE_SECONDS = 2 * 3600;
+
+/**
+ * 判断某个模式的窗口是不是真的没被覆盖完整（§2.1 的 backfill_partial）。
+ *
+ * 关键：**代币比窗口年轻不等于数据不完整**。池子 11 天前才建，
+ * 90 天窗口自然只有 11 天数据，但那已经是存在的全部 —— 此时标「不完整」
+ * 是误导。只有当数据源确实还有更早的数据却拿不到时，才算不完整。
+ */
+function isWindowIncomplete(
+  tokenId: string, mode: AthMode, poolCreatedAt: number | null, now: number,
+): boolean {
+  // since_added 的起点由我们自己决定，不存在覆盖不到的问题
+  if (mode === 'since_added') return false;
+
+  const timeframe = specFor(mode).timeframe;
+  const job = repo.getBackfillJob(tokenId, timeframe);
+  if (job?.reachedSourceLimit !== 1) return false;   // 回填正常完成
+
+  const oldest = repo.getOldestCandleTs(tokenId, timeframe);
+  if (oldest === null) return true;                  // 一根都没有，确实不完整
+
+  // 该模式期望覆盖到的最早时刻
+  const windowStart = mode === 'rolling_90d' ? now - ROLLING_WINDOW_SECONDS : 0;
+  // 池子建成之前不可能有数据，期望值不应早于建池时刻
+  const expectedStart = poolCreatedAt !== null ? Math.max(windowStart, poolCreatedAt) : windowStart;
+
+  return oldest > expectedStart + COVERAGE_TOLERANCE_SECONDS;
+}
+
 export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
   // 1. 写入/更新当前 5m candle
   repo.upsertCandle(token.id, quote);
@@ -50,11 +84,9 @@ export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
   const k = rules[0]?.athSustainCandles ?? 3;
   const now = nowSec();
 
+  const poolCreatedAt = repo.getEarliestPoolCreatedAt(token.id);
   for (const mode of ATH_MODES) {
-    // §2.1：数据源历史深度不够时必须标出来，不能假装窗口是完整的。
-    // since_added 的窗口起点由我们自己决定，不存在数据源覆盖不到的问题。
-    const job = repo.getBackfillJob(token.id, specFor(mode).timeframe);
-    const partial = mode !== 'since_added' && job?.reachedSourceLimit === 1;
+    const partial = isWindowIncomplete(token.id, mode, poolCreatedAt, now);
     for (const qm of QUOTE_MODES) {
       const r = computeForMode(token.id, mode, qm, k, token.addedAt, now);
       repo.saveAth(token.id, mode, qm, r, partial);
