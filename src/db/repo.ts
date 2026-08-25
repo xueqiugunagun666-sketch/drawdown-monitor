@@ -527,3 +527,42 @@ export function markReminded(id: string, offsets: number[]): void {
   getDb().update(events).set({ remindedOffsets: JSON.stringify(offsets) })
     .where(eq(events.id, id)).run();
 }
+
+/**
+ * 迷你走势的采样点。
+ *
+ * 90 天 5m 有两万多根，前端不需要那么多 —— 等距抽样到 ~60 个点，
+ * 既够看形状，又不用把 1.5MB JSON 塞进页面。
+ */
+export function sparklinePoints(tokenId: string, sinceTs: number, buckets = 60): {
+  points: number[]; athIndex: number | null;
+} {
+  const rows = getRawDb().prepare(
+    `SELECT ts, c FROM candles
+     WHERE token_id = ? AND timeframe = '5m' AND ts >= ? AND c IS NOT NULL
+     ORDER BY ts`,
+  ).all(tokenId, sinceTs) as Array<{ ts: number; c: string }>;
+  if (rows.length === 0) return { points: [], athIndex: null };
+
+  const first = rows[0]!.ts;
+  const last = rows[rows.length - 1]!.ts;
+  const span = Math.max(1, last - first);
+  const step = span / buckets;
+
+  // 每格取该格内最后一个收盘价；空格沿用前值，避免断线
+  const points: number[] = [];
+  let cursor = 0;
+  let prev = Number(rows[0]!.c);
+  for (let b = 0; b < buckets; b++) {
+    const edge = first + (b + 1) * step;
+    let v: number | null = null;
+    while (cursor < rows.length && rows[cursor]!.ts <= edge) {
+      v = Number(rows[cursor]!.c);
+      cursor++;
+    }
+    prev = v ?? prev;
+    points.push(prev);
+  }
+  const maxV = Math.max(...points);
+  return { points, athIndex: points.indexOf(maxV) };
+}

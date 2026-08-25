@@ -38,12 +38,12 @@ export default function UserBadge() {
   if (editing || !name) {
     return (
       <div className="flex items-center gap-2 text-xs">
-        <span className="text-neutral-500">署名</span>
+        <span className="text-neutral-500 hidden sm:inline">署名</span>
         <input
           value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus
           onKeyDown={(e) => { if (e.key === 'Enter') void save(); }}
           placeholder="你的名字"
-          className="w-24 rounded bg-neutral-900 border border-neutral-700 px-2 py-1
+          className="w-20 rounded bg-neutral-900 border border-neutral-700 px-2 py-1
                      focus:outline-none focus:border-neutral-500"
         />
         <button onClick={() => void save()} disabled={!draft.trim()}
