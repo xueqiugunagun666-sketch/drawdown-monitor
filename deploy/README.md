@@ -84,7 +84,10 @@ journalctl -u caddy -n 50 --no-pager
 |---|---|---|
 | `control process exited` | Caddyfile 语法错 | `caddy validate` 会指出具体行 |
 | 证书签发一直失败 | 域名没解析到本机，或 80 端口没放通 | `getent hosts 你的域名` 对比 `curl https://api.ipify.org` |
-| `address already in use` | 80/443 被别的服务占了 | `ss -lntp | grep -E ':80|:443'` |
+| `address already in use` | 80/443 被别的服务占了 | `ss -lntp \| grep -E ':80\|:443'` |
+| `permission denied` 打不开日志 | 日志文件属主是 root | 现在已改为写 journald，不该再出现；真遇到就 `rm -f /var/log/caddy/*.log` |
+
+Caddy 的日志用 `journalctl -u caddy -f` 看，和另外两个服务一致。
 
 DuckDNS 改完 IP 后解析生效通常要一两分钟，期间 Caddy 会签证书失败。
 生效后执行 `systemctl restart caddy` 即可，不必重跑安装脚本。

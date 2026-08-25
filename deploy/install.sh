@@ -93,9 +93,10 @@ if [ "$SRC_DIR" != "$APP_DIR" ]; then
     --exclude node_modules --exclude .next --exclude data --exclude backups --exclude .env --exclude .git \
     "$SRC_DIR/" "$APP_DIR/"
 fi
-mkdir -p "$APP_DIR/data" "$APP_DIR/backups" /var/log/caddy
+mkdir -p "$APP_DIR/data" "$APP_DIR/backups"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
-chown -R caddy:caddy /var/log/caddy
+# Caddy 日志走 journald，不建 /var/log/caddy —— 以 root 建目录/文件会导致
+# caddy 用户写不进去，服务直接起不来
 
 # ---------------------------------------------------------------- 配置
 step "配置 .env"

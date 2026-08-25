@@ -18,10 +18,8 @@ __DOMAIN__ {
 		Referrer-Policy "no-referrer"
 	}
 
-	log {
-		output file /var/log/caddy/drawdown.log {
-			roll_size 10mb
-			roll_keep 5
-		}
-	}
+	# 不写文件日志：Caddy 默认输出到 journald，与 worker / web 两个服务一致，
+	# 用 journalctl -u caddy 查看，且 journald 自带轮转。
+	# 写文件反而引入属主/权限问题 —— 线上就踩过：安装时 root 建了
+	# /var/log/caddy/drawdown.log（600 root:root），caddy 用户打不开，服务起不来。
 }
