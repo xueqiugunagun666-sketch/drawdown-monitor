@@ -46,7 +46,6 @@ function quote(price: string, at: number, liquidity = 100_000): TokenQuote {
     primaryPool: pool('PoolA', price, liquidity),
     allPools: [pool('PoolA', price, liquidity)],
     medianPriceUsd: p, crossValidated: true,
-    primaryReelected: false, previousPrimary: null,
     fetchedAt: at, source: 'test',
   };
 }

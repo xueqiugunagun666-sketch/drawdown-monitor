@@ -55,11 +55,7 @@ export async function pollOnce(): Promise<void> {
       const nativeUsd = getLatestNativePrice(nativeSymbol);
 
       try {
-        const storedPrimary = repo.getPrimaryPoolAddress(token.id);
-        const preferred = storedPrimary && token.primaryElectedAt
-          ? { address: storedPrimary, electedAt: token.primaryElectedAt }
-          : null;
-        const quote = await fetchQuote(chain, token.address, nativeUsd, preferred);
+        const quote = await fetchQuote(chain, token.address, nativeUsd);
         repo.markQuoteSuccess(token.id, quote);
         repo.recordSourceOk(SOURCE_ID);
         covered++;

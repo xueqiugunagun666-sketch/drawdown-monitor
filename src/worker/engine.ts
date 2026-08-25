@@ -34,12 +34,12 @@ export function processQuote(token: TokenRow, quote: TokenQuote): FiredAlert[] {
   // 1. 写入/更新当前 5m candle
   repo.upsertCandle(token.id, quote);
 
-  // 2. 主池同步。迁移的判定与日志在适配器里（它掌握全部池的流动性占比），
-  //    这里只负责记录选举时刻，供下一轮的 6 小时粘性判断
-  repo.syncPools(token.id, quote);
-  if (quote.primaryReelected) {
-    repo.updateTokenMeta(token.id, { primaryElectedAt: nowSec() });
+  // 2. 主池同步。换池了就提一句 —— 这本身是值得留意的信号，但不做特殊处理
+  const prevPrimary = repo.getPrimaryPoolAddress(token.id);
+  if (prevPrimary && prevPrimary !== quote.primaryPool.address) {
+    log.info(`${token.id} 主池已换: ${prevPrimary.slice(0, 12)} -> ${quote.primaryPool.address.slice(0, 12)} (${quote.primaryPool.dex})`);
   }
+  repo.syncPools(token.id, quote);
 
   // 2b. 汇总 5m -> 1h：all_time 读的是 1h 序列，回填只覆盖到回填那一刻，
   //     之后要靠实时数据滚动补齐，否则 all_time 会永远停在回填时的高点

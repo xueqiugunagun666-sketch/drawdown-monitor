@@ -136,23 +136,10 @@ async function fetchPairs(chain: ChainId, address: string): Promise<RawPair[]> {
  * @param nativeUsd 该链原生币的 USD 报价，用于按 §2.3 推导 priceNative；
  *                  缺失时 priceNative 为 null，**不得回退成 priceUsd**。
  */
-export interface PrimaryPreference {
-  /** 上一轮选定的主池地址 */
-  address: string;
-  /** 选举时刻，用于 6 小时粘性 */
-  electedAt: number;
-}
-
-/** §2.4：主池每 6 小时重选一次，避免流动性小幅波动导致频繁抖动 */
-const PRIMARY_STICKY_SECONDS = 6 * 3600;
-/** 主池流动性掉到全部池子的 50% 以下时立即切换 */
-const PRIMARY_MIN_SHARE = 0.5;
-
 export async function fetchQuote(
   chain: ChainId,
   address: string,
   nativeUsd: Decimal | null,
-  preferred?: PrimaryPreference | null,
 ): Promise<TokenQuote> {
   const raw = await fetchPairs(chain, address);
 
@@ -196,32 +183,9 @@ export async function fetchQuote(
     loggedOutliers.delete(tokenKey);
   }
 
-  // §2.4 主池粘性：沿用上一个主池，除非它已消失、变成离群池、
-  // 流动性占比跌破 50%，或已过 6 小时的重选周期
-  const best = sel.primary;
-  const nowTs = Math.floor(Date.now() / 1000);
-  const held = preferred
-    ? sel.clean.find((c) => c.raw.pairAddress === preferred.address)
-    : undefined;
-  const heldShare = held && sel.liquidityTotal > 0 ? held.liquidityUsd / sel.liquidityTotal : 0;
-  const stickyValid =
-    held !== undefined &&
-    heldShare >= PRIMARY_MIN_SHARE &&
-    nowTs - preferred!.electedAt < PRIMARY_STICKY_SECONDS;
-
-  const primary = stickyValid ? held! : best;
-  const primaryReelected = !stickyValid;
-  const previousPrimary =
-    preferred && preferred.address !== primary.raw.pairAddress ? preferred.address : null;
-
-  if (previousPrimary) {
-    const reason =
-      held === undefined ? '原主池已消失或被判为离群'
-      : heldShare < PRIMARY_MIN_SHARE ? `原主池流动性占比降至 ${(heldShare * 100).toFixed(0)}%`
-      : '已过 6 小时重选周期';
-    log.warn(`${chain}:${address} 主池迁移: ${previousPrimary.slice(0, 12)} -> ${primary.raw.pairAddress.slice(0, 12)}（${reason}）`);
-  }
-
+  // §2.4：主池 = 剔除离群后流动性最高的池。每轮直接取，不做粘性 ——
+  // 流动性接近的两个池价差约 0.15%，对 80% 的阈值没有影响。
+  const primary = sel.primary;
   const primaryRaw = primary.raw;
   const priceUsd = primary.priceUsd;
 
@@ -263,8 +227,6 @@ export async function fetchQuote(
     allPools: candidates.map(toPoolRef),
     medianPriceUsd: sel.medianPriceUsd,
     crossValidated: sel.crossValidated,
-    primaryReelected,
-    previousPrimary,
     fetchedAt: Math.floor(Date.now() / 1000),
     source: SOURCE_ID,
   };
