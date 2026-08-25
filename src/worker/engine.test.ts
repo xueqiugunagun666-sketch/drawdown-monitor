@@ -46,7 +46,7 @@ function quote(price: string, at: number, liquidity = 100_000): TokenQuote {
     chain: CHAIN, address: ADDR, symbol: 'TEST', name: 'Test',
     priceUsd: p, priceNative: null,
     liquidityPrimary: liquidity, liquidityTotal: liquidity,
-    fdvUsd: null,
+    fdvUsd: null, marketCapUsd: 1_234_567,
     volume: { m5: 5000, h1: 60000, h24: 1_000_000 },
     txns: { m5: { buys: 10, sells: 8 }, h1: { buys: 120, sells: 90 }, h24: { buys: 2000, sells: 1800 } },
     primaryPool: pool(poolAddrFor(ADDR), price, liquidity),

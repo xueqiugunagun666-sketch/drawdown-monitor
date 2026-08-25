@@ -95,7 +95,7 @@ export default async function TokenPage({
         {token.symbol ?? token.address.slice(0, 10)}
         <span className="ml-2 text-sm font-normal text-neutral-500">{token.chain}</span>
       </h1>
-      {token.note && <p className="text-sm text-neutral-500 mt-1">{token.note}</p>}
+      {token.note && <p className="text-sm text-amber-500/90 mt-1">{token.note}</p>}
       <p className="text-xs text-neutral-600 mt-1 break-all">{token.address}</p>
 
       <div className="flex flex-wrap gap-2 my-4 text-xs">

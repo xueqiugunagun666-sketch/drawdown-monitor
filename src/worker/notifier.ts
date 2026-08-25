@@ -49,6 +49,12 @@ function buildMessage(a: FiredAlert): string {
   }
   lines.push(`1h 成交   ${q.txns.h1.buys + q.txns.h1.sells} 笔 (买 ${q.txns.h1.buys} / 卖 ${q.txns.h1.sells})`);
   lines.push(`24h 量   $${Math.round(q.volume.h24).toLocaleString()}`);
+  // 市值优先用流通市值；数据源没给就退回 FDV，并标注清楚是哪个
+  if (q.marketCapUsd) {
+    lines.push(`市值     $${Math.round(q.marketCapUsd).toLocaleString()}`);
+  } else if (q.fdvUsd) {
+    lines.push(`FDV      $${Math.round(q.fdvUsd).toLocaleString()}  (无流通市值数据)`);
+  }
 
   const ratio = q.liquidityTotal > 0 ? q.liquidityPrimary / q.liquidityTotal : 1;
   if (ratio < 0.5) {
@@ -66,8 +72,9 @@ function buildMessage(a: FiredAlert): string {
     lines.push('');
     lines.push(`备注: ${a.token.note}`);
   }
+  // 合约地址单独一行，方便直接复制去别处查
   lines.push('');
-  lines.push(`https://dexscreener.com/${a.token.chain}/${q.primaryPool.address}`);
+  lines.push(`合约  ${a.token.address}`);
   return lines.join('\n');
 }
 

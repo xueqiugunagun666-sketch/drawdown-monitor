@@ -355,11 +355,24 @@ interface TokenQuote {
 |---|---|---|---|
 | P0 | DexScreener `/token-pairs/v1/{chainId}/{tokenAddress}` | **1 代币/次**，返回上限 30 pair；实测 >1000 req/min 无 429 | **主实时行情**：全部池 + 主池价 + `liquidity_primary/total` + txns/volume |
 | P1 | GeckoTerminal `/networks/{net}/tokens/multi/{addresses}` | 30 地址/次，**超 30 返回 HTTP 400**；实测限流 **5–8 req/min**（文档称 30） | 兜底 |
+| P0 | GMGN `/v1/market/token_kline` | 1000 根/次；实测**串行 ~100 req/min 零 429**；**限流按 IP 共享而非按 Key** | **OHLCV 回填主源**（比 GT 快 20 倍） |
 | P1 | GeckoTerminal `/networks/{net}/pools/{pool}/ohlcv/{tf}` | `limit` 上限 **1000**（=3.47 天 @5m）；时间戳为**秒**、**倒序**；`before_timestamp` 分页**边界包含**需去重；5m 实测可回溯 ≥180 天 | ATH 历史回填 |
 
 > **不要用 `/tokens/v1/{chainId}/{addresses}`**：每代币只返回 1 个 pair，且不是流动性最高的池（WIF 实测差 39 倍），无法用于 primary pool 定价或流动性聚合。
 >
 > **不要用 `/latest/dex/pairs/...`**：legacy 端点，实测大量返回 `{"pairs":null}`。
+
+**GMGN 实测要点**（文档与实际有出入，以实测为准）：
+
+- 只读接口**不需要签名**，但 query 必须带 `timestamp`（Unix 秒）与 `client_id`（UUID），
+  少任一个返回 401 `AUTH_INVALID`。签名只有下单类接口才要，本项目永不使用。
+- 翻页参数是 **`to`，单位毫秒**（文档写 "Unix seconds" 是错的，传秒返回空数组）；
+  `from` 被完全忽略。
+- **限流按 IP 共享，不按 Key**：实测把公共 Key 打爆后，同一 IP 上的个人 Key
+  立刻一起 429。因此多申请 Key 提速**无效**，只维护一个全局队列。
+- 触发限流后约 **292 秒**才恢复，退避必须是分钟级。
+- 字段陷阱：`volume` 是**美元金额**，`amount` 是**代币数量**，两者差若干数量级。
+- 与 DexScreener 交叉验证：三个代币价格比值 0.994–1.002，可安全混用。
 
 > **静默失效（实测，对应总则 4）**：DexScreener 两个端点均会**间歇性返回 `[]` 且 HTTP 200、无 error 字段**；`/tokens/v1` 超过 30 条结果时**静默丢弃**（请求 52 地址只回 30，丢 22 个不报错）。适配器必须按请求地址回映射并校验覆盖率，**空响应与缺失一律当作数据源失败上报，不得当作「无报价」**。
 | P2 | 链上直读（viem multicall / Solana RPC） | 需自备 RPC | 仅在前两者同时失效时启用 |

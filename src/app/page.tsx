@@ -140,7 +140,9 @@ export default function Home() {
                       {t.symbol ?? t.address.slice(0, 8)}
                     </Link>
                     <div className="text-xs text-neutral-500">{t.chain}</div>
-                    {t.note && <div className="text-xs text-neutral-600 max-w-[200px] mt-1">{t.note}</div>}
+                    {/* 备注用琥珀色：报警弹出来时最需要回忆的就是当初为什么关注它，
+                            混在灰字里会被忽略 */}
+                    {t.note && <div className="text-xs text-amber-500/90 max-w-[200px] mt-1">{t.note}</div>}
                     <TokenActions tokenId={t.id} symbol={t.symbol} note={t.note}
                       frozen={t.frozen === 1} enabled={t.enabled === 1} />
                   </td>

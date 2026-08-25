@@ -64,7 +64,7 @@ function fakeAlert(index: number): FiredAlert | null {
     symbol: token.symbol, name: token.name,
     priceUsd: price, priceNative: null,
     liquidityPrimary: primary.liquidityUsd ?? 0, liquidityTotal: liqTotal,
-    fdvUsd: null,
+    fdvUsd: null, marketCapUsd: null,   // dry-run 不编造市值，真实报警用数据源返回值
     volume: { m5: 0, h1: 0, h24: (last?.volumeUsd ?? 0) * 288 },
     txns: {
       m5: { buys: 0, sells: 0 },

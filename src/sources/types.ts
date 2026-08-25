@@ -42,6 +42,8 @@ export interface TokenQuote {
   /** 主要池合计（前 30 池），§2.4：min_liquidity_usd 门槛用这个 */
   liquidityTotal: number;
   fdvUsd: number | null;
+  /** 流通市值；DexScreener 的 marketCap，缺失时为 null（不拿 fdv 冒充） */
+  marketCapUsd: number | null;
   volume: { m5: number; h1: number; h24: number };
   txns: { m5: Txns; h1: Txns; h24: Txns };
   primaryPool: PoolRef;

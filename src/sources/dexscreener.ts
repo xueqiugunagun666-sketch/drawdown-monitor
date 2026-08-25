@@ -43,6 +43,7 @@ interface RawPair {
   volume?: Record<string, number>;
   txns?: Record<string, { buys?: number; sells?: number }>;
   fdv?: number;
+  marketCap?: number;
   pairCreatedAt?: number;
 }
 
@@ -213,6 +214,7 @@ export async function fetchQuote(
     liquidityPrimary: primary.liquidityUsd,
     liquidityTotal: sel.liquidityTotal,
     fdvUsd: primaryRaw.fdv ?? null,
+    marketCapUsd: primaryRaw.marketCap ?? null,
     volume: {
       m5: primaryRaw.volume?.['m5'] ?? 0,
       h1: primaryRaw.volume?.['h1'] ?? 0,

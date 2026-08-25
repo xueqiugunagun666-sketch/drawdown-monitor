@@ -28,13 +28,17 @@ export interface HttpResult {
   body: string;
 }
 
-export async function httpGet(url: string, timeoutMs = 15_000): Promise<HttpResult> {
+export async function httpGet(
+  url: string,
+  timeoutMs = 15_000,
+  extraHeaders?: Record<string, string>,
+): Promise<HttpResult> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await undiciFetch(url, {
       signal: ctrl.signal,
-      headers: { accept: 'application/json', 'user-agent': 'drawdown-monitor/0.1' },
+      headers: { accept: 'application/json', 'user-agent': 'drawdown-monitor/0.1', ...extraHeaders },
       ...(dispatcher ? { dispatcher } : {}),
     });
     return { status: res.status, body: await res.text() };

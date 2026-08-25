@@ -18,6 +18,7 @@ import { safeErrorMessage } from '../lib/mask.ts';
 import { nowSec } from '../lib/time.ts';
 import { priceToText, type Decimal } from '../lib/decimal.ts';
 import { fetchOHLCVPage, estimateRequests } from '../sources/geckoterminal.ts';
+import * as gmgn from '../sources/gmgn.ts';
 import { loadNativeSeries } from '../sources/nativeHistory.ts';
 import type { NativeSymbol } from '../sources/nativePrices.ts';
 import * as repo from '../db/repo.ts';
@@ -85,8 +86,9 @@ export async function runBackfillStep(): Promise<boolean> {
   try {
     // 续传：从已完成的最旧时刻继续往前翻
     const before = job.oldestDoneTs ?? undefined;
-    const page = await fetchOHLCVPage(
-      network, job.poolAddress, job.timeframe as Timeframe, token.address, before,
+    const { page, source } = await fetchPage(
+      token.chain as ChainId, token.address, network, job.poolAddress,
+      job.timeframe as Timeframe, before,
     );
 
     if (page.length === 0) {
@@ -156,7 +158,7 @@ export async function runBackfillStep(): Promise<boolean> {
     if (nativeFilled > 0) {
       log.debug(`${job.tokenId} ${job.timeframe} 补 native 计价 ${nativeFilled} 根`);
     }
-    repo.recordSourceOk('geckoterminal');
+    repo.recordSourceOk(source);
     return true;
   } catch (err) {
     const msg = safeErrorMessage(err);
@@ -166,6 +168,32 @@ export async function runBackfillStep(): Promise<boolean> {
     log.warn(`${job.tokenId} ${job.timeframe} 回填出错，将续传: ${msg}`);
     return true;
   }
+}
+
+/**
+ * 取一页 OHLCV：优先 GMGN（实测 ~100 req/min，比 GT 的 5 req/min 快 20 倍），
+ * 失败或未配置则回退 GeckoTerminal。
+ *
+ * 两个源的差异都在各自适配器里抹平了（时间戳单位、翻页参数、按代币地址取价），
+ * 这里只负责选谁。无论用哪个源，写库前都要过 §量级兜底校验 ——
+ * 不同源对同一个池的 base/quote 判定可能相反，那正是「牛来假报警」的成因。
+ */
+async function fetchPage(
+  chain: ChainId, tokenAddress: string, network: string, poolAddress: string,
+  timeframe: Timeframe, before?: number,
+): Promise<{ page: Awaited<ReturnType<typeof fetchOHLCVPage>>; source: string }> {
+  if (gmgn.isConfigured() && gmgn.supportsChain(chain)) {
+    try {
+      const page = await gmgn.fetchKlinePage(chain, tokenAddress, timeframe, before);
+      return { page, source: gmgn.SOURCE_ID };
+    } catch (err) {
+      // 回退必须留痕，否则「为什么突然变慢了」将无从查起
+      log.warn(`GMGN 取 ${chain}:${tokenAddress.slice(0, 10)} 失败，回退 GeckoTerminal: ${safeErrorMessage(err)}`);
+      repo.recordSourceFailure(gmgn.SOURCE_ID, 'http_error', safeErrorMessage(err));
+    }
+  }
+  const page = await fetchOHLCVPage(network, poolAddress, timeframe, tokenAddress, before);
+  return { page, source: 'geckoterminal' };
 }
 
 /** 回填数据允许与实时价相差的最大倍数。真实波动远不到这个量级，
