@@ -1,0 +1,28 @@
+# 由 install.sh 把 __DOMAIN__ 替换成真实域名后写入 /etc/caddy/Caddyfile。
+#
+# 不用 {$ENV} 占位符 —— 官方 Caddy 的 systemd 服务不读 /etc/default/caddy，
+# 变量会展开成空串导致配置非法。直接替换最稳。
+
+__DOMAIN__ {
+	encode zstd gzip
+
+	# 应用只监听回环，公网流量全部经这里
+	# header_up 是 reverse_proxy 的子指令，必须写在它的花括号里
+	reverse_proxy 127.0.0.1:3000 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	log {
+		output file /var/log/caddy/drawdown.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}

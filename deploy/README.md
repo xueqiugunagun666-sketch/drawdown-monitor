@@ -70,6 +70,25 @@ chown drawdown:drawdown data/monitor.db
 systemctl start drawdown-worker drawdown-web
 ```
 
+## Caddy 起不来时
+
+```bash
+systemctl status caddy --no-pager -l
+caddy validate --config /etc/caddy/Caddyfile
+journalctl -u caddy -n 50 --no-pager
+```
+
+常见原因：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `control process exited` | Caddyfile 语法错 | `caddy validate` 会指出具体行 |
+| 证书签发一直失败 | 域名没解析到本机，或 80 端口没放通 | `getent hosts 你的域名` 对比 `curl https://api.ipify.org` |
+| `address already in use` | 80/443 被别的服务占了 | `ss -lntp | grep -E ':80|:443'` |
+
+DuckDNS 改完 IP 后解析生效通常要一两分钟，期间 Caddy 会签证书失败。
+生效后执行 `systemctl restart caddy` 即可，不必重跑安装脚本。
+
 ## 端口与防火墙
 
 只需放通 **80** 和 **443**（Caddy 用）。应用本身监听 `127.0.0.1:3000`，

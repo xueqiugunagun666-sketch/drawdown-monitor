@@ -122,14 +122,31 @@ ENVEOF
 fi
 
 step "配置访问域名"
-if [ -f /etc/default/caddy ] && grep -q DRAWDOWN_DOMAIN /etc/default/caddy; then
-  grn "  已配置：$(grep DRAWDOWN_DOMAIN /etc/default/caddy | cut -d= -f2)"
+DOMAIN_FILE=/etc/drawdown-domain
+if [ -f "$DOMAIN_FILE" ]; then
+  DOMAIN=$(cat "$DOMAIN_FILE")
+  grn "  已配置：$DOMAIN"
 else
   echo "  没有域名的话，去 https://www.duckdns.org 免费注册一个（用 GitHub 登录即可），"
   echo "  建一个子域名并把 IP 填成本机公网 IP，然后在这里填 你的名字.duckdns.org"
   read -rp "  域名: " DOMAIN
   [ -n "$DOMAIN" ] || { red "  域名不能为空"; exit 1; }
-  echo "DRAWDOWN_DOMAIN=${DOMAIN}" >> /etc/default/caddy
+  echo "$DOMAIN" > "$DOMAIN_FILE"
+fi
+
+# 证书签发走 HTTP-01，需要域名已解析到本机且 80 端口可达。
+# 先自查，免得 Caddy 反复失败还不知道为什么。
+step "检查域名解析"
+RESOLVED=$(getent hosts "$DOMAIN" | awk '{print $1}' | head -1 || true)
+MYIP=$(curl -s --max-time 10 https://api.ipify.org || true)
+echo "  $DOMAIN 解析到: ${RESOLVED:-（解析不到）}"
+echo "  本机公网 IP:   ${MYIP:-（查不到）}"
+if [ -z "$RESOLVED" ]; then
+  ylw "  域名还解析不到 —— DuckDNS 那边可能刚改还没生效。"
+  ylw "  可以继续装，但 Caddy 签证书会失败；解析生效后执行 systemctl restart caddy 即可。"
+elif [ -n "$MYIP" ] && [ "$RESOLVED" != "$MYIP" ]; then
+  ylw "  解析地址与本机公网 IP 不一致 —— 证书会签发失败。"
+  ylw "  去 DuckDNS 把 IP 改成 $MYIP，然后 systemctl restart caddy。"
 fi
 
 # ---------------------------------------------------------------- 构建
@@ -145,7 +162,14 @@ cp "$APP_DIR/deploy/drawdown-worker.service" /etc/systemd/system/
 cp "$APP_DIR/deploy/drawdown-web.service"    /etc/systemd/system/
 cp "$APP_DIR/deploy/drawdown-backup.service" /etc/systemd/system/
 cp "$APP_DIR/deploy/drawdown-backup.timer"   /etc/systemd/system/
-cp "$APP_DIR/deploy/Caddyfile" /etc/caddy/Caddyfile
+# 把域名直接替换进 Caddyfile，不依赖环境变量
+sed "s|__DOMAIN__|${DOMAIN}|g" "$APP_DIR/deploy/Caddyfile.template" > /etc/caddy/Caddyfile
+if ! caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
+  red "  Caddyfile 校验未通过："
+  caddy validate --config /etc/caddy/Caddyfile 2>&1 | sed 's/^/    /' | tail -20
+  exit 1
+fi
+grn "  Caddyfile 校验通过"
 systemctl daemon-reload
 systemctl enable --now drawdown-worker drawdown-web drawdown-backup.timer >/dev/null
 systemctl restart caddy
@@ -157,11 +181,10 @@ for s in drawdown-worker drawdown-web caddy; do
   if systemctl is-active --quiet "$s"; then grn "  $s  运行中"; else red "  $s  未运行 —— journalctl -u $s -n 50"; fi
 done
 
-DOMAIN_VAL=$(grep DRAWDOWN_DOMAIN /etc/default/caddy | cut -d= -f2)
 echo
 grn "部署完成"
 echo
-echo "  访问：https://${DOMAIN_VAL}"
+echo "  访问：https://${DOMAIN}"
 echo "  登录口令在 ${APP_DIR}/.env 里的 ACCESS_TOKEN"
 echo
 echo "常用命令："
