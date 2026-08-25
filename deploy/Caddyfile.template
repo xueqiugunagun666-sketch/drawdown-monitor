@@ -6,11 +6,10 @@
 __DOMAIN__ {
 	encode zstd gzip
 
-	# 应用只监听回环，公网流量全部经这里
-	# header_up 是 reverse_proxy 的子指令，必须写在它的花括号里
-	reverse_proxy 127.0.0.1:3000 {
-		header_up X-Real-IP {remote_host}
-	}
+	# 应用只监听回环，公网流量全部经这里。
+	# reverse_proxy 会自动带上 X-Forwarded-For，登录限流按 IP 算就靠它，
+	# 不需要再手写 header_up（少一行就少一处能写错的地方）。
+	reverse_proxy 127.0.0.1:3000
 
 	header {
 		Strict-Transport-Security "max-age=31536000"
