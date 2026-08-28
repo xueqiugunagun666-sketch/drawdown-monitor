@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   symbol TEXT, name TEXT, decimals INTEGER, added_at INTEGER NOT NULL,
   note TEXT, tags TEXT, frozen INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
   last_source TEXT, last_quote_at INTEGER, primary_elected_at INTEGER,
+  pinned INTEGER NOT NULL DEFAULT 0,
   fail_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS pools (
@@ -108,6 +109,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['candles', 'market_cap_usd', 'REAL'],
   ['ath_state', 'ath_market_cap', 'REAL'],
   ['tokens', 'created_by', 'TEXT'],
+  ['tokens', 'pinned', 'INTEGER NOT NULL DEFAULT 0'],
   ['candles', 'source', 'TEXT'],
   ['ath_state', 'vol_h1_at_ath', 'REAL'],
   ['ath_state', 'ath_confidence', 'TEXT'],

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import Sparkline from './Sparkline.tsx';
 import TokenActions from './TokenActions.tsx';
+import PinButton from './PinButton.tsx';
 import { severityClass, severityBar } from '../lib/severity.ts';
 
 export interface RowData {
@@ -14,6 +15,7 @@ export interface RowData {
   frozen: boolean;
   enabled: boolean;
   isStale: boolean;
+  pinned: boolean;
   state: string;
   price: string | null;
   dd: number | null;
@@ -45,8 +47,11 @@ export default function TokenRow({ r }: { r: RowData }) {
   const dim = r.frozen || !r.enabled;
 
   return (
-    <div className={`group relative rounded-lg border border-neutral-900 bg-neutral-950/60
-                     hover:border-neutral-800 transition-colors ${dim ? 'opacity-50' : ''}`}>
+    <div className={`group relative rounded-lg border transition-colors ${
+      r.pinned
+        ? 'border-[#fab219]/30 bg-[#fab219]/[0.04] hover:border-[#fab219]/50'
+        : 'border-neutral-900 bg-neutral-950/60 hover:border-neutral-800'
+    } ${dim ? 'opacity-50' : ''}`}>
       {/* 严重度色条：数字之外的第二重编码，颜色不单独承载信息 */}
       <div className={`absolute left-0 top-3 bottom-3 w-[3px] rounded-full ${severityBar(r.dd)}`} />
 
@@ -54,6 +59,7 @@ export default function TokenRow({ r }: { r: RowData }) {
         {/* 代币 */}
         <div className="col-span-12 md:col-span-3 min-w-0">
           <div className="flex items-baseline gap-2">
+            <PinButton tokenId={r.id} pinned={r.pinned} />
             <Link href={`/token/${encodeURIComponent(r.id)}`}
               className="font-medium hover:text-sky-400 truncate">
               {r.symbol ?? r.id.slice(0, 10)}

@@ -51,6 +51,8 @@
 | `src/lib/timezone.ts` | 时区换算（日历用），**纯函数** |
 | `src/lib/eventInput.ts` | 日程输入校验，**纯函数** |
 | `src/worker/reminders.ts` | 日程提醒 |
+| `src/components/TokenRow.tsx` | 看板行（走势图、严重度配色、置顶） |
+| `src/lib/severity.ts` | 回撤严重度配色（三档） |
 | `src/db/repo.ts` | 全部 SQL |
 
 标了「纯函数」的都有对应 `.test.ts`，改逻辑先看测试。
@@ -124,6 +126,8 @@
 | 图表在 fetch 之后才创建 | StrictMode 双挂载留下两个实例，代码握着的是已分离那个，所有 API 调用变空操作 | 同步建图、异步只喂数据 |
 | 90 天视图取了全部 1h candle（实际 146 天） | 更早的高点把价格轴撑坏 | 按模式窗口裁剪；显示粒度与计算粒度分离 |
 | 回撤为负时显示 `--1%` | `ath_robust` 是第 k 高 close，现价可能高于它 | 负值显示 `+X%` |
+| Tailwind `content` 只扫 `src/app` 与 `src/components` | `src/lib/severity.ts` 里的 `text-[#fab219]` 被当作未使用**清除掉**，颜色静默失效 | `content` 改为 `./src/**/*.{ts,tsx}` |
+| 导航在窄屏折行 | 「加币」被拆成上下两个字 | 横向滚动 + `whitespace-nowrap shrink-0` |
 
 ---
 

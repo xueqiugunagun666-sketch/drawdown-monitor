@@ -24,6 +24,7 @@ export const tokens = sqliteTable('tokens', {
   primaryElectedAt: integer('primary_elected_at'),
   failCount: integer('fail_count').default(0).notNull(),
   createdBy: text('created_by'),          // 谁加的（署名，非身份）
+  pinned: integer('pinned').default(0).notNull(),   // 置顶高亮，与跌幅无关
 });
 
 export const pools = sqliteTable('pools', {

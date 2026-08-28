@@ -12,7 +12,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   const tokenId = decodeURIComponent(id);
   if (!repo.getToken(tokenId)) return NextResponse.json({ error: '代币不存在' }, { status: 404 });
 
-  let body: { note?: string; enabled?: boolean; frozen?: boolean; tags?: string[] };
+  let body: { note?: string; enabled?: boolean; frozen?: boolean; tags?: string[]; pinned?: boolean };
   try { body = await req.json(); } catch { return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 }); }
 
   const patch: Record<string, unknown> = {};
@@ -24,6 +24,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   }
   if (body.enabled !== undefined) patch.enabled = body.enabled ? 1 : 0;
   if (body.frozen !== undefined) patch.frozen = body.frozen ? 1 : 0;
+  if (body.pinned !== undefined) patch.pinned = body.pinned ? 1 : 0;
   if (body.tags !== undefined) patch.tags = JSON.stringify(body.tags);
 
   if (Object.keys(patch).length === 0) return NextResponse.json({ error: '没有要修改的字段' }, { status: 400 });

@@ -14,7 +14,10 @@ const MODE_LABEL: Record<AthMode, string> = {
   rolling_90d: '90 天', since_added: '加入以来', all_time: '全历史',
 };
 
-export default function Home() {
+export default async function Home({
+  searchParams,
+}: { searchParams: Promise<{ pinned?: string }> }) {
+  const onlyPinned = (await searchParams).pinned === '1';
   const cfg = getConfig();
   const tokens = repo.listAllTokens();
   const lastRun = repo.getLastPollRun();
@@ -58,7 +61,7 @@ export default function Home() {
 
     return {
       id: t.id, symbol: t.symbol, chain: t.chain, note: t.note, createdBy: t.createdBy,
-      frozen: t.frozen === 1, enabled: t.enabled === 1,
+      frozen: t.frozen === 1, enabled: t.enabled === 1, pinned: t.pinned === 1,
       isStale: t.enabled === 1 && t.frozen === 0 && (t.lastQuoteAt === null || t.lastQuoteAt < staleCutoff),
       state: repo.getAlertState(t.id, 'default', levels[0] ?? 80).state,
       price: price ? `$${formatPrice(price, 6)}` : null,
@@ -74,10 +77,17 @@ export default function Home() {
       spark: repo.sparklinePoints(t.id, sinceTs),
       modes: modes.map((m) => ({ label: m.label, value: m.value, dd: m.dd, partial: m.partial })),
     };
-  }).sort((a, b) => (b.dd ?? -1) - (a.dd ?? -1));
+  }).sort((a, b) => {
+    // 置顶的排最前 —— 盯着但还没跌的币，按跌幅排会沉到底下看不见。
+    // 各组内部仍按跌幅降序，置顶不改变组内的判断顺序。
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return (b.dd ?? -1) - (a.dd ?? -1);
+  });
 
   const staleCount = rows.filter((r) => r.isStale).length;
   const firedCount = rows.filter((r) => r.state === 'FIRED').length;
+  const pinnedCount = rows.filter((r) => r.pinned).length;
+  const shown = onlyPinned ? rows.filter((r) => r.pinned) : rows;
 
   const stat = (label: string, value: string, tone = '') => (
     <div className="px-2 md:px-3 py-2 rounded-lg bg-neutral-900/60 border border-neutral-900">
@@ -130,6 +140,20 @@ export default function Home() {
         </div>
       )}
 
+      {pinnedCount > 0 && (
+        <div className="flex items-center gap-2 mb-3 text-xs">
+          <Link href={onlyPinned ? '/' : '/?pinned=1'}
+            className={`px-2.5 py-1 rounded-md border transition-colors ${
+              onlyPinned
+                ? 'border-[#fab219]/40 bg-[#fab219]/10 text-[#fab219]'
+                : 'border-neutral-800 text-neutral-500 hover:text-neutral-300'
+            }`}>
+            {onlyPinned ? `只看置顶 (${pinnedCount})` : `只看置顶 (${pinnedCount})`}
+          </Link>
+          <span className="text-neutral-700">置顶的币排在最前，与跌幅无关</span>
+        </div>
+      )}
+
       {tokens.length === 0 ? (
         <div className="rounded-lg border border-dashed border-neutral-800 p-10 text-center">
           <p className="text-sm text-neutral-500">清单为空</p>
@@ -137,7 +161,7 @@ export default function Home() {
         </div>
       ) : (
         <div className="space-y-1.5">
-          {rows.map((r) => <TokenRow key={r.id} r={r} />)}
+          {shown.map((r) => <TokenRow key={r.id} r={r} />)}
         </div>
       )}
     </main>
