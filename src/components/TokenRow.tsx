@@ -47,13 +47,23 @@ export default function TokenRow({ r }: { r: RowData }) {
   const dim = r.frozen || !r.enabled;
 
   return (
-    <div className={`group relative rounded-lg border transition-colors ${
+    <div className={`group relative rounded-lg border transition-colors overflow-hidden ${
       r.pinned
-        ? 'border-[#fab219]/30 bg-[#fab219]/[0.04] hover:border-[#fab219]/50'
+        // 置顶用**亮度**而非色相：色相位已被严重度(黄/红)与走势线(蓝)占满，
+        // 再塞一个色进去要么撞色、要么被误读成数据状态。
+        // 提亮表面 + 亮中性边框，是深色界面上最不含糊的「这行被标记了」。
+        // 用实色而非半透明：半透明叠在近黑底(rgb 10)上会被吃掉大半，
+        // neutral-800/50 合成后只有 rgb 24，与底色对比度仅 1.15:1，读不出来。
+        // #333 合成后约 1.6:1，配上亮边框才是清晰的「已标记」。
+        ? 'border-neutral-500 bg-[#333333]'
         : 'border-neutral-900 bg-neutral-950/60 hover:border-neutral-800'
     } ${dim ? 'opacity-50' : ''}`}>
-      {/* 严重度色条：数字之外的第二重编码，颜色不单独承载信息 */}
-      <div className={`absolute left-0 top-3 bottom-3 w-[3px] rounded-full ${severityBar(r.dd)}`} />
+      {/* 左缘：置顶时让位给置顶标识。
+          严重度本来就由数字颜色表达了，这条色带是重复编码，
+          让给二元的「是否置顶」是更好的用途 —— 边缘标记天生适合二元状态。 */}
+      {r.pinned
+        ? <div className="absolute left-0 top-0 bottom-0 w-1 bg-neutral-100" />
+        : <div className={`absolute left-0 top-3 bottom-3 w-[3px] rounded-full ${severityBar(r.dd)}`} />}
 
       <div className="pl-4 pr-3 py-3 grid grid-cols-12 gap-3 items-center">
         {/* 代币 */}

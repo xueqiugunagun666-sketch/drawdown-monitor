@@ -145,7 +145,7 @@ export default async function Home({
           <Link href={onlyPinned ? '/' : '/?pinned=1'}
             className={`px-2.5 py-1 rounded-md border transition-colors ${
               onlyPinned
-                ? 'border-[#fab219]/40 bg-[#fab219]/10 text-[#fab219]'
+                ? 'border-neutral-500 bg-neutral-800 text-neutral-100'
                 : 'border-neutral-800 text-neutral-500 hover:text-neutral-300'
             }`}>
             {onlyPinned ? `只看置顶 (${pinnedCount})` : `只看置顶 (${pinnedCount})`}

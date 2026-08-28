@@ -34,9 +34,11 @@ export default function PinButton({ tokenId, pinned }: { tokenId: string; pinned
       aria-label={on ? '取消置顶' : '置顶高亮'}
       aria-pressed={on}
       className={`shrink-0 transition-colors disabled:opacity-50 ${
-        on ? 'text-[#fab219]' : 'text-neutral-700 hover:text-neutral-500'
+        // 不用琥珀色 —— 那是「回撤 50-80%」的警示色，
+        // 同一个颜色承载两种含义会让人读错
+        on ? 'text-neutral-100' : 'text-neutral-700 hover:text-neutral-400'
       }`}>
-      <svg width="14" height="14" viewBox="0 0 24 24"
+      <svg width={on ? 15 : 13} height={on ? 15 : 13} viewBox="0 0 24 24"
         fill={on ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2"
         strokeLinejoin="round">
         <path d="M12 2.5l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3-5.8 3 1.1-6.5L2.6 9.3l6.5-.9z" />
