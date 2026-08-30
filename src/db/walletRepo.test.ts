@@ -213,3 +213,49 @@ test('钱包 candle：极小价格不丢精度', () => {
   const row = db.prepare(`SELECT o FROM candles WHERE token_id=?`).get(id) as { o: string };
   assert.equal(row.o, '0.000000000001234');
 });
+
+test('同一地址跨多链各建一行，扫描水位互不干扰', () => {
+  const u = wr.createUser(`multi${++seq}`, 'h')!;
+  const addr = '0xmultichain';
+  const ids: string[] = [];
+  for (const c of ['ethereum', 'bsc', 'base', 'robinhood']) {
+    const w = wr.addWallet(u.id, c, addr, '我的钱包');
+    assert.ok(w, `${c} 应能添加`);
+    ids.push(w.id);
+  }
+  assert.equal(wr.listWallets(u.id).length, 4);
+
+  // 各链水位独立
+  wr.updateWalletScanState(ids[0]!, 111, 100, null);
+  wr.updateWalletScanState(ids[1]!, 222, 100, null);
+  const rows = wr.listWallets(u.id);
+  assert.equal(rows.find((r) => r.chain === 'ethereum')?.lastScannedBlock, 111);
+  assert.equal(rows.find((r) => r.chain === 'bsc')?.lastScannedBlock, 222);
+  assert.equal(rows.find((r) => r.chain === 'base')?.lastScannedBlock, null);
+});
+
+test('按地址删除会带走该地址在所有链上的行', () => {
+  const u = wr.createUser(`rmall${++seq}`, 'h')!;
+  const addr = '0xremoveall';
+  for (const c of ['ethereum', 'bsc', 'base']) wr.addWallet(u.id, c, addr, null);
+  wr.addWallet(u.id, 'bsc', '0xkeepthis', null);
+  assert.equal(wr.listWallets(u.id).length, 4);
+
+  assert.equal(wr.removeWalletByAddress(u.id, addr), 3);
+  const left = wr.listWallets(u.id);
+  assert.equal(left.length, 1);
+  assert.equal(left[0]?.address, '0xkeepthis');
+});
+
+test('按地址删除删不掉别人的', () => {
+  const a = wr.createUser(`rma${++seq}`, 'h')!, b = wr.createUser(`rmb${++seq}`, 'h')!;
+  wr.addWallet(b.id, 'bsc', '0xbobaddr', null);
+  assert.equal(wr.removeWalletByAddress(a.id, '0xbobaddr'), 0);
+  assert.equal(wr.listWallets(b.id).length, 1);
+});
+
+test('地址大小写归一 —— 同一地址不同写法不该建出两组', () => {
+  const u = wr.createUser(`case${++seq}`, 'h')!;
+  assert.ok(wr.addWallet(u.id, 'bsc', '0xAbCdEf0123', null));
+  assert.equal(wr.addWallet(u.id, 'bsc', '0xabcdef0123', null), null, '大小写不同也算重复');
+});

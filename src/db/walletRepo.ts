@@ -237,3 +237,15 @@ export function allHoldingTokenIds(): string[] {
     .all()
     .map((r) => r.tokenId);
 }
+
+/**
+ * 按地址删除该用户在**所有链**上的这个钱包。返回删掉的行数。
+ *
+ * 界面上一个地址是一张卡（跨四条链），删除自然也该是整组删。
+ * user_id 必须在 WHERE 里 —— 少了它就是任意用户删任意钱包。
+ */
+export function removeWalletByAddress(userId: string, address: string): number {
+  return getDb().delete(wallets)
+    .where(and(eq(wallets.userId, userId), eq(wallets.address, address.toLowerCase())))
+    .run().changes;
+}
