@@ -86,15 +86,27 @@ drpc 返回 `not available on free plan`），需要额外申请带 key 的服�
 
 ### 5.3 读余额
 
-对发现的代币合约批量 `balanceOf`，用 Multicall3
-（标准地址 `0xcA11bde05977b3631167028862bE2a173976CA11`）打包成单次请求。
+对发现的代币合约读 `balanceOf`，用 **JSON-RPC 批量请求**（一个 HTTP 请求里发一个
+调用数组），不用 Multicall3。
 
-**实现前必须先验证 Multicall3 在每条链上确实已部署** —— 对该地址做一次
-`eth_getCode`，返回空就说明没有。Robinhood 链是新链，很可能没部署。
-没有的话退回逐个 `eth_call`，代币数量本来就不多（实测那个地址 30 个），
-成本可以接受。不要假设它存在。
+实测已验证：BSC 上一次批量发三个 `eth_call`，WBNB 余额、CAKE 余额、WBNB decimals
+全部正确返回。调用数据是手写的 4 字节选择器加 32 字节左补零地址：
+
+```
+balanceOf(address) = 0x70a08231 + 地址左补零到 32 字节
+decimals()         = 0x313ce567
+```
+
+**为什么不用 Multicall3**：它需要对 `(address,bool,bytes)[]` 这种嵌套动态类型做
+ABI 编码，项目里没有 viem/ethers，手写容易错；引入编码库又是新依赖。
+JSON-RPC 批量拿到了同样的"一次往返读很多个"的收益，代价是十行代码，
+而且不依赖任何合约在链上部署——Robinhood 这种新链本来就未必有 Multicall3。
+
+每批 50 个调用，超出就分批。
+
 余额是 uint256，**全程按十进制字符串处理**，配合 `decimals` 换算成人类数量时
-用 Decimal，不经过 Number。
+用 Decimal，不经过 Number（`Number` 在 2^53 就失真，而 18 位小数的代币余额
+轻易超过它）。
 
 ### 5.4 频率
 
