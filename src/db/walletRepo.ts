@@ -220,3 +220,20 @@ export function upsertWalletCandle(
      WHERE token_id = ? AND timeframe = '5m' AND ts = ?`,
   ).run(hi.toString(), lo.toString(), priceUsd, liquidityUsd, tokenId, ts);
 }
+
+/**
+ * 全部持仓的 token_id（跨用户去重），供引擎做过滤判定。
+ *
+ * 与 monitoredTokenIds 的区别很关键：引擎必须对**全部**持仓跑过滤，
+ * 只取已监控的会死锁 —— 新持仓写入时 monitored=0，若引擎只看
+ * monitored=1，过滤层永远不执行，币永远不会被提升为监控中。
+ *
+ * decimals 未知的排除掉：无法换算数量，判定没有意义。
+ */
+export function allHoldingTokenIds(): string[] {
+  return getDb().selectDistinct({ tokenId: holdings.tokenId })
+    .from(holdings)
+    .where(sql`${holdings.decimals} IS NOT NULL`)
+    .all()
+    .map((r) => r.tokenId);
+}

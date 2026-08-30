@@ -6,6 +6,7 @@ const LINKS: Array<[href: string, label: string]> = [
   ['/add', '加币'],
   ['/calendar', '日历'],
   ['/alerts', '报警'],
+  ['/wallet', '钱包'],
   ['/settings', '设置'],
 ];
 

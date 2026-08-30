@@ -92,7 +92,11 @@ function load5mCandles(tokenId: string, sinceTs: number) {
 }
 
 export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): Promise<void> {
-  const tokenIds = wr.monitoredTokenIds();
+  // 必须取**全部**持仓而不是只取已监控的：新持仓写入时 monitored=0，
+  // 只看 monitored=1 会死锁 —— 过滤层永远不执行，币永远不会被提升。
+  // 要判断一个币够不够格，本来就得先拿到它的流动性与成交量，也就是先取报价。
+  // 成本可接受：批量接口一次 30 个地址，450 个币也只要 15 次请求。
+  const tokenIds = wr.allHoldingTokenIds();
   if (tokenIds.length === 0) return;
 
   // 按链分组，每条链一次批量报价

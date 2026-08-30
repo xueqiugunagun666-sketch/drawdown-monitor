@@ -246,3 +246,47 @@ test('已有充足历史的币不重复回填', async () => {
   });
   assert.equal(calls, 0, '历史够了就不该再请求 GMGN');
 });
+
+test('回归：新扫到的币（monitored=0）能被过滤层提升为监控中', async () => {
+  // 曾经的死锁：引擎只取 monitored=1 的币，而新持仓写入时 monitored=0，
+  // 于是过滤层永远不执行，币永远不会被提升 —— 整个功能一条报警都不会产生。
+  // 实机跑出来才发现：33 条持仓、0 个监控中、0 个 filter_reason
+  const id = 'bsc:0xpromote';
+  const u = wr.createUser(`promo${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xpw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);   // 默认 monitored=0
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 0, '前提：新持仓默认不监控');
+
+  await runPumpTick(NOW, deps({ '0xpromote': { priceUsd: '1', liquidityUsd: 50000, volume24hUsd: 99999 } }));
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1, '达标的币必须被提升');
+});
+
+test('回归：不达标的新币被明确标注原因，而不是静默留在 0', async () => {
+  const id = 'bsc:0xdust';
+  const u = wr.createUser(`dust${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xdw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+
+  await runPumpTick(NOW, deps({ '0xdust': { priceUsd: '1', liquidityUsd: 10, volume24hUsd: 5 } }));
+  const h = wr.listHoldingsByWallet(w.id)[0]!;
+  assert.equal(h.monitored, 0);
+  assert.match(h.filterReason ?? '', /流动性/, '必须说明为什么没进监控');
+});
+
+test('回归：报价缺失的新币保持未监控，且写明原因', async () => {
+  const u = wr.createUser(`noq${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xnq${seq}`, null)!;
+  wr.upsertHolding(w.id, 'bsc:0xnoquote', '1000', 18, 100);
+  await runPumpTick(NOW, deps({}));
+  const h = wr.listHoldingsByWallet(w.id)[0]!;
+  assert.equal(h.monitored, 0);
+  assert.match(h.filterReason ?? '', /报价缺失/);
+});
+
+test('decimals 未知的币不参与判定 —— 无法换算数量', async () => {
+  const u = wr.createUser(`nod${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xnd${seq}`, null)!;
+  wr.upsertHolding(w.id, 'bsc:0xnodecimals', '1000', null, 100);
+  await runPumpTick(NOW, deps({ '0xnodecimals': { priceUsd: '1' } }));
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 0);
+});
