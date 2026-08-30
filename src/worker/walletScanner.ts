@@ -108,8 +108,21 @@ export async function scanWallet(
   }
 }
 
+/**
+ * 这个钱包该扫了吗？
+ *
+ * 按钱包各自的上次扫描时间判断，而不是让整个循环同步推进 ——
+ * 否则刚加的钱包最长要等满一轮（12 分钟）才动，这期间页面上什么都没有，
+ * 用户不知道是不是坏了。从未扫过的立刻扫。
+ */
+export function isScanDue(w: wr.WalletRow, now: number): boolean {
+  if (w.lastScanAt === null) return true;
+  return now - w.lastScanAt >= SCAN_INTERVAL_SECONDS;
+}
+
 export async function scanAllWallets(now: number, deps: ScanDeps = realDeps): Promise<void> {
   for (const w of wr.listAllEnabledWallets()) {
+    if (!isScanDue(w, now)) continue;
     await scanWallet(w, now, deps);
   }
 }

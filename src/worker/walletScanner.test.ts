@@ -4,7 +4,7 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { runMigrations } from '../db/migrate.ts';
 import * as wr from '../db/walletRepo.ts';
-import { scanWallet, type ScanDeps } from './walletScanner.ts';
+import { scanWallet, isScanDue, SCAN_INTERVAL_SECONDS, type ScanDeps } from './walletScanner.ts';
 
 before(() => { runMigrations(); });
 
@@ -132,4 +132,32 @@ test('不支持的链跳过且不报错', async () => {
   await scanWallet(w, 500, deps());
   const after = wr.listWallets(u.id)[0]!;
   assert.match(after.lastScanError ?? '', /不支持|solana/i);
+});
+
+test('新加的钱包（从未扫过）会被立刻选中，不用等满一轮', async () => {
+  // 循环 12 分钟一轮，若不区分新旧，刚加的钱包最长要等 12 分钟才动，
+  // 这期间页面上什么都没有，用户不知道是不是坏了
+  const u = wr.createUser(`due${++seq}`, 'h')!;
+  wr.addWallet(u.id, 'bsc', `0xdue${seq}`, null);
+  const w = wr.listWallets(u.id)[0]!;
+  assert.equal(w.lastScanAt, null);
+  assert.equal(isScanDue(w, 1000), true, '从未扫过的必须立刻扫');
+});
+
+test('刚扫过的钱包不会被重复扫', async () => {
+  const u = wr.createUser(`due2${++seq}`, 'h')!;
+  const added = wr.addWallet(u.id, 'bsc', `0xdue2${seq}`, null)!;
+  wr.updateWalletScanState(added.id, 100, 1000, null);
+  const w = wr.listWallets(u.id)[0]!;
+  assert.equal(isScanDue(w, 1000 + 60), false, '刚扫过的不该再扫');
+  assert.equal(isScanDue(w, 1000 + SCAN_INTERVAL_SECONDS), true, '满一轮才该再扫');
+});
+
+test('上次扫描失败的钱包按正常间隔重试，不做退避风暴', async () => {
+  const u = wr.createUser(`due3${++seq}`, 'h')!;
+  const added = wr.addWallet(u.id, 'bsc', `0xdue3${seq}`, null)!;
+  wr.updateWalletScanState(added.id, null, 1000, '节点超时');
+  const w = wr.listWallets(u.id)[0]!;
+  assert.equal(isScanDue(w, 1000 + 60), false);
+  assert.equal(isScanDue(w, 1000 + SCAN_INTERVAL_SECONDS), true);
 });

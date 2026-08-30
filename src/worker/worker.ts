@@ -122,7 +122,10 @@ async function main(): Promise<void> {
       } catch (err) {
         log.exception('钱包扫描轮次异常', err);
       }
-      await new Promise((r) => setTimeout(r, SCAN_INTERVAL_SECONDS * 1000));
+      // 每分钟检查一次，由 isScanDue 决定谁真的该扫。
+      // 循环周期不等于扫描间隔 —— 这样新加的钱包一分钟内就被捞起来，
+      // 而已扫过的仍然按 SCAN_INTERVAL_SECONDS 的节奏走
+      await new Promise((r) => setTimeout(r, 60_000));
     }
   };
   void walletScanLoop();
