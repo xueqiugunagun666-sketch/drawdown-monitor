@@ -61,11 +61,15 @@ function Multiple({ best }: { best: HoldingRow['best'] }) {
   );
 }
 
-function Row({ h }: { h: HoldingRow }) {
+function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
   return (
-    <li className={`rounded border px-3 py-2 ${
-      h.monitored ? 'border-neutral-900 bg-neutral-950/60' : 'border-neutral-900/60 bg-neutral-950/30'
-    }`}>
+    <li id={`holding-${h.tokenId}`}
+      className={`rounded border px-3 py-2 scroll-mt-4 ${
+        // 刚报过警的行要一眼认出来 —— 用户是听到播报才来看的
+        alerted ? 'border-[#3fbf7f] bg-[#3fbf7f]/10'
+        : h.monitored ? 'border-neutral-900 bg-neutral-950/60'
+        : 'border-neutral-900/60 bg-neutral-950/30'
+      }`}>
       <div className="flex items-baseline gap-2">
         <span className={`font-medium ${h.monitored ? 'text-neutral-200' : 'text-neutral-500'}`}>
           {h.symbol ?? '未知代币'}
@@ -98,13 +102,20 @@ function Row({ h }: { h: HoldingRow }) {
   );
 }
 
-export default function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) {
+export default function HoldingsTable(
+  { holdings, alertedTokenIds = [] }: { holdings: HoldingRow[]; alertedTokenIds?: string[] },
+) {
+  const alerted = new Set(alertedTokenIds);
   const [showAll, setShowAll] = useState(false);
   // 按当前倍数从高到低排 —— 你想第一眼看到的是"什么在涨"，
   // 而不是"什么值钱"。没有倍数数据的沉到后面
   const byMultiple = (a: HoldingRow, b: HoldingRow) =>
     Number(b.best?.multiple ?? 0) - Number(a.best?.multiple ?? 0);
-  const monitored = holdings.filter((h) => h.monitored).sort(byMultiple);
+  // 刚报过警的排最前，其次按当前倍数
+  const monitored = holdings.filter((h) => h.monitored).sort((a, b) => {
+    const d = Number(alerted.has(b.tokenId)) - Number(alerted.has(a.tokenId));
+    return d !== 0 ? d : byMultiple(a, b);
+  });
   const filtered = holdings.filter((h) => !h.monitored);
   const total = monitored.reduce(
     (s, h) => (h.valueUsd ? s.plus(new Decimal(h.valueUsd)) : s), new Decimal(0));
@@ -128,8 +139,12 @@ export default function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) 
       ) : (
         <>
           <ul className="space-y-1.5">
-            {monitored.map((h) => <Row key={`${h.wallet}-${h.tokenId}`} h={h} />)}
-            {showAll && filtered.map((h) => <Row key={`${h.wallet}-${h.tokenId}`} h={h} />)}
+            {monitored.map((h) => (
+              <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={alerted.has(h.tokenId)} />
+            ))}
+            {showAll && filtered.map((h) => (
+              <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={false} />
+            ))}
           </ul>
           {filtered.length > 0 && (
             <button type="button" onClick={() => setShowAll(!showAll)}

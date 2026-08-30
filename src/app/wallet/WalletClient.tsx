@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import SoundToggle from '../../components/SoundToggle.tsx';
 import WalletList, { type WalletRow } from './WalletList.tsx';
 import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
-import AlertFeed, { type AlertRow } from './AlertFeed.tsx';
+import AlertFeed, { LatestAlertBanner, alertName, type AlertRow } from './AlertFeed.tsx';
 import { playPumpSound, notifyPump } from '../../lib/pumpSound.ts';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 
@@ -59,8 +59,10 @@ export default function WalletClient() {
 
       const top = added.reduce((m, a) => (a.level > m.level ? a : m));
       playPumpSound(top.level);
+      // 通知里必须写币名。写地址前缀等于没说 —— 用户看到一串十六进制
+      // 仍然不知道是哪个币
       notifyPump(
-        `${top.tokenId.split(':')[1]?.slice(0, 8)}… 暴涨 ${Number(top.multiple).toFixed(1)}x`,
+        `${alertName(top)} 暴涨 ${Number(top.multiple).toFixed(1)}x`,
         `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`,
       );
       void load();     // 顺带刷新持仓价值
@@ -71,11 +73,21 @@ export default function WalletClient() {
   if (loading) return <p className="text-sm text-neutral-600">加载中…</p>;
   if (err) return <p className="text-sm text-[#d03b3b]">{err}</p>;
 
+  /** 最近一小时报过警的币 —— 持仓列表里要把它们标出来并排到最前 */
+  const recentCutoff = Math.floor(Date.now() / 1000) - 3600;
+  const alertedTokenIds = alerts.filter((a) => a.firedAt >= recentCutoff).map((a) => a.tokenId);
+
+  const focusToken = (tokenId: string) => {
+    document.getElementById(`holding-${tokenId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
   return (
     <div className="space-y-6">
       <SoundToggle />
+      {/* 横幅放最顶上：用户是听到播报才打开页面的，第一眼必须看到是哪个币 */}
+      <LatestAlertBanner alerts={alerts} onFocus={focusToken} />
       <WalletList wallets={wallets} chains={chains} onChange={load} />
-      <HoldingsTable holdings={holdings} />
+      <HoldingsTable holdings={holdings} alertedTokenIds={alertedTokenIds} />
       <AlertFeed alerts={alerts} />
     </div>
   );
