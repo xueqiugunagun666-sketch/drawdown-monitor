@@ -68,20 +68,24 @@ export default function WalletList(
         <ul className="space-y-1.5">
           {wallets.map((w) => (
             <li key={w.id}
-              className={`flex items-center gap-3 rounded border px-3 py-2 text-sm ${
+              className={`rounded border px-3 py-2 text-sm ${
                 w.lastScanError ? 'border-[#d03b3b]/50 bg-[#d03b3b]/5' : 'border-neutral-900 bg-neutral-950/60'
               }`}>
-              <span className="text-neutral-500 w-20 shrink-0">{w.chain}</span>
-              <span className="font-mono text-neutral-300">{short(w.address)}</span>
-              {w.label && <span className="text-neutral-500">{w.label}</span>}
-              <span className="ml-auto text-xs text-neutral-600 shrink-0">
+              {/* 窄屏用两行而不是挤在一行 —— 一行会把「主钱包」压成竖排三个字 */}
+              <div className="flex items-baseline gap-2">
+                <span className="font-mono text-neutral-300 shrink-0">{short(w.address)}</span>
+                <span className="text-xs text-neutral-600 shrink-0">{w.chain}</span>
+                {w.label && <span className="text-xs text-neutral-500 truncate">{w.label}</span>}
+                <button type="button" onClick={() => void remove(w.id)}
+                  className="ml-auto text-xs text-neutral-600 hover:text-[#d03b3b] shrink-0">删除</button>
+              </div>
+              <div className="text-xs text-neutral-600 mt-0.5">
                 {w.lastScanAt ? `${humanAgo(w.lastScanAt)}扫描` : '尚未扫描'}
-              </span>
-              <button type="button" onClick={() => void remove(w.id)}
-                className="text-neutral-600 hover:text-[#d03b3b] shrink-0">删除</button>
+                {w.lastScannedBlock !== null && ` · 区块 ${w.lastScannedBlock.toLocaleString()}`}
+              </div>
               {/* 扫描失败必须显式暴露，不能只写进日志 */}
               {w.lastScanError && (
-                <p className="w-full text-xs text-[#d03b3b] mt-1 break-all">扫描失败：{w.lastScanError}</p>
+                <p className="text-xs text-[#d03b3b] mt-1 break-all">扫描失败：{w.lastScanError}</p>
               )}
             </li>
           ))}
