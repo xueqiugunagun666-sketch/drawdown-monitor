@@ -35,6 +35,16 @@ const log = makeLogger('pump-engine');
 /** 钱包币的判定间隔。比看板的 30 秒宽松，见 spec §8 的容量测算 */
 export const TICK_INTERVAL_SECONDS = 120;
 
+/**
+ * 持仓价值低于这个数就不推送。
+ *
+ * 只值几毛钱的币涨十倍也还是几块钱，为它响一次的代价大于收益。
+ * 注意这不是过滤层的门槛：币仍然被监控、页面上照常显示涨幅，
+ * 只是不吵醒你。过滤层管的是"这个币值不值得看"，
+ * 这里管的是"这次上涨值不值得打断你"。
+ */
+export const MIN_ALERT_VALUE_USD = 1;
+
 export interface PumpDeps {
   fetchQuotes: (chain: string, addrs: string[]) => Promise<Map<string, BatchQuote>>;
   backfill?: BackfillDeps;
@@ -244,10 +254,26 @@ async function evaluateToken(
 
   // ---- 扇出：每个持有者一行，带各自的余额与持仓价值 ----
   const base = windows.find((w) => w.timeframe === winner.timeframe && w.basis === winner.basis)?.base ?? null;
+  let notified = 0, skipped = 0;
   for (const h of holders) {
     const row = wr.listHoldingsByWallet(h.walletId).find((x) => x.tokenId === tokenId);
     if (!row || row.monitored !== 1) continue;
     const amount = toHumanAmount(h.balance, h.decimals);
+    const value = amount ? amount.mul(price) : null;
+
+    /**
+     * 仓位太小的不推。判定放在扇出这一步而不是过滤层，因为持仓价值
+     * 是**每个人各不相同**的 —— 同一个币，你只有几毛钱、别人有几千块，
+     * 该不该吵醒你们的答案不一样。
+     *
+     * 价值算不出来时照常推送：那说明数据有问题，宁可多响一次也不要
+     * 因为算不出而静默吞掉。
+     */
+    if (value && value.lt(MIN_ALERT_VALUE_USD)) {
+      skipped++;
+      continue;
+    }
+
     wr.insertPumpAlert({
       id: randomUUID(),
       userId: h.userId,
@@ -260,9 +286,18 @@ async function evaluateToken(
       priceUsd: quote.priceUsd,
       basePriceUsd: base ? base.toString() : null,
       balance: h.balance,
-      valueUsd: amount ? amount.mul(price).toString() : null,
+      valueUsd: value ? value.toString() : null,
       ackedAt: null,
     });
+    notified++;
   }
-  log.info(`${tokenId} 暴涨 ${winner.multiple.toFixed(2)}x (${winner.timeframe}/${winner.basis}, ${winner.level}x 档)，通知 ${holders.length} 人`);
+
+  // 一个人都没通知就别记这条日志了，否则日志里全是"通知 0 人"
+  if (notified > 0) {
+    log.info(
+      `${tokenId} 暴涨 ${winner.multiple.toFixed(2)}x ` +
+      `(${winner.timeframe}/${winner.basis}, ${winner.level}x 档)，通知 ${notified} 人` +
+      (skipped > 0 ? `（${skipped} 人仓位不足 $${MIN_ALERT_VALUE_USD} 已跳过）` : ''),
+    );
+  }
 }

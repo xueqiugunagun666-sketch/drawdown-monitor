@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Decimal, formatPrice } from '../../lib/decimal.ts';
 import { describeBasis } from '../../lib/pumpStyle.ts';
+import { copyText } from '../../lib/copy.ts';
 
 export interface HoldingRow {
   tokenId: string; chain: string; address: string; symbol: string | null; wallet: string;
@@ -57,6 +58,9 @@ const amount = (v: string | null) => {
  * （不为进入监控之前的涨幅补报），所以只看报警记录的话，
  * 一个已经涨了 3 倍的币在页面上是完全不可见的 —— 用户会以为没在工作。
  */
+/** 窗口的短标签。表格里没有位置写"24 小时内从低点"，但必须让人知道是哪个窗口 */
+const TF_SHORT: Record<string, string> = { '5m': '5分', '1h': '1时', '6h': '6时', '24h': '24时' };
+
 function Multiple({ best }: { best: HoldingRow['best'] }) {
   if (!best) return null;
   const m = new Decimal(best.multiple);
@@ -64,9 +68,43 @@ function Multiple({ best }: { best: HoldingRow['best'] }) {
   const n = m.toNumber();
   const cls = n >= 5 ? 'text-[#7ef2b4]' : n >= 2 ? 'text-[#3fbf7f]' : 'text-neutral-400';
   return (
-    <span className={`${cls} tabular-nums shrink-0`} title={describeBasis(best.timeframe, best.basis)}>
+    // 窗口标签必须显示出来，不能只放在 title 里 ——
+    // 手机上没有 hover，"9.8x"不说明是 5 分钟还是 24 小时，
+    // 这两者的意义天差地别
+    <span className={`${cls} tabular-nums shrink-0 whitespace-nowrap`}
+      title={describeBasis(best.timeframe, best.basis)}>
       {m.toFixed(1)}x
+      <span className="text-neutral-600 text-[11px] ml-0.5 font-normal">
+        {TF_SHORT[best.timeframe] ?? best.timeframe}
+        {best.basis === 'low' ? '低' : '起'}
+      </span>
     </span>
+  );
+}
+
+/**
+ * 合约地址，点一下复制。同名假币很多，最终认的是 CA。
+ * 原本点了没有任何反馈 —— 复制失败时用户拿着空剪贴板走人。
+ */
+function CopyAddress({ address, tokenId }: { address: string; tokenId: string }) {
+  const [state, setState] = useState<'idle' | 'ok' | 'selected'>('idle');
+  if (!address) return null;
+  const id = `ca-${tokenId}`;
+  return (
+    <button type="button" title={address}
+      onClick={async () => {
+        setState(await copyText(address, id) ? 'ok' : 'selected');
+        setTimeout(() => setState('idle'), 1600);
+      }}
+      className={`text-xs font-mono truncate transition-colors ${
+        state === 'ok' ? 'text-[#3fbf7f]'
+        : state === 'selected' ? 'text-[#fab219]'
+        : 'text-neutral-600 hover:text-neutral-400'
+      }`}>
+      <span id={id}>{`${address.slice(0, 6)}…${address.slice(-4)}`}</span>
+      {state === 'ok' && <span className="ml-1">已复制</span>}
+      {state === 'selected' && <span className="ml-1">已选中</span>}
+    </button>
   );
 }
 
@@ -86,11 +124,7 @@ function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
         <span className="meta-label">{h.chain}</span>
         {/* 合约地址，点一下复制 —— 同名假币很多，最终认的是 CA。
             钱包名不显示：跨四条链就是同一个地址，写出来只是噪音 */}
-        <button type="button" title={h.address ?? ''}
-          onClick={() => { if (h.address) void navigator.clipboard?.writeText(h.address); }}
-          className="text-xs font-mono text-neutral-600 hover:text-neutral-400 truncate">
-          {h.address ? `${h.address.slice(0, 6)}…${h.address.slice(-4)}` : ''}
-        </button>
+        <CopyAddress address={h.address} tokenId={h.tokenId} />
         <Multiple best={h.best} />
         <span className={`ml-auto tabular-nums shrink-0 text-[15px] ${
           h.monitored ? 'text-neutral-200' : 'text-neutral-500'

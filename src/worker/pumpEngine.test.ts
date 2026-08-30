@@ -390,3 +390,51 @@ test('通过流动性的币才查持有人数', async () => {
   assert.ok(asked.includes('0xworthchecking'), '够格的币必须查');
   assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1);
 });
+
+test('仓位不足 $1 的不推送，但币仍在监控', async () => {
+  // 只值几毛钱的币涨十倍也还是几块钱，为它响一次的代价大于收益
+  const id = 'bsc:0xtinybag';
+  const u = wr.createUser(`tiny${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xtw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '100000000000000', 18, 100);   // 0.0001 个
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xtinybag': { priceUsd: '1' } }));       // 价值 $0.0001
+  await runPumpTick(NOW + 60, deps({ '0xtinybag': { priceUsd: '5' } }));  // 涨 5 倍，仍只值 $0.0005
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 0, '仓位太小不该推送');
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1, '但币仍应在监控里');
+});
+
+test('仓位够 $1 的照常推送', async () => {
+  const id = 'bsc:0xbigenough';
+  const u = wr.createUser(`big${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xbw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '10000000000000000000', 18, 100);   // 10 个
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xbigenough': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xbigenough': { priceUsd: '3' } }));   // 价值 $30
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 1);
+});
+
+test('同一个币，仓位大的收到、仓位小的不收到', async () => {
+  // 门槛按人判而不是按币判 —— 同一次上涨，对不同的人意义不同
+  const id = 'bsc:0xmixedbags';
+  const rich = wr.createUser(`rich${++seq}`, 'h')!;
+  const poor = wr.createUser(`poor${++seq}`, 'h')!;
+  const wr1 = wr.addWallet(rich.id, 'bsc', `0xrw${seq}`, null)!;
+  const wr2 = wr.addWallet(poor.id, 'bsc', `0xpw${seq}`, null)!;
+  wr.upsertHolding(wr1.id, id, '50000000000000000000', 18, 100);  // 50 个
+  wr.upsertHolding(wr2.id, id, '1000000000000', 18, 100);         // 0.000001 个
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xmixedbags': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xmixedbags': { priceUsd: '4' } }));
+  assert.equal(wr.listPumpAlerts(rich.id, 0).length, 1, '仓位 $200，该收到');
+  assert.equal(wr.listPumpAlerts(poor.id, 0).length, 0, '仓位 $0.000004，不该收到');
+});
+
+test('门槛是 1 美元', async () => {
+  const { MIN_ALERT_VALUE_USD } = await import('./pumpEngine.ts');
+  assert.equal(MIN_ALERT_VALUE_USD, 1);
+});
