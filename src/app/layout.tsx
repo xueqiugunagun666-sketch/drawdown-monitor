@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import ChangelogButton from '../components/ChangelogButton.tsx';
 
 export const metadata: Metadata = {
   title: '回撤监控',
@@ -9,7 +10,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen">{children}</body>
+      <body className="min-h-screen">
+        {children}
+        <ChangelogButton />
+      </body>
     </html>
   );
 }
