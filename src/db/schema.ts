@@ -25,6 +25,9 @@ export const tokens = sqliteTable('tokens', {
   failCount: integer('fail_count').default(0).notNull(),
   createdBy: text('created_by'),          // 谁加的（署名，非身份）
   pinned: integer('pinned').default(0).notNull(),   // 置顶高亮，与跌幅无关
+  /** 'public' 进共享看板 | 'wallet' 只在个人钱包页可见。
+   *  两人持有同一个币时共用这一条记录，价格只轮询一次。 */
+  visibility: text('visibility').default('public').notNull(),
 });
 
 export const pools = sqliteTable('pools', {
@@ -193,4 +196,85 @@ export const pollRuns = sqliteTable('poll_runs', {
   tokensRequested: integer('tokens_requested').default(0).notNull(),
   tokensCovered: integer('tokens_covered').default(0).notNull(),
   errors: text('errors'),                            // JSON string[]，已掩码
+});
+
+/* ============ 钱包暴涨异动监控（spec 2026-08-30） ============ */
+
+/**
+ * 个人账号。与全站共用的 ACCESS_TOKEN 是两回事 —— 那个是"进不进得来"，
+ * 这个是"进来之后你是谁"。钱包持仓必须按人隔离，而 display_name 是
+ * 自己填的署名、能冒充，所以必须有真密码。
+ */
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),     // scrypt$N$r$p$salt$hash
+  createdAt: integer('created_at').notNull(),
+});
+
+/** 会话。库里只存 token 的哈希：数据库泄露时拿不到可用的凭证。 */
+export const sessions = sqliteTable('sessions', {
+  tokenHash: text('token_hash').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+});
+
+export const wallets = sqliteTable('wallets', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  chain: text('chain').notNull(),
+  address: text('address').notNull(),
+  label: text('label'),
+  /** 增量扫描的水位。扫描成功后才推进 —— 中途失败必须能重来 */
+  lastScannedBlock: integer('last_scanned_block'),
+  lastScanAt: integer('last_scan_at'),
+  lastScanError: text('last_scan_error'),             // 已掩码；UI 必须显示
+  enabled: integer('enabled').default(1).notNull(),
+  createdAt: integer('created_at').notNull(),
+});
+
+export const holdings = sqliteTable('holdings', {
+  walletId: text('wallet_id').notNull().references(() => wallets.id, { onDelete: 'cascade' }),
+  tokenId: text('token_id').notNull(),
+  /** 链上原始整数余额，十进制字符串。uint256 超过 2^53，绝不能存 REAL */
+  balance: text('balance').notNull(),
+  decimals: integer('decimals'),                      // 读不到就是 null，不猜 18
+  firstSeenAt: integer('first_seen_at').notNull(),
+  lastSeenAt: integer('last_seen_at').notNull(),
+  monitored: integer('monitored').default(0).notNull(),
+  filterReason: text('filter_reason'),                // 没进监控的原因，UI 要显示
+  /** 滞回用：跌破退出门槛的起始时刻，持续够时长才真的退出 */
+  belowSinceTs: integer('below_since_ts'),
+}, (t) => [primaryKey({ columns: [t.walletId, t.tokenId] })]);
+
+/**
+ * 暴涨分档状态机。**全局的，不按用户** —— 价格变动是全局事实，
+ * 只有"通知谁"是每人不同的。这顺带解决了一个边界情况：
+ * 新用户加入时持有一个已是 FIRED 的币，不会收到追溯报警。
+ */
+export const pumpStates = sqliteTable('pump_states', {
+  tokenId: text('token_id').notNull(),
+  timeframe: text('timeframe').notNull(),             // '5m' | '1h' | '6h' | '24h'
+  basis: text('basis').notNull(),                     // 'low' | 'open'
+  level: real('level').notNull(),                     // 2 | 5 | 10
+  state: text('state').notNull(),                     // 'ARMED' | 'FIRED'
+  lastFiredAt: integer('last_fired_at'),
+}, (t) => [primaryKey({ columns: [t.tokenId, t.timeframe, t.basis, t.level] })]);
+
+/** 报警记录，每个持有者一行 —— 余额与持仓价值是各人自己的 */
+export const pumpAlerts = sqliteTable('pump_alerts', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  tokenId: text('token_id').notNull(),
+  firedAt: integer('fired_at').notNull(),
+  timeframe: text('timeframe').notNull(),
+  basis: text('basis').notNull(),
+  level: real('level').notNull(),
+  multiple: text('multiple').notNull(),               // 实际倍数，十进制字符串
+  priceUsd: text('price_usd'),
+  basePriceUsd: text('base_price_usd'),
+  balance: text('balance'),
+  valueUsd: text('value_usd'),
+  ackedAt: integer('acked_at'),
 });

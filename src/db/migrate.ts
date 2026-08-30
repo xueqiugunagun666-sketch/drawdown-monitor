@@ -94,6 +94,47 @@ CREATE TABLE IF NOT EXISTS poll_runs (
   tokens_requested INTEGER NOT NULL DEFAULT 0, tokens_covered INTEGER NOT NULL DEFAULT 0,
   errors TEXT
 );
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS wallets (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  chain TEXT NOT NULL, address TEXT NOT NULL, label TEXT,
+  last_scanned_block INTEGER, last_scan_at INTEGER, last_scan_error TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+  UNIQUE(user_id, chain, address)
+);
+CREATE INDEX IF NOT EXISTS idx_wallets_user ON wallets(user_id);
+CREATE TABLE IF NOT EXISTS holdings (
+  wallet_id TEXT NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+  token_id TEXT NOT NULL, balance TEXT NOT NULL, decimals INTEGER,
+  first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
+  monitored INTEGER NOT NULL DEFAULT 0, filter_reason TEXT,
+  below_since_ts INTEGER,
+  PRIMARY KEY (wallet_id, token_id)
+);
+CREATE INDEX IF NOT EXISTS idx_holdings_token ON holdings(token_id);
+CREATE TABLE IF NOT EXISTS pump_states (
+  token_id TEXT NOT NULL, timeframe TEXT NOT NULL, basis TEXT NOT NULL,
+  level REAL NOT NULL, state TEXT NOT NULL, last_fired_at INTEGER,
+  PRIMARY KEY (token_id, timeframe, basis, level)
+);
+CREATE TABLE IF NOT EXISTS pump_alerts (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_id TEXT NOT NULL,
+  fired_at INTEGER NOT NULL, timeframe TEXT NOT NULL, basis TEXT NOT NULL,
+  level REAL NOT NULL, multiple TEXT NOT NULL,
+  price_usd TEXT, base_price_usd TEXT, balance TEXT, value_usd TEXT,
+  acked_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pump_alerts_user ON pump_alerts(user_id, fired_at);
 `;
 
 /**
@@ -117,6 +158,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['alert_rules', 'ath_sustain_candles', 'INTEGER NOT NULL DEFAULT 3'],
   ['alert_states', 'rearm_since_ts', 'INTEGER'],
   ['alerts', 'verdict_basis', 'TEXT'],
+  ['tokens', 'visibility', "TEXT NOT NULL DEFAULT 'public'"],
 ];
 
 export function runMigrations(): void {
