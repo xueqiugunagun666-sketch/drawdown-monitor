@@ -24,6 +24,7 @@ import {
 } from './pumpState.ts';
 import { evaluateFilter, DEFAULT_THRESHOLDS, type FilterState } from './holdingsFilter.ts';
 import { toHumanAmount } from '../sources/erc20.ts';
+import { needsBackfill, backfillWalletToken, realBackfillDeps, type BackfillDeps } from './walletBackfill.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
 import { randomUUID } from 'node:crypto';
@@ -35,6 +36,7 @@ export const TICK_INTERVAL_SECONDS = 120;
 
 export interface PumpDeps {
   fetchQuotes: (chain: string, addrs: string[]) => Promise<Map<string, BatchQuote>>;
+  backfill?: BackfillDeps;
 }
 
 export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes };
@@ -113,7 +115,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
 
   for (const tokenId of tokenIds) {
     try {
-      await evaluateToken(tokenId, quotes.get(tokenId) ?? null, now);
+      await evaluateToken(tokenId, quotes.get(tokenId) ?? null, now, deps.backfill ?? realBackfillDeps);
     } catch (err) {
       log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
     }
@@ -122,6 +124,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
 
 async function evaluateToken(
   tokenId: string, quote: BatchQuote | null, now: number,
+  backfillDeps: BackfillDeps = realBackfillDeps,
 ): Promise<void> {
   // ---- 过滤：每个持有者各自维护滞回状态（below_since_ts 在 holdings 上）----
   const holders = wr.usersHoldingToken(tokenId);
@@ -151,6 +154,13 @@ async function evaluateToken(
   // 让 source 列反复翻转。让位给它。
   if (!isWatchlistToken(tokenId)) {
     wr.upsertWalletCandle(tokenId, quote.priceUsd, quote.liquidityUsd, now);
+
+    // 历史不足时补 24 小时的 5m K 线。必须在算窗口与 seed 之前做完 ——
+    // 基于空历史 seed 出来的状态，等回填补上后就全错了。
+    // 一个币一次 GMGN 请求（288 根 < limit 1000），失败也不影响判定
+    if (needsBackfill(tokenId, now)) {
+      await backfillWalletToken(tokenId, now, backfillDeps);
+    }
   }
   const windows = computeMultiples(load5mCandles(tokenId, now - 86400 - 600), price, now);
   if (windows.length === 0) return;

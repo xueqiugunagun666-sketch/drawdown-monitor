@@ -6,6 +6,7 @@ import { runMigrations } from '../db/migrate.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
 import { runPumpTick, type PumpDeps } from './pumpEngine.ts';
+import { Decimal } from '../lib/decimal.ts';
 import type { BatchQuote } from '../sources/dexscreenerBatch.ts';
 
 before(() => { runMigrations(); });
@@ -191,4 +192,57 @@ test('只在钱包里的币，引擎会写 candle 攒历史', async () => {
   const n = (getRawDb().prepare(
     `SELECT COUNT(*) c FROM candles WHERE token_id=? AND source='wallet-batch'`).get(id) as { c: number }).c;
   assert.ok(n > 0, '钱包独有的币必须自己攒历史');
+});
+
+test('回填发生在 seed 之前 —— 顺序反了整套状态都是错的', async () => {
+  const id = 'bsc:0xorder';
+  const h = holder(id);
+  // 不预置任何历史，全靠回填。回填给出的历史是恒 1 元
+  const rows = Array.from({ length: 288 }, (_, i) => ({
+    ts: CUR - (287 - i) * 300,
+    o: new Decimal('1'), h: new Decimal('1'), l: new Decimal('1'), c: new Decimal('1'),
+    volumeUsd: 10,
+  }));
+  let backfilled = false;
+  const d: PumpDeps = {
+    ...deps({ '0xorder': { priceUsd: '6' } }),
+    backfill: {
+      isConfigured: () => true,
+      supportsChain: () => true,
+      fetchKline: async () => { backfilled = true; return rows; },
+    },
+  };
+  await runPumpTick(NOW, d);
+  assert.ok(backfilled, '应触发回填');
+  // 回填后历史是 1 元、现价 6 元 -> 24h 窗口已达 6 倍，
+  // 但这是 seed 那一轮，必须静默
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
+
+  // 下一轮涨到 12 倍，10x 档才该报，且窗口应该是能覆盖 24h 的
+  await runPumpTick(NOW + 60, { ...d, ...deps({ '0xorder': { priceUsd: '12' } }) });
+  const alerts = wr.listPumpAlerts(h.userId, 0);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0]?.level, 10);
+  // 不能断言恰好是 24h：回填出的历史是恒 1 元，1h/6h/24h 的基准与倍数
+  // 完全相同，而 pickWinner 在倍数相同时取最短窗口，所以 1h 胜出——
+  // 这正是既定的择优规则。要证明的是"用上了长窗口"，即不是 5m
+  // （若回填在 seed 之后，长窗口全是 too_young，只剩 5m 可选）
+  assert.notEqual(alerts[0]?.timeframe, '5m',
+    '回填若在 seed 之后，长窗口会全部 too_young，只可能选到 5m');
+  assert.ok(['1h', '6h', '24h'].includes(alerts[0]!.timeframe));
+});
+
+test('已有充足历史的币不重复回填', async () => {
+  const id = 'bsc:0xnorefill';
+  holder(id);
+  history(id, '1');
+  let calls = 0;
+  await runPumpTick(NOW, {
+    ...deps({ '0xnorefill': { priceUsd: '1' } }),
+    backfill: {
+      isConfigured: () => true, supportsChain: () => true,
+      fetchKline: async () => { calls++; return []; },
+    },
+  });
+  assert.equal(calls, 0, '历史够了就不该再请求 GMGN');
 });
