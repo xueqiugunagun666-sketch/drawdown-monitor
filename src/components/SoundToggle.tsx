@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import {
-  unlockAudio, soundStatus, requestNotificationPermission, playPumpSound, type SoundStatus,
+  unlockAudio, soundStatus, requestNotificationPermission, playPumpSound,
+  loadVoice, currentVoiceName, PUMP_PHRASE, type SoundStatus,
 } from '../lib/pumpSound.ts';
 
 /**
@@ -10,29 +11,37 @@ import {
  *
  * 未开启时显示醒目横幅，不是一个安静的小图标 —— 用户以为开着、
  * 实际没声音，是这个功能最危险的失效方式（第 4 条铁律）。
+ * 没有中文语音时也要明说，而不是安静退回滴一声。
  */
 export default function SoundToggle() {
   const [status, setStatus] = useState<SoundStatus>('locked');
   const [notify, setNotify] = useState<NotificationPermission>('default');
+  const [voice, setVoice] = useState<string | null>(null);
 
   useEffect(() => {
     setStatus(soundStatus());
     if (typeof Notification !== 'undefined') setNotify(Notification.permission);
+    void loadVoice().then(() => setVoice(currentVoiceName()));
   }, []);
 
   async function enable() {
     setStatus(await unlockAudio());
+    setVoice(currentVoiceName());
     setNotify(await requestNotificationPermission());
   }
 
   if (status === 'ready') {
     return (
-      <div className="flex items-center gap-3 text-xs text-neutral-500">
+      <div className="flex items-center gap-3 text-xs text-neutral-500 flex-wrap">
         <span className="text-[#3fbf7f]">● 声音已开启</span>
+        {voice
+          ? <span>暴涨时会播报「{PUMP_PHRASE}」（{voice}）</span>
+          // 没有中文语音要明说，否则用户以为会播报、实际只有滴声
+          : <span className="text-[#fab219]">这台设备没有中文语音，只会响提示音，不会播报</span>}
         {notify !== 'granted' && (
           <span className="text-[#fab219]">系统通知未授权，切到别的标签页时看不到提示</span>
         )}
-        <button type="button" onClick={() => playPumpSound(5)}
+        <button type="button" onClick={() => playPumpSound()}
           className="text-neutral-500 hover:text-neutral-300 underline underline-offset-2">
           试听
         </button>
@@ -48,7 +57,7 @@ export default function SoundToggle() {
         <span className="text-neutral-400 ml-2">
           {status === 'blocked'
             ? '浏览器拒绝了音频播放，检查站点权限设置'
-            : '暴涨时不会有任何提示音。浏览器要求先点一下才允许出声。'}
+            : '暴涨时不会有任何提示。浏览器要求先点一下才允许出声。'}
         </span>
       </div>
       <button type="button" onClick={enable}

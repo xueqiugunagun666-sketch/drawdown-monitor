@@ -146,6 +146,9 @@ async function evaluateToken(
   }
   if (!stillMonitored || !quote) return;
 
+  // 报价里带着符号，第一次拿到就存下来 —— 否则页面上永远只有合约地址
+  if (quote.symbol) wr.setHoldingSymbol(tokenId, quote.symbol);
+
   // ---- 倍数 ----
   const price = new Decimal(quote.priceUsd);
   if (!price.gt(0)) return;

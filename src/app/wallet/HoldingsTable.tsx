@@ -2,11 +2,14 @@
 
 import { useState } from 'react';
 import { Decimal, formatPrice } from '../../lib/decimal.ts';
+import { describeBasis } from '../../lib/pumpStyle.ts';
 
 export interface HoldingRow {
   tokenId: string; chain: string; address: string; symbol: string | null; wallet: string;
   amount: string | null; priceUsd: string | null; valueUsd: string | null;
   monitored: boolean; filterReason: string | null; lastQuoteAt: number | null; decimalsKnown: boolean;
+  /** 四个窗口里最高的当前倍数 */
+  best: { multiple: string; timeframe: string; basis: string } | null;
 }
 
 const usd = (v: string | null) => {
@@ -38,6 +41,26 @@ const amount = (v: string | null) => {
   return n.toFixed(n.gte(1) ? 2 : 6);
 };
 
+/**
+ * 当前倍数的显示。
+ *
+ * 这是"高亮"的正解：冷启动 seed 出来的 FIRED 状态不产生报警
+ * （不为进入监控之前的涨幅补报），所以只看报警记录的话，
+ * 一个已经涨了 3 倍的币在页面上是完全不可见的 —— 用户会以为没在工作。
+ */
+function Multiple({ best }: { best: HoldingRow['best'] }) {
+  if (!best) return null;
+  const m = new Decimal(best.multiple);
+  if (m.lt('1.2')) return null;                      // 没怎么动就不占位置
+  const n = m.toNumber();
+  const cls = n >= 5 ? 'text-[#7ef2b4]' : n >= 2 ? 'text-[#3fbf7f]' : 'text-neutral-400';
+  return (
+    <span className={`${cls} tabular-nums shrink-0`} title={describeBasis(best.timeframe, best.basis)}>
+      {m.toFixed(1)}x
+    </span>
+  );
+}
+
 function Row({ h }: { h: HoldingRow }) {
   return (
     <li className={`rounded border px-3 py-2 ${
@@ -49,6 +72,7 @@ function Row({ h }: { h: HoldingRow }) {
         </span>
         <span className="text-xs text-neutral-600">{h.chain}</span>
         <span className="text-xs text-neutral-600 truncate">{h.wallet}</span>
+        <Multiple best={h.best} />
         <span className={`ml-auto tabular-nums shrink-0 ${
           h.monitored ? 'text-neutral-200' : 'text-neutral-500'
         }`}>
@@ -70,7 +94,11 @@ function Row({ h }: { h: HoldingRow }) {
 
 export default function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) {
   const [showAll, setShowAll] = useState(false);
-  const monitored = holdings.filter((h) => h.monitored);
+  // 按当前倍数从高到低排 —— 你想第一眼看到的是"什么在涨"，
+  // 而不是"什么值钱"。没有倍数数据的沉到后面
+  const byMultiple = (a: HoldingRow, b: HoldingRow) =>
+    Number(b.best?.multiple ?? 0) - Number(a.best?.multiple ?? 0);
+  const monitored = holdings.filter((h) => h.monitored).sort(byMultiple);
   const filtered = holdings.filter((h) => !h.monitored);
   const total = monitored.reduce(
     (s, h) => (h.valueUsd ? s.plus(new Decimal(h.valueUsd)) : s), new Decimal(0));

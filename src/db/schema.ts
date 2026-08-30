@@ -240,6 +240,9 @@ export const holdings = sqliteTable('holdings', {
   /** 链上原始整数余额，十进制字符串。uint256 超过 2^53，绝不能存 REAL */
   balance: text('balance').notNull(),
   decimals: integer('decimals'),                      // 读不到就是 null，不猜 18
+  /** 代币符号。存在 holdings 而不是 tokens —— 钱包币绝不写进 tokens 表，
+   *  那是共享看板的数据源，写进去别人就看到你的持仓了 */
+  symbol: text('symbol'),
   firstSeenAt: integer('first_seen_at').notNull(),
   lastSeenAt: integer('last_seen_at').notNull(),
   monitored: integer('monitored').default(0).notNull(),

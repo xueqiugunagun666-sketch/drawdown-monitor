@@ -130,7 +130,7 @@ export function listHoldings(userId: string): HoldingRow[] {
     walletId: holdings.walletId, tokenId: holdings.tokenId, balance: holdings.balance,
     decimals: holdings.decimals, firstSeenAt: holdings.firstSeenAt, lastSeenAt: holdings.lastSeenAt,
     monitored: holdings.monitored, filterReason: holdings.filterReason,
-    belowSinceTs: holdings.belowSinceTs,
+    belowSinceTs: holdings.belowSinceTs, symbol: holdings.symbol,
   })
     .from(holdings)
     .innerJoin(wallets, eq(wallets.id, holdings.walletId))
@@ -248,4 +248,18 @@ export function removeWalletByAddress(userId: string, address: string): number {
   return getDb().delete(wallets)
     .where(and(eq(wallets.userId, userId), eq(wallets.address, address.toLowerCase())))
     .run().changes;
+}
+
+/**
+ * 记下代币符号。来自 DexScreener 批量报价，第一次拿到就存下来。
+ *
+ * 存在 holdings 而不是 tokens：钱包币绝不写进 tokens 表 —— 那是共享看板
+ * 的数据源，`listEnabledTokens` 等查询都没有 visibility 过滤，
+ * 写进去等于把你的持仓摆到公共看板上。宁可在 holdings 里按用户各存一份。
+ */
+export function setHoldingSymbol(tokenId: string, symbol: string): void {
+  getDb().update(holdings)
+    .set({ symbol })
+    .where(and(eq(holdings.tokenId, tokenId), sql`${holdings.symbol} IS NULL`))
+    .run();
 }

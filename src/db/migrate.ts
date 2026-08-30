@@ -159,6 +159,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['alert_states', 'rearm_since_ts', 'INTEGER'],
   ['alerts', 'verdict_basis', 'TEXT'],
   ['tokens', 'visibility', "TEXT NOT NULL DEFAULT 'public'"],
+  ['holdings', 'symbol', 'TEXT'],
 ];
 
 export function runMigrations(): void {
