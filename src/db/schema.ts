@@ -281,3 +281,17 @@ export const pumpAlerts = sqliteTable('pump_alerts', {
   valueUsd: text('value_usd'),
   ackedAt: integer('acked_at'),
 });
+
+/**
+ * 代币的全局元信息缓存。**跨用户共用** —— 持有人数是链上事实，
+ * 不因谁持有而不同，两个人持有同一个币只查一次。
+ *
+ * 持有人数变化很慢，缓存一天足够；每天一个币一次请求，
+ * 95 个币约 1 分钟跑完，远在 GMGN 的限速内。
+ */
+export const tokenMeta = sqliteTable('token_meta', {
+  tokenId: text('token_id').primaryKey(),
+  holderCount: integer('holder_count'),
+  symbol: text('symbol'),
+  fetchedAt: integer('fetched_at').notNull(),
+});

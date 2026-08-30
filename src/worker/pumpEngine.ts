@@ -25,6 +25,7 @@ import {
 import { evaluateFilter, DEFAULT_THRESHOLDS, type FilterState } from './holdingsFilter.ts';
 import { toHumanAmount } from '../sources/erc20.ts';
 import { needsBackfill, backfillWalletToken, realBackfillDeps, type BackfillDeps } from './walletBackfill.ts';
+import { fetchTokenInfo, type TokenInfo } from '../sources/gmgnTokenInfo.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
 import { randomUUID } from 'node:crypto';
@@ -37,9 +38,11 @@ export const TICK_INTERVAL_SECONDS = 120;
 export interface PumpDeps {
   fetchQuotes: (chain: string, addrs: string[]) => Promise<Map<string, BatchQuote>>;
   backfill?: BackfillDeps;
+  /** 取代币元信息（持有人数）。返回 null 表示查不到 */
+  fetchTokenInfo?: (chain: string, address: string) => Promise<TokenInfo | null>;
 }
 
-export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes };
+export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes, fetchTokenInfo };
 
 /* ---------- pump_states 的读写。放在这里而不是 walletRepo，
               因为它只被引擎用，且是引擎语义的一部分 ---------- */
@@ -119,7 +122,8 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
 
   for (const tokenId of tokenIds) {
     try {
-      await evaluateToken(tokenId, quotes.get(tokenId) ?? null, now, deps.backfill ?? realBackfillDeps);
+      await evaluateToken(tokenId, quotes.get(tokenId) ?? null, now,
+        deps.backfill ?? realBackfillDeps, deps.fetchTokenInfo);
     } catch (err) {
       log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
     }
@@ -129,7 +133,24 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
 async function evaluateToken(
   tokenId: string, quote: BatchQuote | null, now: number,
   backfillDeps: BackfillDeps = realBackfillDeps,
+  getInfo: PumpDeps['fetchTokenInfo'] = fetchTokenInfo,
 ): Promise<void> {
+  const [chain, addr] = tokenId.split(':');
+
+  /**
+   * 持有人数。全局缓存、跨用户共用 —— 这是链上事实，不因谁持有而不同。
+   * 变化很慢，一天查一次就够（META_TTL_SECONDS）。
+   */
+  if (chain && addr && getInfo && wr.isTokenMetaStale(tokenId, now)) {
+    try {
+      const info = await getInfo(chain, addr);
+      // 查不到也写一条，避免每轮都重试同一个查不到的币
+      wr.setTokenMeta(tokenId, info?.holderCount ?? null, info?.symbol ?? null, now);
+    } catch {
+      // 限流之类的失败不影响本轮判定，下一轮再说
+    }
+  }
+  const holderCount = wr.getTokenMeta(tokenId)?.holderCount ?? null;
   // ---- 过滤：每个持有者各自维护滞回状态（below_since_ts 在 holdings 上）----
   const holders = wr.usersHoldingToken(tokenId);
   let stillMonitored = false;
@@ -140,6 +161,7 @@ async function evaluateToken(
     const r = evaluateFilter(prev, {
       liquidityUsd: quote?.liquidityUsd ?? null,
       volume24hUsd: quote?.volume24hUsd ?? null,
+      holderCount,
     }, now, DEFAULT_THRESHOLDS);
     wr.setHoldingMonitored(h.walletId, tokenId, r.monitored, r.reason, r.belowSinceTs);
     if (r.monitored) stillMonitored = true;

@@ -135,6 +135,9 @@ CREATE TABLE IF NOT EXISTS pump_alerts (
   acked_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pump_alerts_user ON pump_alerts(user_id, fired_at);
+CREATE TABLE IF NOT EXISTS token_meta (
+  token_id TEXT PRIMARY KEY, holder_count INTEGER, symbol TEXT, fetched_at INTEGER NOT NULL
+);
 `;
 
 /**

@@ -290,3 +290,68 @@ test('decimals 未知的币不参与判定 —— 无法换算数量', async () 
   await runPumpTick(NOW, deps({ '0xnodecimals': { priceUsd: '1' } }));
   assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 0);
 });
+
+test('持有人数超标的币被踢出监控，且写明原因', async () => {
+  const id = 'bsc:0xairdrop';
+  const u = wr.createUser(`air${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xaw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+
+  await runPumpTick(NOW, {
+    ...deps({ '0xairdrop': { priceUsd: '1', liquidityUsd: 99189, volume24hUsd: 260271 } }),
+    fetchTokenInfo: async () => ({ symbol: 'MOONALD', holderCount: 705786 }),
+  });
+  const h = wr.listHoldingsByWallet(w.id)[0]!;
+  assert.equal(h.monitored, 0);
+  assert.match(h.filterReason ?? '', /空投盘/);
+});
+
+test('持有人数缓存住，同一天不重复查', async () => {
+  const id = 'bsc:0xcached';
+  const u = wr.createUser(`cache${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xcw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  history(id, '1');
+
+  let calls = 0;
+  const d = {
+    ...deps({ '0xcached': { priceUsd: '1' } }),
+    fetchTokenInfo: async () => { calls++; return { symbol: 'X', holderCount: 500 }; },
+  };
+  await runPumpTick(NOW, d);
+  await runPumpTick(NOW + 120, d);
+  await runPumpTick(NOW + 240, d);
+  assert.equal(calls, 1, `持有人数一天查一次就够，实际查了 ${calls} 次`);
+});
+
+test('查不到持有人数也写缓存，不会每轮重试', async () => {
+  const id = 'bsc:0xunknown';
+  const u = wr.createUser(`unk${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xuw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  history(id, '1');
+
+  let calls = 0;
+  const d = {
+    ...deps({ '0xunknown': { priceUsd: '1' } }),
+    fetchTokenInfo: async () => { calls++; return null; },
+  };
+  await runPumpTick(NOW, d);
+  await runPumpTick(NOW + 120, d);
+  assert.equal(calls, 1);
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1, '查不到不该影响其它判定');
+});
+
+test('取持有人数失败不影响本轮判定', async () => {
+  const id = 'bsc:0xinfofail';
+  const u = wr.createUser(`fail${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xfw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  history(id, '1');
+
+  await runPumpTick(NOW, {
+    ...deps({ '0xinfofail': { priceUsd: '1' } }),
+    fetchTokenInfo: async () => { throw new Error('429 限流'); },
+  });
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1);
+});

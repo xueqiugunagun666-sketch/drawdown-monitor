@@ -9,7 +9,7 @@ import { eq, and, gte, desc, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { Decimal } from '../lib/decimal.ts';
 import { getDb, getRawDb } from './index.ts';
-import { users, sessions, wallets, holdings, pumpAlerts } from './schema.ts';
+import { users, sessions, wallets, holdings, pumpAlerts, tokenMeta } from './schema.ts';
 
 export type WalletRow = typeof wallets.$inferSelect;
 export type HoldingRow = typeof holdings.$inferSelect;
@@ -262,4 +262,28 @@ export function setHoldingSymbol(tokenId: string, symbol: string): void {
     .set({ symbol })
     .where(and(eq(holdings.tokenId, tokenId), sql`${holdings.symbol} IS NULL`))
     .run();
+}
+
+/* ---------------- 代币元信息（全局缓存） ---------------- */
+
+/** 缓存有效期：持有人数变化很慢，一天查一次足够 */
+export const META_TTL_SECONDS = 86400;
+
+export function getTokenMeta(tokenId: string): { holderCount: number | null; symbol: string | null; fetchedAt: number } | null {
+  const r = getDb().select().from(tokenMeta).where(eq(tokenMeta.tokenId, tokenId)).get();
+  return r ? { holderCount: r.holderCount, symbol: r.symbol, fetchedAt: r.fetchedAt } : null;
+}
+
+export function setTokenMeta(tokenId: string, holderCount: number | null, symbol: string | null, now: number): void {
+  getDb().insert(tokenMeta)
+    .values({ tokenId, holderCount, symbol, fetchedAt: now })
+    .onConflictDoUpdate({
+      target: tokenMeta.tokenId,
+      set: { holderCount, symbol, fetchedAt: now },
+    }).run();
+}
+
+export function isTokenMetaStale(tokenId: string, now: number): boolean {
+  const m = getTokenMeta(tokenId);
+  return m === null || now - m.fetchedAt >= META_TTL_SECONDS;
 }

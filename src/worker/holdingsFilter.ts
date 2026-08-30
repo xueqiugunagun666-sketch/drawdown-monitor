@@ -12,6 +12,18 @@
 export interface FilterThresholds {
   minLiquidityUsd: number;
   minVolume24hUsd: number;
+  /**
+   * 持有人数上限。超过就不监控 —— 几十万持有人的币基本都是空投盘，
+   * 那种"从 2e-09 涨到 1.6e-06"的曲线是开盘假量，不是行情。
+   *
+   * 用绝对值而不是比例：实测比例法分不开这两类 —— USDT 的
+   * 持有人/24h成交量是 13.0，比 MOONALD 的 2.71 还"差"，
+   * 因为稳定币人人持有但人均交易少。
+   *
+   * 副作用是 USDT(5687万) / WBNB(298万) / CAKE(38万) 这些也会被挡，
+   * 但它们本来就不可能涨 2 倍，挡掉没有实际损失。
+   */
+  maxHolderCount: number;
   /** 退出门槛 = 进入门槛 × 这个比例 */
   exitRatio: number;
   /** 跌破退出门槛后要持续这么久才真的退出 */
@@ -21,6 +33,7 @@ export interface FilterThresholds {
 export const DEFAULT_THRESHOLDS: FilterThresholds = {
   minLiquidityUsd: 5000,
   minVolume24hUsd: 10000,
+  maxHolderCount: 100_000,
   exitRatio: 0.6,
   exitSustainSeconds: 1800,
 };
@@ -28,6 +41,8 @@ export const DEFAULT_THRESHOLDS: FilterThresholds = {
 export interface FilterInput {
   liquidityUsd: number | null;
   volume24hUsd: number | null;
+  /** null = 还没查到。查不到不等于合格，但也不该因此踢掉已在监控的币 */
+  holderCount?: number | null;
 }
 
 export interface FilterState {
@@ -55,6 +70,16 @@ export function evaluateFilter(
   }
 
   const { liquidityUsd: liq, volume24hUsd: vol } = q;
+
+  // 持有人数超标：直接出局，不进滞回。
+  // 这不是"暂时不够格"而是"这个币的性质就不对"，没有回旋余地
+  if (q.holderCount !== null && q.holderCount !== undefined && q.holderCount > th.maxHolderCount) {
+    const wan = (n: number) => `${(n / 10000).toFixed(1)} 万`;
+    return {
+      monitored: false, belowSinceTs: null,
+      reason: `持有人 ${wan(q.holderCount)} > ${wan(th.maxHolderCount)}，多为空投盘`,
+    };
+  }
 
   if (!prev.monitored) {
     const liqOk = liq >= th.minLiquidityUsd;

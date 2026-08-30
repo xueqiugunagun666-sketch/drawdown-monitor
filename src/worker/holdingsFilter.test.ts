@@ -110,3 +110,45 @@ test('只有一半报价缺失也按缺失处理', () => {
   const r = evaluateFilter(armed, { liquidityUsd: 6000, volume24hUsd: null }, 100, th);
   assert.match(r.reason!, /报价缺失/);
 });
+
+test('持有人数超标直接出局', () => {
+  // MOONALD 实测 705,786 持有人，流动性和成交量都达标，但那是空投盘
+  const r = evaluateFilter(idle, { liquidityUsd: 99189, volume24hUsd: 260271, holderCount: 705786 }, 100, th);
+  assert.equal(r.monitored, false);
+  assert.match(r.reason!, /持有人.*70\.6 万.*空投盘/);
+});
+
+test('持有人数超标时，已在监控的币也立刻踢出，不走滞回', () => {
+  // 这不是"暂时不够格"而是"币的性质不对"，没有回旋余地
+  const r = evaluateFilter(armed, { liquidityUsd: 99189, volume24hUsd: 260271, holderCount: 705786 }, 100, th);
+  assert.equal(r.monitored, false);
+  assert.equal(r.belowSinceTs, null);
+});
+
+test('持有人数在门槛内不影响判定', () => {
+  const r = evaluateFilter(idle, { liquidityUsd: 50000, volume24hUsd: 99999, holderCount: 8000 }, 100, th);
+  assert.equal(r.monitored, true);
+  assert.equal(r.reason, null);
+});
+
+test('正好等于门槛不算超标', () => {
+  const r = evaluateFilter(idle, { liquidityUsd: 50000, volume24hUsd: 99999, holderCount: 100000 }, 100, th);
+  assert.equal(r.monitored, true);
+});
+
+test('持有人数还没查到时不影响原有判定', () => {
+  // 查不到不等于合格，但也不该因此踢掉已在监控的币
+  const a = evaluateFilter(idle, { liquidityUsd: 50000, volume24hUsd: 99999, holderCount: null }, 100, th);
+  assert.equal(a.monitored, true, '其它条件达标就正常进入');
+  const b = evaluateFilter(armed, { liquidityUsd: 50000, volume24hUsd: 99999 }, 100, th);
+  assert.equal(b.monitored, true, '字段缺省也不该踢人');
+});
+
+test('默认门槛是 10 万', () => {
+  assert.equal(th.maxHolderCount, 100_000);
+});
+
+test('持有人判定优先于报价缺失 —— 性质不对就不用等报价', () => {
+  const r = evaluateFilter(armed, { liquidityUsd: null, volume24hUsd: null, holderCount: 705786 }, 100, th);
+  assert.equal(r.monitored, true, '报价缺失时保持原状态，持有人判定要等有报价再说');
+});
