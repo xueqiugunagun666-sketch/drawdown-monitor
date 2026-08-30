@@ -10,14 +10,19 @@ import * as schema from './schema.ts';
 let _db: ReturnType<typeof drizzle<typeof schema>> | null = null;
 let _raw: Database.Database | null = null;
 
+/** better-sqlite3 的内存库哨兵值，必须原样透传 —— 一旦过 resolve()
+ *  就变成仓库里一个真实文件，测试会跨次运行互相污染。 */
+const MEMORY = ':memory:';
+
 export function getDbPath(): string {
-  return resolve(process.env.DATABASE_PATH ?? './data/monitor.db');
+  const raw = process.env.DATABASE_PATH ?? './data/monitor.db';
+  return raw === MEMORY ? MEMORY : resolve(raw);
 }
 
 export function getRawDb(): Database.Database {
   if (_raw) return _raw;
   const path = getDbPath();
-  mkdirSync(dirname(path), { recursive: true });
+  if (path !== MEMORY) mkdirSync(dirname(path), { recursive: true });
   const conn = new Database(path);
   conn.pragma('journal_mode = WAL');
   conn.pragma('busy_timeout = 5000');
