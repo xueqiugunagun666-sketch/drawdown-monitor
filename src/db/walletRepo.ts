@@ -89,7 +89,7 @@ export function listAllEnabledWallets(): WalletRow[] {
 }
 
 export function updateWalletScanState(
-  id: string, block: number, at: number, error: string | null,
+  id: string, block: number | null, at: number, error: string | null,
 ): void {
   getDb().update(wallets)
     .set({ lastScannedBlock: block, lastScanAt: at, lastScanError: error })

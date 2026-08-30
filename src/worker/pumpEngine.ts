@@ -1,0 +1,195 @@
+/**
+ * 异动引擎：把过滤、窗口倍数、分档状态机串起来，产出报警。
+ *
+ * 每轮的顺序（顺序本身是有讲究的）：
+ *   1. 取所有在监控的 token（跨用户去重 —— 两人持有同一个币只算一次）
+ *   2. 批量报价
+ *   3. 跑过滤，更新 monitored / filter_reason / below_since_ts
+ *   4. 读 5m candle，求四窗口两基准的倍数
+ *   5. 对 24 个组合跑状态机；**首次见到的组合用 seed 建立，本轮不报警**
+ *   6. 择优选一条，判去重窗口
+ *   7. 按持有者扇出，每人一行 pump_alerts，带各自的余额与持仓价值
+ *
+ * 第 5 步的 seed 是关键：一个币进入监控时可能已经在 6 倍，
+ * 不 seed 就会把它进来之前的涨幅补报一遍（commit 6699db0 那个坑的反向版本）。
+ */
+import { Decimal } from '../lib/decimal.ts';
+import { getRawDb } from '../db/index.ts';
+import * as wr from '../db/walletRepo.ts';
+import { fetchBatchQuotes, type BatchQuote } from '../sources/dexscreenerBatch.ts';
+import { computeMultiples } from './pumpWindows.ts';
+import {
+  LEVELS, seedPumpState, evaluatePump, pickWinner, suppressedByRecent,
+  type PumpSnapshot, type PendingFire,
+} from './pumpState.ts';
+import { evaluateFilter, DEFAULT_THRESHOLDS, type FilterState } from './holdingsFilter.ts';
+import { toHumanAmount } from '../sources/erc20.ts';
+import { makeLogger } from '../lib/log.ts';
+import { safeErrorMessage } from '../lib/mask.ts';
+import { randomUUID } from 'node:crypto';
+
+const log = makeLogger('pump-engine');
+
+/** 钱包币的判定间隔。比看板的 30 秒宽松，见 spec §8 的容量测算 */
+export const TICK_INTERVAL_SECONDS = 120;
+
+export interface PumpDeps {
+  fetchQuotes: (chain: string, addrs: string[]) => Promise<Map<string, BatchQuote>>;
+}
+
+export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes };
+
+/* ---------- pump_states 的读写。放在这里而不是 walletRepo，
+              因为它只被引擎用，且是引擎语义的一部分 ---------- */
+
+interface StateKey { tokenId: string; timeframe: string; basis: string; level: number }
+
+function loadStates(tokenId: string): Map<string, PumpSnapshot> {
+  const rows = getRawDb().prepare(
+    `SELECT timeframe, basis, level, state, last_fired_at FROM pump_states WHERE token_id = ?`,
+  ).all(tokenId) as Array<{ timeframe: string; basis: string; level: number; state: string; last_fired_at: number | null }>;
+  const m = new Map<string, PumpSnapshot>();
+  for (const r of rows) {
+    m.set(`${r.timeframe}|${r.basis}|${r.level}`, {
+      state: r.state === 'FIRED' ? 'FIRED' : 'ARMED',
+      lastFiredAt: r.last_fired_at,
+    });
+  }
+  return m;
+}
+
+function saveState(k: StateKey, s: PumpSnapshot): void {
+  getRawDb().prepare(
+    `INSERT INTO pump_states (token_id, timeframe, basis, level, state, last_fired_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(token_id, timeframe, basis, level)
+     DO UPDATE SET state = excluded.state, last_fired_at = excluded.last_fired_at`,
+  ).run(k.tokenId, k.timeframe, k.basis, k.level, s.state, s.lastFiredAt);
+}
+
+/** 该币最近一次发出报警的时间，用于 30 分钟去重 */
+function lastAlertAt(tokenId: string): number | null {
+  const r = getRawDb().prepare(
+    `SELECT MAX(fired_at) AS t FROM pump_alerts WHERE token_id = ?`,
+  ).get(tokenId) as { t: number | null } | undefined;
+  return r?.t ?? null;
+}
+
+function load5mCandles(tokenId: string, sinceTs: number) {
+  return getRawDb().prepare(
+    `SELECT ts, o, l FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts >= ? ORDER BY ts`,
+  ).all(tokenId, sinceTs) as Array<{ ts: number; o: string | null; l: string | null }>;
+}
+
+export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): Promise<void> {
+  const tokenIds = wr.monitoredTokenIds();
+  if (tokenIds.length === 0) return;
+
+  // 按链分组，每条链一次批量报价
+  const byChain = new Map<string, string[]>();
+  for (const id of tokenIds) {
+    const [chain, addr] = id.split(':');
+    if (!chain || !addr) continue;
+    (byChain.get(chain) ?? byChain.set(chain, []).get(chain)!).push(addr);
+  }
+
+  const quotes = new Map<string, BatchQuote>();
+  for (const [chain, addrs] of byChain) {
+    try {
+      for (const [a, q] of await deps.fetchQuotes(chain, addrs)) quotes.set(`${chain}:${a}`, q);
+    } catch (err) {
+      // 一条链失败不拖垮其它链；缺的地址会走"报价缺失"分支保持原状态
+      log.warn(`${chain} 批量报价失败: ${safeErrorMessage(err)}`);
+    }
+  }
+
+  for (const tokenId of tokenIds) {
+    try {
+      await evaluateToken(tokenId, quotes.get(tokenId) ?? null, now);
+    } catch (err) {
+      log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
+    }
+  }
+}
+
+async function evaluateToken(
+  tokenId: string, quote: BatchQuote | null, now: number,
+): Promise<void> {
+  // ---- 过滤：每个持有者各自维护滞回状态（below_since_ts 在 holdings 上）----
+  const holders = wr.usersHoldingToken(tokenId);
+  let stillMonitored = false;
+  for (const h of holders) {
+    const row = wr.listHoldingsByWallet(h.walletId).find((x) => x.tokenId === tokenId);
+    if (!row) continue;
+    const prev: FilterState = { monitored: row.monitored === 1, belowSinceTs: row.belowSinceTs };
+    const r = evaluateFilter(prev, {
+      liquidityUsd: quote?.liquidityUsd ?? null,
+      volume24hUsd: quote?.volume24hUsd ?? null,
+    }, now, DEFAULT_THRESHOLDS);
+    wr.setHoldingMonitored(h.walletId, tokenId, r.monitored, r.reason, r.belowSinceTs);
+    if (r.monitored) stillMonitored = true;
+  }
+  if (!stillMonitored || !quote) return;
+
+  // ---- 倍数 ----
+  const price = new Decimal(quote.priceUsd);
+  if (!price.gt(0)) return;
+  const windows = computeMultiples(load5mCandles(tokenId, now - 86400 - 600), price, now);
+  if (windows.length === 0) return;
+
+  // ---- 状态机 ----
+  const states = loadStates(tokenId);
+  const fires: PendingFire[] = [];
+
+  for (const w of windows) {
+    for (const level of LEVELS) {
+      const key = `${w.timeframe}|${w.basis}|${level}`;
+      const prev = states.get(key);
+      if (!prev) {
+        // 首次见到这个组合：seed 而不是判定。已达标的直接置 FIRED，
+        // 不为"它进入监控之前就涨过"这件事补报
+        saveState({ tokenId, timeframe: w.timeframe, basis: w.basis, level },
+          seedPumpState(w.multiple, level));
+        continue;
+      }
+      const r = evaluatePump(prev, { multiple: w.multiple, level, now });
+      // 无论是否被选中发出，状态一律写回 ——
+      // 不写的话，去重窗口一过就会全部重放
+      saveState({ tokenId, timeframe: w.timeframe, basis: w.basis, level }, r.next);
+      if (r.fire) {
+        fires.push({ tokenId, timeframe: w.timeframe, basis: w.basis, level, multiple: w.multiple, at: now });
+      }
+    }
+  }
+
+  const winner = pickWinner(fires);
+  if (!winner) return;
+  if (suppressedByRecent(lastAlertAt(tokenId), now)) {
+    log.debug(`${tokenId} 30 分钟内已报过，压制`);
+    return;
+  }
+
+  // ---- 扇出：每个持有者一行，带各自的余额与持仓价值 ----
+  const base = windows.find((w) => w.timeframe === winner.timeframe && w.basis === winner.basis)?.base ?? null;
+  for (const h of holders) {
+    const row = wr.listHoldingsByWallet(h.walletId).find((x) => x.tokenId === tokenId);
+    if (!row || row.monitored !== 1) continue;
+    const amount = toHumanAmount(h.balance, h.decimals);
+    wr.insertPumpAlert({
+      id: randomUUID(),
+      userId: h.userId,
+      tokenId,
+      firedAt: now,
+      timeframe: winner.timeframe,
+      basis: winner.basis,
+      level: winner.level,
+      multiple: winner.multiple.toString(),
+      priceUsd: quote.priceUsd,
+      basePriceUsd: base ? base.toString() : null,
+      balance: h.balance,
+      valueUsd: amount ? amount.mul(price).toString() : null,
+      ackedAt: null,
+    });
+  }
+  log.info(`${tokenId} 暴涨 ${winner.multiple.toFixed(2)}x (${winner.timeframe}/${winner.basis}, ${winner.level}x 档)，通知 ${holders.length} 人`);
+}

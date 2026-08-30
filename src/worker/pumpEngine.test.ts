@@ -1,0 +1,166 @@
+process.env.DATABASE_PATH = ':memory:';
+
+import { test, before } from 'node:test';
+import assert from 'node:assert/strict';
+import { runMigrations } from '../db/migrate.ts';
+import { getRawDb } from '../db/index.ts';
+import * as wr from '../db/walletRepo.ts';
+import { runPumpTick, type PumpDeps } from './pumpEngine.ts';
+import type { BatchQuote } from '../sources/dexscreenerBatch.ts';
+
+before(() => { runMigrations(); });
+
+let seq = 0;
+/** 建一个用户 + 钱包 + 一个已在监控的持仓 */
+function holder(tokenId: string, balance = '1000000000000000000') {
+  const u = wr.createUser(`pe${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xw${seq}`, null)!;
+  wr.upsertHolding(w.id, tokenId, balance, 18, 100);
+  wr.setHoldingMonitored(w.id, tokenId, true, null, null);
+  return { userId: u.id, walletId: w.id };
+}
+
+/** 直接塞 5m candle，绕开回填 */
+function candles(tokenId: string, rows: Array<[ts: number, o: string, l: string]>) {
+  const db = getRawDb();
+  const st = db.prepare(
+    `INSERT OR REPLACE INTO candles (token_id, timeframe, ts, o, h, l, c) VALUES (?, '5m', ?, ?, ?, ?, ?)`,
+  );
+  for (const [ts, o, l] of rows) st.run(tokenId, ts, o, o, l, o);
+}
+
+const NOW = 1_700_000_100;
+const CUR = Math.floor(NOW / 300) * 300;
+
+/** 造够 24h 覆盖度的历史，价格恒为 base */
+function history(tokenId: string, base: string) {
+  const rows: Array<[number, string, string]> = [];
+  for (let i = 288; i >= 0; i--) rows.push([CUR - i * 300, base, base]);
+  candles(tokenId, rows);
+}
+
+const deps = (quotes: Record<string, Partial<BatchQuote>>): PumpDeps => ({
+  fetchQuotes: async (_chain, addrs) => {
+    const m = new Map<string, BatchQuote>();
+    for (const a of addrs) {
+      const q = quotes[a];
+      if (q) m.set(a, { priceUsd: '1', liquidityUsd: 50000, volume24hUsd: 99999, symbol: 'T', ...q });
+    }
+    return m;
+  },
+});
+
+test('新币首次进入监控当轮不产生报警，即使已经在 6 倍', async () => {
+  const id = 'bsc:0xseed';
+  holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xseed': { priceUsd: '6' } }));
+  assert.equal(wr.listPumpAlerts(wr.findUserByName(`pe${seq}`)!.id, 0).length, 0,
+    'seed 那一轮必须静默，这是 6699db0 那个坑的反向版本');
+});
+
+test('seed 之后继续涨到更高档位才报', async () => {
+  const id = 'bsc:0xclimb';
+  const h = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xclimb': { priceUsd: '6' } }));       // seed：2x/5x 置 FIRED
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
+
+  await runPumpTick(NOW + 60, deps({ '0xclimb': { priceUsd: '12' } })); // 越过 10x
+  const alerts = wr.listPumpAlerts(h.userId, 0);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0]?.level, 10);
+});
+
+test('从平稳涨到 2 倍会报，且带上倍数与基准价', async () => {
+  const id = 'bsc:0xrise';
+  const h = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xrise': { priceUsd: '1' } }));        // seed 在 1 倍
+  await runPumpTick(NOW + 60, deps({ '0xrise': { priceUsd: '2.5' } }));
+  const a = wr.listPumpAlerts(h.userId, 0)[0];
+  assert.ok(a, '应产生报警');
+  assert.equal(a!.level, 2);
+  assert.equal(a!.priceUsd, '2.5');
+  assert.ok(Number(a!.multiple) >= 2);
+});
+
+test('同一波行情只发一条，不是每个窗口各发一条', async () => {
+  const id = 'bsc:0xonce';
+  const h = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xonce': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xonce': { priceUsd: '3' } }));
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 1,
+    '四窗口两基准共八个组合达标，但只该发一条');
+});
+
+test('未被选中的窗口状态也被写回，去重窗口过后不重放', async () => {
+  const id = 'bsc:0xnoreplay';
+  const h = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xnoreplay': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xnoreplay': { priceUsd: '3' } }));
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 1);
+
+  // 跨过 30 分钟去重窗口，价格没变
+  await runPumpTick(NOW + 2400, deps({ '0xnoreplay': { priceUsd: '3' } }));
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 1,
+    '状态若没写回，去重窗口一过就会重放');
+});
+
+test('两个用户持有同一个币，各自收到一条，余额不串号', async () => {
+  const id = 'bsc:0xshared';
+  const a = holder(id, '1000000000000000000');     // 1 个
+  const b = holder(id, '5000000000000000000');     // 5 个
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xshared': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xshared': { priceUsd: '4' } }));
+
+  const aa = wr.listPumpAlerts(a.userId, 0);
+  const bb = wr.listPumpAlerts(b.userId, 0);
+  assert.equal(aa.length, 1);
+  assert.equal(bb.length, 1);
+  assert.equal(aa[0]?.balance, '1000000000000000000');
+  assert.equal(bb[0]?.balance, '5000000000000000000');
+  assert.equal(aa[0]?.valueUsd, '4', '1 个 × $4');
+  assert.equal(bb[0]?.valueUsd, '20', '5 个 × $4');
+});
+
+test('报价缺失时不报警且不把币踢出监控', async () => {
+  const id = 'bsc:0xgap';
+  const h = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xgap': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({}));            // 完全没报价
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
+  assert.equal(wr.listHoldingsByWallet(h.walletId)[0]?.monitored, 1, '不该被踢出');
+});
+
+test('流动性跌破入门槛但在滞回区内，仍然监控', async () => {
+  const id = 'bsc:0xhyst';
+  const h = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xhyst': { priceUsd: '1', liquidityUsd: 4000 } }));
+  assert.equal(wr.listHoldingsByWallet(h.walletId)[0]?.monitored, 1);
+});
+
+test('历史不足 24h 的新币不会因此误报', async () => {
+  const id = 'bsc:0xyoung';
+  const h = holder(id);
+  candles(id, [[CUR, '1', '1']]);                   // 只有一根
+  await runPumpTick(NOW, deps({ '0xyoung': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xyoung': { priceUsd: '3' } }));
+  const alerts = wr.listPumpAlerts(h.userId, 0);
+  // 5m 窗口有数据会报，但不该出现 24h/6h/1h 的条目
+  for (const a of alerts) {
+    assert.equal(a.timeframe, '5m', `历史只有 5 分钟，不该产出 ${a.timeframe} 报警`);
+  }
+});
+
+test('完全没有 candle 的币不报警也不崩', async () => {
+  const id = 'bsc:0xnocandle';
+  const h = holder(id);
+  await runPumpTick(NOW, deps({ '0xnocandle': { priceUsd: '999' } }));
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
+});
