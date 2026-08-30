@@ -13,6 +13,7 @@ import { fetchKlinePage, supportsChain as gmgnSupports, isConfigured as gmgnConf
 import { getRawDb } from '../db/index.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
+import { Decimal } from '../lib/decimal.ts';
 import type { Candle } from '../sources/types.ts';
 
 const log = makeLogger('wallet-backfill');
@@ -22,6 +23,22 @@ export const BACKFILL_SECONDS = 86400;
 
 /** 覆盖率达到这个比例就认为不需要回填。留余量是因为数据源会省略无成交的 candle */
 const COVERAGE_RATIO = 0.5;
+
+/**
+ * 回填数据与实时报价允许的最大偏离倍数。
+ *
+ * GMGN 与 DexScreener 会对同一个币给出不同口径的价格 —— 实测「不对劲」
+ * 相差 126 倍、「哈夫币」相差 119 倍（同一时刻，不是涨跌）。两个源的
+ * 数据混进同一条 candle 序列，会算出 100 多倍的假涨幅。
+ *
+ * 判据是**回填的最后一根 K 线**对比实时价：两者只相隔几十分钟，
+ * 本该几乎相等。用最后一根而不是最低价，所以真实的大涨不会被误杀。
+ *
+ * 阈值 10 倍，与 backfill.ts 里那道旧守卫（当初为「牛来」加的）一致。
+ * 偏向拦截：拦错了只是没有历史，窗口会诚实地标 too_young；
+ * 放过了就是推一条 126 倍的假报警，而工具喊一次狼来了就会被关掉。
+ */
+const MAX_PRICE_DEVIATION = 10;
 
 export interface BackfillDeps {
   fetchKline: (chain: string, address: string, tf: '5m', beforeTs?: number) => Promise<Candle[]>;
@@ -57,6 +74,7 @@ export function needsBackfill(tokenId: string, now: number): boolean {
  */
 export async function backfillWalletToken(
   tokenId: string, now: number, deps: BackfillDeps = realBackfillDeps,
+  livePrice: Decimal | null = null,
 ): Promise<number> {
   const [chain, address] = tokenId.split(':');
   if (!chain || !address) return 0;
@@ -74,6 +92,24 @@ export async function backfillWalletToken(
   const since = Math.floor(now / 300) * 300 - BACKFILL_SECONDS;
   const inWindow = rows.filter((c) => c.ts >= since);
   if (inWindow.length === 0) return 0;
+
+  // 口径校验：回填的最后一根应与实时价基本一致（相隔仅几十分钟）。
+  // 差得离谱说明两个源不在一个口径上，整批都不能用 ——
+  // 混进去会算出 100 多倍的假涨幅
+  if (livePrice && livePrice.gt(0)) {
+    const latest = inWindow[inWindow.length - 1]!.c;
+    if (latest.gt(0)) {
+      const ratio = Decimal.max(latest.div(livePrice), livePrice.div(latest));
+      if (ratio.gt(MAX_PRICE_DEVIATION)) {
+        log.warn(
+          `${tokenId} 回填数据与实时价相差 ${ratio.toFixed(1)} 倍 ` +
+          `(回填 ${latest.toString()} vs 实时 ${livePrice.toString()})，整批丢弃 —— ` +
+          `两个数据源口径不一致，混用会算出假涨幅`,
+        );
+        return 0;
+      }
+    }
+  }
 
   const db = getRawDb();
   const stmt = db.prepare(

@@ -23,7 +23,8 @@
     "bench": "tsx --env-file-if-exists=.env scripts/bench-engine.ts",
     "backup:pull": "bash scripts/pull-backup.sh",
     "check:rpc": "tsx --env-file-if-exists=.env scripts/check-evm-rpc.ts",
-    "bench:pump": "tsx --env-file-if-exists=.env scripts/bench-pump.ts"
+    "bench:pump": "tsx --env-file-if-exists=.env scripts/bench-pump.ts",
+    "purge:backfill": "tsx --env-file-if-exists=.env scripts/purge-bad-backfill.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

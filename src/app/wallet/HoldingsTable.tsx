@@ -68,10 +68,16 @@ function Row({ h }: { h: HoldingRow }) {
     }`}>
       <div className="flex items-baseline gap-2">
         <span className={`font-medium ${h.monitored ? 'text-neutral-200' : 'text-neutral-500'}`}>
-          {h.symbol ?? `${h.address?.slice(0, 8)}…`}
+          {h.symbol ?? '未知代币'}
         </span>
         <span className="text-xs text-neutral-600">{h.chain}</span>
-        <span className="text-xs text-neutral-600 truncate">{h.wallet}</span>
+        {/* 合约地址，点一下复制 —— 同名假币很多，最终认的是 CA。
+            钱包名不显示：跨四条链就是同一个地址，写出来只是噪音 */}
+        <button type="button" title={h.address ?? ''}
+          onClick={() => { if (h.address) void navigator.clipboard?.writeText(h.address); }}
+          className="text-xs font-mono text-neutral-600 hover:text-neutral-400 truncate">
+          {h.address ? `${h.address.slice(0, 6)}…${h.address.slice(-4)}` : ''}
+        </button>
         <Multiple best={h.best} />
         <span className={`ml-auto tabular-nums shrink-0 ${
           h.monitored ? 'text-neutral-200' : 'text-neutral-500'

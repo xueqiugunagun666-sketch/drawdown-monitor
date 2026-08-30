@@ -109,3 +109,51 @@ test('价格全程走字符串，极小价格不丢精度', async () => {
     `SELECT o FROM candles WHERE token_id='bsc:0xprec' AND ts=?`).get(CUR - 900) as { o: string };
   assert.equal(row.o, '0.000000000001234');
 });
+
+test('回填价与实时价差太多时整批丢弃 —— 两个源不在一个口径上', async () => {
+  // 实测：不对劲 GMGN 报 3.0e-05、DexScreener 报 0.0038，差 126 倍；
+  // 哈夫币差 119 倍。这不是暴涨（相隔仅几十分钟），是口径不一致。
+  // 混进同一条 candle 序列会算出 100 多倍的假涨幅
+  const rows = Array.from({ length: 288 }, (_, i) =>
+    candle(CUR - (287 - i) * 300, '0.000030'));
+  const n = await backfillWalletToken('bsc:0xmismatch', NOW, deps(rows), new Decimal('0.0038'));
+  assert.equal(n, 0, '差 126 倍必须整批丢弃');
+  const cnt = getRawDb().prepare(
+    `SELECT COUNT(*) c FROM candles WHERE token_id='bsc:0xmismatch'`).get() as { c: number };
+  assert.equal(cnt.c, 0);
+});
+
+test('回填价与实时价接近时正常写入', async () => {
+  const rows = Array.from({ length: 288 }, (_, i) =>
+    candle(CUR - (287 - i) * 300, '0.0000016'));
+  const n = await backfillWalletToken('bsc:0xagree', NOW, deps(rows), new Decimal('0.0000016150'));
+  assert.equal(n, 288, '基本一致就该正常写入');
+});
+
+test('真实涨幅落在容忍区间内，不会被误杀', async () => {
+  // 币在回填窗口内从 1 涨到 2.5，实时价 2.5 —— 最后一根 K 线也是 2.5，
+  // 判据是"最后一根 vs 实时"而不是"最低价 vs 实时"，所以不受涨幅影响
+  const rows = Array.from({ length: 288 }, (_, i) =>
+    candle(CUR - (287 - i) * 300, i < 200 ? '1' : '2.5'));
+  const n = await backfillWalletToken('bsc:0xrose', NOW, deps(rows), new Decimal('2.5'));
+  assert.equal(n, 288, '真实上涨不该被守卫拦掉');
+});
+
+test('刚好在容忍边界内外', async () => {
+  const mk = (p: string) => Array.from({ length: 10 }, (_, i) => candle(CUR - (9 - i) * 300, p));
+  // 容忍 10 倍：9.5 倍放行，11 倍拦下。
+  // 偏向拦截：拦错了只是没历史，放过了就是假报警
+  assert.ok(await backfillWalletToken('bsc:0xin', NOW, deps(mk('1')), new Decimal('9.5')) > 0);
+  assert.equal(await backfillWalletToken('bsc:0xout', NOW, deps(mk('1')), new Decimal('11')), 0);
+});
+
+test('反向偏离同样拦下 —— 回填价高于实时价也是口径问题', async () => {
+  const rows = Array.from({ length: 10 }, (_, i) => candle(CUR - (9 - i) * 300, '100'));
+  assert.equal(await backfillWalletToken('bsc:0xrev', NOW, deps(rows), new Decimal('1')), 0);
+});
+
+test('没有实时价时跳过守卫，照常写入', async () => {
+  // 拿不到实时价就无从比较。此时宁可写入——没有历史比有可疑历史更糟
+  const n = await backfillWalletToken('bsc:0xnolive', NOW, deps([candle(CUR - 900, '1')]), null);
+  assert.equal(n, 1);
+});

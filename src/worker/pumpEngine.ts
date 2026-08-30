@@ -166,7 +166,7 @@ async function evaluateToken(
     // 基于空历史 seed 出来的状态，等回填补上后就全错了。
     // 一个币一次 GMGN 请求（288 根 < limit 1000），失败也不影响判定
     if (needsBackfill(tokenId, now)) {
-      await backfillWalletToken(tokenId, now, backfillDeps);
+      await backfillWalletToken(tokenId, now, backfillDeps, price);
     }
   }
   const windows = computeMultiples(load5mCandles(tokenId, now - 86400 - 600), price, now);
