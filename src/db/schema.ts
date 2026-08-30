@@ -294,4 +294,6 @@ export const tokenMeta = sqliteTable('token_meta', {
   holderCount: integer('holder_count'),
   symbol: text('symbol'),
   fetchedAt: integer('fetched_at').notNull(),
+  /** 上次跑过判定的时刻。已被挡掉的币不必每轮重查报价 */
+  lastEvalAt: integer('last_eval_at'),
 });

@@ -99,7 +99,9 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   // 只看 monitored=1 会死锁 —— 过滤层永远不执行，币永远不会被提升。
   // 要判断一个币够不够格，本来就得先拿到它的流动性与成交量，也就是先取报价。
   // 成本可接受：批量接口一次 30 个地址，450 个币也只要 15 次请求。
-  const tokenIds = wr.allHoldingTokenIds();
+  // 监控中的每轮都判；已被挡掉的每 30 分钟重查一次 ——
+  // 一千多个粉尘币每轮都拉报价，光请求就占掉 20 秒
+  const tokenIds = wr.tokenIdsDueForEval(now);
   if (tokenIds.length === 0) return;
 
   // 按链分组，每条链一次批量报价
@@ -124,6 +126,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
     try {
       await evaluateToken(tokenId, quotes.get(tokenId) ?? null, now,
         deps.backfill ?? realBackfillDeps, deps.fetchTokenInfo);
+      wr.markTokenEvaluated(tokenId, now);
     } catch (err) {
       log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
     }

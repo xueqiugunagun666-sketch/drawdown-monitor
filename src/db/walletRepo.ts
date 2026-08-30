@@ -287,3 +287,38 @@ export function isTokenMetaStale(tokenId: string, now: number): boolean {
   const m = getTokenMeta(tokenId);
   return m === null || now - m.fetchedAt >= META_TTL_SECONDS;
 }
+
+/** 已被挡掉的币多久重查一次。流动性不会分分钟变化，30 分钟够了 */
+export const REJECTED_RECHECK_SECONDS = 1800;
+
+/**
+ * 本轮该判定哪些币。
+ *
+ * 监控中的每轮都判；已被挡掉的每 30 分钟重查一次 ——
+ * 线上 1206 个去重代币里一千一百多个是早被流动性挡掉的粉尘，
+ * 每轮都给它们拉报价光请求就占掉 20 秒，而流动性不会分分钟变化。
+ *
+ * 从未判定过的（last_eval_at 为空）一律要判，否则新扫到的币进不来。
+ */
+export function tokenIdsDueForEval(now: number): string[] {
+  const rows = getDb().all<{ token_id: string }>(sql`
+    SELECT DISTINCT h.token_id AS token_id
+    FROM holdings h
+    LEFT JOIN token_meta m ON m.token_id = h.token_id
+    WHERE h.decimals IS NOT NULL
+      AND (
+        h.monitored = 1
+        OR m.last_eval_at IS NULL
+        OR m.last_eval_at <= ${now - REJECTED_RECHECK_SECONDS}
+      )
+  `);
+  return rows.map((r) => r.token_id);
+}
+
+export function markTokenEvaluated(tokenId: string, now: number): void {
+  getDb().run(sql`
+    INSERT INTO token_meta (token_id, holder_count, symbol, fetched_at, last_eval_at)
+    VALUES (${tokenId}, NULL, NULL, ${now}, ${now})
+    ON CONFLICT(token_id) DO UPDATE SET last_eval_at = ${now}
+  `);
+}

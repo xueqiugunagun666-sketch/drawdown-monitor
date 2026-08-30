@@ -259,3 +259,49 @@ test('地址大小写归一 —— 同一地址不同写法不该建出两组', 
   assert.ok(wr.addWallet(u.id, 'bsc', '0xAbCdEf0123', null));
   assert.equal(wr.addWallet(u.id, 'bsc', '0xabcdef0123', null), null, '大小写不同也算重复');
 });
+
+test('监控中的币每轮都要判', () => {
+  const u = wr.createUser(`due${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xdue${seq}`, null)!;
+  const id = `bsc:0xmon${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  wr.markTokenEvaluated(id, 1000);
+  assert.ok(wr.tokenIdsDueForEval(1001).includes(id), '刚判过也要继续判');
+});
+
+test('被挡掉的币 30 分钟内不重复判', () => {
+  const u = wr.createUser(`due2${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xdue2${seq}`, null)!;
+  const id = `bsc:0xrej${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, false, '流动性不足', null);
+  wr.markTokenEvaluated(id, 1000);
+  assert.ok(!wr.tokenIdsDueForEval(1000 + 60).includes(id), '刚判过不该重判');
+  assert.ok(wr.tokenIdsDueForEval(1000 + wr.REJECTED_RECHECK_SECONDS).includes(id), '满 30 分钟要重判');
+});
+
+test('从未判定过的币一定要判 —— 否则新扫到的币永远进不来', () => {
+  const u = wr.createUser(`due3${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xdue3${seq}`, null)!;
+  const id = `bsc:0xfresh${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  assert.ok(wr.tokenIdsDueForEval(999999).includes(id));
+});
+
+test('markTokenEvaluated 不会抹掉已有的持有人数', () => {
+  const id = 'bsc:0xkeepmeta';
+  wr.setTokenMeta(id, 705786, 'MOONALD', 500);
+  wr.markTokenEvaluated(id, 900);
+  const m = wr.getTokenMeta(id);
+  assert.equal(m?.holderCount, 705786, '判定标记不该冲掉持有人数');
+  assert.equal(m?.symbol, 'MOONALD');
+});
+
+test('decimals 未知的币不参与判定', () => {
+  const u = wr.createUser(`due4${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xdue4${seq}`, null)!;
+  const id = `bsc:0xnodec${seq}`;
+  wr.upsertHolding(w.id, id, '1', null, 100);
+  assert.ok(!wr.tokenIdsDueForEval(999999).includes(id));
+});

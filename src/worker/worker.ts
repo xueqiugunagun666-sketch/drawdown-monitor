@@ -135,12 +135,16 @@ async function main(): Promise<void> {
   // 单币成本比看板低一个数量级，见 spec §8 的容量测算
   const pumpLoop = async () => {
     while (!stopping) {
+      const t0 = Date.now();
       try {
         await runPumpTick(nowSec());
       } catch (err) {
         log.exception('暴涨判定轮次异常', err);
       }
-      await new Promise((r) => setTimeout(r, TICK_INTERVAL_SECONDS * 1000));
+      // 补足到周期而不是固定 sleep —— 固定 sleep 会让实际周期
+      // 变成"tick 耗时 + 120 秒"，实测被拖到 165 秒
+      const wait = TICK_INTERVAL_SECONDS * 1000 - (Date.now() - t0);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     }
   };
   void pumpLoop();

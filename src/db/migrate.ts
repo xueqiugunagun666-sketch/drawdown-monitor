@@ -163,6 +163,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['alerts', 'verdict_basis', 'TEXT'],
   ['tokens', 'visibility', "TEXT NOT NULL DEFAULT 'public'"],
   ['holdings', 'symbol', 'TEXT'],
+  ['token_meta', 'last_eval_at', 'INTEGER'],
 ];
 
 export function runMigrations(): void {
