@@ -7,7 +7,8 @@
  */
 import { eq, and, gte, desc, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { getDb } from './index.ts';
+import { Decimal } from '../lib/decimal.ts';
+import { getDb, getRawDb } from './index.ts';
 import { users, sessions, wallets, holdings, pumpAlerts } from './schema.ts';
 
 export type WalletRow = typeof wallets.$inferSelect;
@@ -181,4 +182,41 @@ export function listPumpAlerts(userId: string, sinceTs: number): PumpAlertRow[] 
   return getDb().select().from(pumpAlerts)
     .where(and(eq(pumpAlerts.userId, userId), gte(pumpAlerts.firedAt, sinceTs)))
     .orderBy(desc(pumpAlerts.firedAt)).all();
+}
+
+/* ---------------- 钱包币的 5m candle ---------------- */
+
+/**
+ * 写入/更新钱包币当前的 5m candle。
+ *
+ * 与 repo.upsertCandle 的 o/h/l/c 语义完全一致（同一格内 o 保留首次、
+ * h/l 取极值、c 取最新），但只需要价格与流动性 —— 钱包币走批量报价，
+ * 拿不到也不需要主池选举、跨池中位数、txn 明细那些字段。
+ *
+ * 价格全程走字符串，不经过 Number。
+ */
+export function upsertWalletCandle(
+  tokenId: string, priceUsd: string, liquidityUsd: number, fetchedAt: number,
+): void {
+  const ts = Math.floor(fetchedAt / 300) * 300;
+  const db = getRawDb();
+  const existing = db.prepare(
+    `SELECT h, l FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts = ?`,
+  ).get(tokenId, ts) as { h: string | null; l: string | null } | undefined;
+
+  if (!existing) {
+    db.prepare(
+      `INSERT INTO candles (token_id, timeframe, ts, o, h, l, c, liquidity_total, source)
+       VALUES (?, '5m', ?, ?, ?, ?, ?, ?, 'wallet-batch')`,
+    ).run(tokenId, ts, priceUsd, priceUsd, priceUsd, priceUsd, liquidityUsd);
+    return;
+  }
+
+  const p = new Decimal(priceUsd);
+  const hi = existing.h ? Decimal.max(new Decimal(existing.h), p) : p;
+  const lo = existing.l ? Decimal.min(new Decimal(existing.l), p) : p;
+  db.prepare(
+    `UPDATE candles SET h = ?, l = ?, c = ?, liquidity_total = ?
+     WHERE token_id = ? AND timeframe = '5m' AND ts = ?`,
+  ).run(hi.toString(), lo.toString(), priceUsd, liquidityUsd, tokenId, ts);
 }

@@ -7,6 +7,7 @@ process.env.DATABASE_PATH = ':memory:';
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { runMigrations } from './migrate.ts';
+import { getRawDb } from './index.ts';
 import * as wr from './walletRepo.ts';
 
 before(() => { runMigrations(); });
@@ -167,4 +168,48 @@ test('listAllEnabledWallets 跨用户返回，供 worker 扫描', () => {
   wr.addWallet(a.id, 'bsc', '0xw1', null);
   wr.addWallet(b.id, 'base', '0xw2', null);
   assert.equal(wr.listAllEnabledWallets().length, before + 2);
+});
+
+test('钱包 candle：同格内 o 保留首次、h/l 取极值、c 取最新', () => {
+  const db = getRawDb();
+  const id = 'bsc:0xcandle';
+  // 从对齐后的格起点算偏移，且全部 < 300，确保四次都落在同一格
+  const slot = Math.floor(1_700_000_000 / 300) * 300;
+  wr.upsertWalletCandle(id, '10', 1000, slot + 10);
+  wr.upsertWalletCandle(id, '25', 1000, slot + 60);
+  wr.upsertWalletCandle(id, '4', 1000, slot + 120);
+  wr.upsertWalletCandle(id, '15', 1000, slot + 299);
+  const row = db.prepare(`SELECT o,h,l,c FROM candles WHERE token_id=? AND ts=?`).get(id, slot) as
+    { o: string; h: string; l: string; c: string };
+  assert.equal(row.o, '10', 'o 应保留首次');
+  assert.equal(row.h, '25');
+  assert.equal(row.l, '4');
+  assert.equal(row.c, '15', 'c 应是最新');
+});
+
+test('钱包 candle：跨格会新建一根，历史就是这样攒起来的', () => {
+  const db = getRawDb();
+  const id = 'bsc:0xslots';
+  wr.upsertWalletCandle(id, '1', 1000, 1_700_000_000);
+  wr.upsertWalletCandle(id, '2', 1000, 1_700_000_300);
+  wr.upsertWalletCandle(id, '3', 1000, 1_700_000_600);
+  const n = db.prepare(`SELECT COUNT(*) c FROM candles WHERE token_id=?`).get(id) as { c: number };
+  assert.equal(n.c, 3);
+});
+
+test('钱包 candle：写入时刻会向下对齐到 5m 格', () => {
+  const db = getRawDb();
+  const id = 'bsc:0xalign';
+  wr.upsertWalletCandle(id, '1', 1000, 1_700_000_299);
+  const row = db.prepare(`SELECT ts FROM candles WHERE token_id=?`).get(id) as { ts: number };
+  assert.equal(row.ts % 300, 0, 'ts 必须是 300 的整数倍');
+  assert.equal(row.ts, 1_700_000_100);
+});
+
+test('钱包 candle：极小价格不丢精度', () => {
+  const db = getRawDb();
+  const id = 'bsc:0xtiny';
+  wr.upsertWalletCandle(id, '0.000000000001234', 1000, 1_700_000_000);
+  const row = db.prepare(`SELECT o FROM candles WHERE token_id=?`).get(id) as { o: string };
+  assert.equal(row.o, '0.000000000001234');
 });

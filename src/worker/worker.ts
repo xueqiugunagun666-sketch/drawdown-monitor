@@ -13,6 +13,9 @@ import { dueReminders, confirmSent } from './reminders.ts';
 import { notifyPlain } from './notifier.ts';
 import { backfillNativePrices } from '../sources/nativeHistory.ts';
 import * as repo from '../db/repo.ts';
+import { scanAllWallets, SCAN_INTERVAL_SECONDS } from './walletScanner.ts';
+import { runPumpTick, TICK_INTERVAL_SECONDS } from './pumpEngine.ts';
+import { nowSec } from '../lib/time.ts';
 
 const log = makeLogger('worker');
 
@@ -108,6 +111,36 @@ async function main(): Promise<void> {
       }
     })();
   }, 60_000);
+
+  // 钱包扫描：读链拿余额。12 分钟一轮 —— 余额变化远比价格慢。
+  // **不能 await**，一次扫描要打几十上百个 RPC 请求，
+  // 挡在这里会把行情轮询堵死（原生币历史回填上踩过这个坑）
+  const walletScanLoop = async () => {
+    while (!stopping) {
+      try {
+        await scanAllWallets(nowSec());
+      } catch (err) {
+        log.exception('钱包扫描轮次异常', err);
+      }
+      await new Promise((r) => setTimeout(r, SCAN_INTERVAL_SECONDS * 1000));
+    }
+  };
+  void walletScanLoop();
+
+  // 暴涨判定：2 分钟一轮，与看板的 30 秒分开。
+  // 钱包币走 DexScreener 批量接口（一次 30 个地址），
+  // 单币成本比看板低一个数量级，见 spec §8 的容量测算
+  const pumpLoop = async () => {
+    while (!stopping) {
+      try {
+        await runPumpTick(nowSec());
+      } catch (err) {
+        log.exception('暴涨判定轮次异常', err);
+      }
+      await new Promise((r) => setTimeout(r, TICK_INTERVAL_SECONDS * 1000));
+    }
+  };
+  void pumpLoop();
 
   const progressTimer = setInterval(() => {
     const p = backfillProgress();

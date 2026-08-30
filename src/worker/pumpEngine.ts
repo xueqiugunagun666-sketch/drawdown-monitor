@@ -75,6 +75,14 @@ function lastAlertAt(tokenId: string): number | null {
   return r?.t ?? null;
 }
 
+/** 该币是否已在共享看板的监控列表里（那边的 candle 写入优先） */
+function isWatchlistToken(tokenId: string): boolean {
+  const r = getRawDb().prepare(
+    `SELECT 1 AS x FROM tokens WHERE id = ? AND enabled = 1 AND visibility = 'public'`,
+  ).get(tokenId) as { x: number } | undefined;
+  return r !== undefined;
+}
+
 function load5mCandles(tokenId: string, sinceTs: number) {
   return getRawDb().prepare(
     `SELECT ts, o, l FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts >= ? ORDER BY ts`,
@@ -134,6 +142,16 @@ async function evaluateToken(
   // ---- 倍数 ----
   const price = new Decimal(quote.priceUsd);
   if (!price.gt(0)) return;
+
+  // 先把本轮价格并进当前 5m candle，历史就是这样一轮轮攒起来的。
+  //
+  // 但如果这个币同时在共享看板的监控列表里，轮询器已经在写同一行了 ——
+  // 它 30 秒一轮、做主池选举与跨池中位数校验，数据比批量报价好。
+  // 两边都写会互相覆盖 h/l 与 liquidity_total（一个是主池、一个是全池口径），
+  // 让 source 列反复翻转。让位给它。
+  if (!isWatchlistToken(tokenId)) {
+    wr.upsertWalletCandle(tokenId, quote.priceUsd, quote.liquidityUsd, now);
+  }
   const windows = computeMultiples(load5mCandles(tokenId, now - 86400 - 600), price, now);
   if (windows.length === 0) return;
 

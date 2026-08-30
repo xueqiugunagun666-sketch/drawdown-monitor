@@ -164,3 +164,31 @@ test('完全没有 candle 的币不报警也不崩', async () => {
   await runPumpTick(NOW, deps({ '0xnocandle': { priceUsd: '999' } }));
   assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
 });
+
+test('币同时在共享看板里时，不抢写 candle（让给轮询器）', async () => {
+  const id = 'bsc:0xboth';
+  const h = holder(id);
+  history(id, '1');
+  // 把它也加进共享看板
+  getRawDb().prepare(
+    `INSERT INTO tokens (id, chain, address, added_at, enabled, frozen, fail_count, pinned, visibility)
+     VALUES (?, 'bsc', '0xboth', 1, 1, 0, 0, 0, 'public')`,
+  ).run(id);
+
+  const before = (getRawDb().prepare(
+    `SELECT COUNT(*) c FROM candles WHERE token_id=? AND source='wallet-batch'`).get(id) as { c: number }).c;
+  await runPumpTick(NOW + 900, deps({ '0xboth': { priceUsd: '2' } }));
+  const after = (getRawDb().prepare(
+    `SELECT COUNT(*) c FROM candles WHERE token_id=? AND source='wallet-batch'`).get(id) as { c: number }).c;
+  assert.equal(after, before, '看板已覆盖的币，钱包引擎不该再写 candle');
+});
+
+test('只在钱包里的币，引擎会写 candle 攒历史', async () => {
+  const id = 'bsc:0xwalletonly';
+  holder(id);
+  history(id, '1');
+  await runPumpTick(NOW + 900, deps({ '0xwalletonly': { priceUsd: '2' } }));
+  const n = (getRawDb().prepare(
+    `SELECT COUNT(*) c FROM candles WHERE token_id=? AND source='wallet-batch'`).get(id) as { c: number }).c;
+  assert.ok(n > 0, '钱包独有的币必须自己攒历史');
+});
