@@ -146,3 +146,48 @@ test('不变量：low 基准恒不高于 open 基准，因此 low 倍数恒不�
 test('空 candle 数组返回空结果，不抛错', () => {
   assert.equal(computeMultiples([], new Decimal('1'), NOW).length, 0);
 });
+
+test('单根异常低点不会带偏 low 基准', () => {
+  // 实测线上：DexScreener 有一个 tick 给 USDG 返回了 5.56e-24，
+  // 成了 1h 窗口的最低点，算出 5.96e21 倍并真的推了报警
+  const rows: Array<[string, string]> = Array.from({ length: 12 }, () => ['1', '1']);
+  rows[3] = ['1', '0.000000000000000000000005563'];   // 一根垃圾
+  const out = computeMultiples(series(CUR - 3300, rows), new Decimal('2'), NOW);
+  const low = out.find((r) => r.timeframe === '1h' && r.basis === 'low')!;
+  assert.equal(low.base.toString(), '1', '应剔除孤立异常值');
+  assert.equal(low.multiple.toString(), '2');
+});
+
+test('连续多根的真实低点保留，不被当成异常值', () => {
+  // MOONALD 实测：开盘后连续八根都在 2e-09 量级、每根都有真实成交，
+  // 那 772 倍是真的。k 阶极值只剔除孤立点，不该抹掉持续的低位
+  const rows: Array<[string, string]> = Array.from({ length: 12 }, (_, i) =>
+    i < 5 ? ['0.000000001', '0.000000001'] : ['1', '1']);
+  const out = computeMultiples(series(CUR - 3300, rows), new Decimal('2'), NOW);
+  const low = out.find((r) => r.timeframe === '1h' && r.basis === 'low')!;
+  // 项目全局 toExpNeg:-40，小数展开成普通记法
+  assert.equal(low.base.toString(), '0.000000001', '连续五根的低位是真实行情，必须保留');
+});
+
+test('两根孤立异常值也能挡住', () => {
+  const rows: Array<[string, string]> = Array.from({ length: 24 }, () => ['1', '1']);
+  rows[3] = ['1', '1e-24'];
+  rows[17] = ['1', '2e-24'];
+  const out = computeMultiples(series(CUR - 6900, rows), new Decimal('2'), NOW);
+  const low = out.find((r) => r.timeframe === '1h' && r.basis === 'low')!;
+  assert.equal(low.base.toString(), '1');
+});
+
+test('5m 窗口只有一根，无从剔除，取原值', () => {
+  const out = computeMultiples(series(CUR, [['1', '0.5']]), new Decimal('2'), NOW);
+  const low = out.find((r) => r.timeframe === '5m' && r.basis === 'low')!;
+  assert.equal(low.base.toString(), '0.5');
+});
+
+test('candle 很少时不做剔除，否则会把仅有的数据剔光', () => {
+  const rows: Array<[string, string]> = [['1', '0.5'], ['1', '1'], ['1', '1']];
+  const out = computeMultiples(series(CUR - 600, rows), new Decimal('2'), NOW);
+  const low = out.find((r) => r.timeframe === '1h' && r.basis === 'low');
+  // 只有 3 根，不够 1h 窗口的覆盖度，本就不该产出
+  assert.equal(low, undefined);
+});

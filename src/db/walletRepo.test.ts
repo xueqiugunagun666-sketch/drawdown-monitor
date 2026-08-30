@@ -305,3 +305,36 @@ test('decimals 未知的币不参与判定', () => {
   wr.upsertHolding(w.id, id, '1', null, 100);
   assert.ok(!wr.tokenIdsDueForEval(999999).includes(id));
 });
+
+test('离谱跳变的报价不写进 candle', () => {
+  const id = 'bsc:0xjunkquote';
+  const slot = Math.floor(1_700_100_000 / 300) * 300;
+  assert.equal(wr.upsertWalletCandle(id, '1', 1000, slot), true);
+  // 实测 USDG 那根：正常约 1 美元，DexScreener 给了 5.56e-24
+  assert.equal(wr.upsertWalletCandle(id, '0.000000000000000000000005563', 1000, slot + 300), false,
+    '5.56e-24 相对 1 是 1e24 倍跳变，必须丢弃');
+  const n = getRawDb().prepare(
+    `SELECT COUNT(*) c FROM candles WHERE token_id=?`).get(id) as { c: number };
+  assert.equal(n.c, 1, '垃圾报价不该建出新 candle');
+});
+
+test('正常波动照常写入', () => {
+  const id = 'bsc:0xnormalmove';
+  const slot = Math.floor(1_700_200_000 / 300) * 300;
+  wr.upsertWalletCandle(id, '1', 1000, slot);
+  assert.equal(wr.upsertWalletCandle(id, '5', 1000, slot + 300), true, '5 倍是正常行情');
+  assert.equal(wr.upsertWalletCandle(id, '500', 1000, slot + 600), true, '100 倍也放行');
+});
+
+test('第一根没有参照，直接写入', () => {
+  const id = 'bsc:0xfirstcandle';
+  assert.equal(wr.upsertWalletCandle(id, '0.000000000001', 1000, 1_700_300_000), true);
+});
+
+test('跳变守卫用的是上一根收盘，不是同格内的值', () => {
+  const id = 'bsc:0xsameslot';
+  const slot = Math.floor(1_700_400_000 / 300) * 300;
+  wr.upsertWalletCandle(id, '1', 1000, slot);
+  // 同一格内再写一次正常值
+  assert.equal(wr.upsertWalletCandle(id, '1.5', 1000, slot + 100), true);
+});

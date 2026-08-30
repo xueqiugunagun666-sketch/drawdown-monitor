@@ -15,9 +15,18 @@
  * 只对"整体历史不够长"严格。
  *
  * 两个基准：
- *   low  —— 窗口内所有 candle 的最低价，"从低点拉起了几倍"
+ *   low  —— 窗口内的低点，"从低点拉起了几倍"
  *   open —— 窗口内最老那根的开盘价，"这段时间净涨了几倍"
  * low 基准恒不高于 open 基准，所以 low 的倍数恒不低于 open 的。
+ *
+ * low 取的是**第 k 低**而不是最低，用来剔除孤立的异常值 ——
+ * 实测线上 DexScreener 有一个 tick 给 USDG 返回了 5.56e-24，
+ * 成了 1h 窗口的最低点，算出 5.96e21 倍并真的推了报警。
+ * 这与 ath.ts 里 ath_robust 用第 k 高而非最高是同一个道理。
+ *
+ * k 随窗口内 candle 数量分档：孤立点要剔，持续的低位不能剔 ——
+ * MOONALD 开盘后连续八根都在 2e-09 量级且每根都有真实成交，
+ * 那 772 倍是真的行情。
  */
 import { Decimal } from '../lib/decimal.ts';
 
@@ -48,6 +57,19 @@ export interface WindowGap { timeframe: PumpTimeframe; reason: 'no_history' | 't
 export function windowStartTs(tf: PumpTimeframe, now: number): number {
   const current = Math.floor(now / SLOT) * SLOT;
   return current - (WINDOW_SECONDS[tf] - SLOT);
+}
+
+/**
+ * 第 k 低的价格。k 随样本量分档：
+ *   >= 12 根 -> 第 3 低（剔除两个孤立异常值）
+ *   >= 6 根  -> 第 2 低
+ *   否则     -> 最低（样本太少，剔了就没数据了）
+ */
+export function kthLowest(values: Decimal[]): Decimal | null {
+  if (values.length === 0) return null;
+  const k = values.length >= 12 ? 3 : values.length >= 6 ? 2 : 1;
+  const sorted = [...values].sort((a, b) => a.comparedTo(b));
+  return sorted[Math.min(k, sorted.length) - 1] ?? null;
 }
 
 export function computeMultiples(
@@ -82,13 +104,14 @@ export function computeMultiplesDetailed(
       if (base.gt(0)) out.push({ timeframe: tf, basis: 'open', base, multiple: price.div(base) });
     }
 
-    let low: Decimal | null = null;
+    const lows: Decimal[] = [];
     for (const c of inWindow) {
       if (c.l === null || c.l === '') continue;
       const v = new Decimal(c.l);
       if (!v.gt(0)) continue;                    // 0 或负数不是有效价格
-      if (low === null || v.lt(low)) low = v;
+      lows.push(v);
     }
+    const low = kthLowest(lows);
     if (low) out.push({ timeframe: tf, basis: 'low', base: low, multiple: price.div(low) });
   }
 

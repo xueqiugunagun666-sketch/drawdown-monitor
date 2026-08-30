@@ -195,11 +195,36 @@ export function listPumpAlerts(userId: string, sinceTs: number): PumpAlertRow[] 
  *
  * 价格全程走字符串，不经过 Number。
  */
+/**
+ * 相邻两根 5m candle 之间允许的最大价格跳变。
+ *
+ * 实测线上 DexScreener 有一个 tick 给 USDG 返回了 5.56e-24（正常价约 1 美元），
+ * 那根成了 1h 窗口的最低点，算出 5.96e21 倍并真的推了一条报警。
+ *
+ * 1000 倍设得很宽松：真实代币 5 分钟内涨跌 1000 倍基本不可能，
+ * 而真出现了下一根也会接上，不会漏掉行情。宁可漏一根也不能让
+ * 垃圾报价污染整个窗口。
+ */
+const MAX_TICK_JUMP = 1000;
+
 export function upsertWalletCandle(
   tokenId: string, priceUsd: string, liquidityUsd: number, fetchedAt: number,
-): void {
+): boolean {
   const ts = Math.floor(fetchedAt / 300) * 300;
   const db = getRawDb();
+
+  // 与上一根收盘比：跳变离谱的直接丢弃，不写进序列
+  const prev = db.prepare(
+    `SELECT c FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts < ?
+     ORDER BY ts DESC LIMIT 1`,
+  ).get(tokenId, ts) as { c: string | null } | undefined;
+  if (prev?.c) {
+    const a = new Decimal(prev.c), b = new Decimal(priceUsd);
+    if (a.gt(0) && b.gt(0)) {
+      const ratio = Decimal.max(a.div(b), b.div(a));
+      if (ratio.gt(MAX_TICK_JUMP)) return false;
+    }
+  }
   const existing = db.prepare(
     `SELECT h, l FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts = ?`,
   ).get(tokenId, ts) as { h: string | null; l: string | null } | undefined;
@@ -209,7 +234,7 @@ export function upsertWalletCandle(
       `INSERT INTO candles (token_id, timeframe, ts, o, h, l, c, liquidity_total, source)
        VALUES (?, '5m', ?, ?, ?, ?, ?, ?, 'wallet-batch')`,
     ).run(tokenId, ts, priceUsd, priceUsd, priceUsd, priceUsd, liquidityUsd);
-    return;
+    return true;
   }
 
   const p = new Decimal(priceUsd);
@@ -219,6 +244,7 @@ export function upsertWalletCandle(
     `UPDATE candles SET h = ?, l = ?, c = ?, liquidity_total = ?
      WHERE token_id = ? AND timeframe = '5m' AND ts = ?`,
   ).run(hi.toString(), lo.toString(), priceUsd, liquidityUsd, tokenId, ts);
+  return true;
 }
 
 /**
