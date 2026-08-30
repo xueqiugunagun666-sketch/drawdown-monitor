@@ -13,7 +13,7 @@ interface Props {
   athIndex?: number | null;
 }
 
-export default function Sparkline({ points, width = 110, height = 28, athIndex = null }: Props) {
+export default function Sparkline({ points, width = 116, height = 36, athIndex = null }: Props) {
   if (points.length < 2) {
     return <div style={{ width, height }} className="flex items-center text-xs text-neutral-700">—</div>;
   }
@@ -37,20 +37,27 @@ export default function Sparkline({ points, width = 110, height = 28, athIndex =
       className="overflow-visible">
       <defs>
         <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#3987e5" stopOpacity="0.18" />
+          <stop offset="0%" stopColor="#3987e5" stopOpacity="0.32" />
+          <stop offset="55%" stopColor="#3987e5" stopOpacity="0.10" />
           <stop offset="100%" stopColor="#3987e5" stopOpacity="0" />
         </linearGradient>
       </defs>
+      {/* 高点参考线：没有它，一条曲线只能看出"起伏"，
+          看不出"现在离最高点还有多远"——而后者才是这个工具的问题 */}
+      {athIndex !== null && athIndex >= 0 && athIndex < points.length && (
+        <line x1="0" x2={width} y1={y(points[athIndex]!)} y2={y(points[athIndex]!)}
+          stroke="#fab219" strokeOpacity="0.25" strokeWidth="1" strokeDasharray="2 3" />
+      )}
       <path d={areaD} fill="url(#spark-fill)" />
       {/* 2px 线宽，符合细笔画规范 */}
-      <path d={d} fill="none" stroke="#3987e5" strokeWidth="1.5"
+      <path d={d} fill="none" stroke="#3987e5" strokeWidth="1.75"
         strokeLinejoin="round" strokeLinecap="round" />
       {athIndex !== null && athIndex >= 0 && athIndex < points.length && (
-        <circle cx={x(athIndex)} cy={y(points[athIndex]!)} r="2"
-          fill="#1a1a19" stroke="#fab219" strokeWidth="1.5" />
+        <circle cx={x(athIndex)} cy={y(points[athIndex]!)} r="2.25"
+          fill="#141414" stroke="#fab219" strokeWidth="1.5" />
       )}
       {/* 当前点：2px 表面色描边，避免与线重叠糊在一起 */}
-      <circle cx={lastX} cy={lastY} r="2.5" fill="#3987e5" stroke="#1a1a19" strokeWidth="2" />
+      <circle cx={lastX} cy={lastY} r="2.75" fill="#3987e5" stroke="#141414" strokeWidth="2" />
     </svg>
   );
 }

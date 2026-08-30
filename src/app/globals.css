@@ -3,7 +3,39 @@
 @tailwind utilities;
 
 :root { color-scheme: dark; }
-body { @apply bg-neutral-950 text-neutral-200; }
+/* 底部留白给右下角那个浮动的版本按钮 ——
+   它是 fixed 的，不留白的话滚到底会盖住最后一行 */
+body { @apply bg-neutral-950 text-neutral-200 pb-14; }
+
+@layer components {
+  /**
+   * 表面层级。
+   *
+   * 原本行用的是 bg-neutral-950/60 叠在 bg-neutral-950 的底上 ——
+   * 合成后几乎和底色一样，行读不出是一个"物件"，整页就是一片灰。
+   * 这里把行抬高一档，边框也跟着提亮，让每一行有实际的边界。
+   */
+  .surface {
+    @apply bg-neutral-900/40 border border-neutral-800/50;
+  }
+  .surface-interactive {
+    @apply surface transition-colors hover:bg-neutral-900/70 hover:border-neutral-700/60;
+  }
+
+  /** 元信息标签：小、静、留一点字距，避免和数值抢注意力 */
+  .meta-label {
+    @apply text-[10px] uppercase tracking-[0.12em] text-neutral-600;
+  }
+
+  /** 徽章：统一圆角与内边距，各处别再各写各的 */
+  .badge {
+    @apply text-[11px] leading-none px-1.5 py-1 rounded border;
+  }
+  .badge-quiet { @apply badge border-neutral-800 bg-neutral-900/60 text-neutral-500; }
+  .badge-fired { @apply badge border-[#d03b3b]/30 bg-[#d03b3b]/10 text-[#d03b3b]; }
+  .badge-good  { @apply badge border-[#3fbf7f]/30 bg-[#3fbf7f]/10 text-[#3fbf7f]; }
+  .badge-warn  { @apply badge border-[#fab219]/30 bg-[#fab219]/10 text-[#fab219]; }
+}
 
 /* 隐藏横向滚动条但保留滚动能力 */
 .scrollbar-none { scrollbar-width: none; -ms-overflow-style: none; }

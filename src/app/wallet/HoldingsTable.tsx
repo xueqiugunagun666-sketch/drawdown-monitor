@@ -12,12 +12,21 @@ export interface HoldingRow {
   best: { multiple: string; timeframe: string; basis: string } | null;
 }
 
-const usd = (v: string | null) => {
+/**
+ * 金额加千位分隔符。$116097.28 要数位数才知道是十一万还是一百一十万，
+ * 而合计是这一页最该一眼读懂的数字。
+ *
+ * 分组只作用于整数部分：Decimal 的小数位可能很长（memecoin 价格），
+ * 交给 toLocaleString 会被四舍五入掉。
+ */
+export const usd = (v: string | null) => {
   if (v === null) return '—';
   const n = new Decimal(v);
-  if (n.gte(1)) return `$${n.toFixed(2)}`;
-  if (n.gt(0)) return `$${n.toFixed(4)}`;
-  return '$0';
+  if (!n.gt(0)) return '$0';
+  const fixed = n.gte(1) ? n.toFixed(2) : n.toFixed(4);
+  const [int = '0', frac] = fixed.split('.');
+  const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `$${grouped}${frac ? `.${frac}` : ''}`;
 };
 
 /**
@@ -64,17 +73,17 @@ function Multiple({ best }: { best: HoldingRow['best'] }) {
 function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
   return (
     <li id={`holding-${h.tokenId}`}
-      className={`rounded border px-3 py-2 scroll-mt-4 ${
+      className={`rounded-lg px-3 py-2.5 scroll-mt-4 border ${
         // 刚报过警的行要一眼认出来 —— 用户是听到播报才来看的
         alerted ? 'border-[#3fbf7f] bg-[#3fbf7f]/10'
-        : h.monitored ? 'border-neutral-900 bg-neutral-950/60'
-        : 'border-neutral-900/60 bg-neutral-950/30'
+        : h.monitored ? 'surface-interactive'
+        : 'border-neutral-900/50 bg-neutral-900/15'
       }`}>
       <div className="flex items-baseline gap-2">
-        <span className={`font-medium ${h.monitored ? 'text-neutral-200' : 'text-neutral-500'}`}>
+        <span className={`text-[15px] font-medium ${h.monitored ? 'text-neutral-200' : 'text-neutral-500'}`}>
           {h.symbol ?? '未知代币'}
         </span>
-        <span className="text-xs text-neutral-600">{h.chain}</span>
+        <span className="meta-label">{h.chain}</span>
         {/* 合约地址，点一下复制 —— 同名假币很多，最终认的是 CA。
             钱包名不显示：跨四条链就是同一个地址，写出来只是噪音 */}
         <button type="button" title={h.address ?? ''}
@@ -83,7 +92,7 @@ function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
           {h.address ? `${h.address.slice(0, 6)}…${h.address.slice(-4)}` : ''}
         </button>
         <Multiple best={h.best} />
-        <span className={`ml-auto tabular-nums shrink-0 ${
+        <span className={`ml-auto tabular-nums shrink-0 text-[15px] ${
           h.monitored ? 'text-neutral-200' : 'text-neutral-500'
         }`}>
           {usd(h.valueUsd)}
@@ -122,14 +131,20 @@ export default function HoldingsTable(
 
   return (
     <section>
-      <div className="flex items-baseline gap-3 mb-2 flex-wrap">
-        <h2 className="text-sm text-neutral-400">持仓</h2>
-        <span className="text-xs text-neutral-600">
-          监控中 {monitored.length}{filtered.length > 0 && ` · 已过滤 ${filtered.length}`}
-        </span>
-        <span className="ml-auto text-sm text-neutral-300 tabular-nums">
-          合计 {usd(total.toString())}
-        </span>
+      <div className="flex items-end justify-between gap-4 mb-3 flex-wrap">
+        <div>
+          <h2 className="text-sm text-neutral-400">持仓</h2>
+          <p className="text-xs text-neutral-600 mt-0.5">
+            监控中 {monitored.length}{filtered.length > 0 && ` · 已过滤 ${filtered.length}`}
+          </p>
+        </div>
+        {/* 合计是这一页最重要的数字，原本是最小号字挤在右边缘 */}
+        <div className="text-right">
+          <div className="meta-label">合计</div>
+          <div className="text-[22px] font-semibold tabular-nums leading-none mt-1 tracking-tight">
+            {usd(total.toString())}
+          </div>
+        </div>
       </div>
 
       {holdings.length === 0 ? (

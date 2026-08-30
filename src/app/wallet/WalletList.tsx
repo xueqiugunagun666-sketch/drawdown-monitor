@@ -31,11 +31,7 @@ function ChainChip({ w }: { w: WalletRow }) {
   return (
     <span
       title={w.lastScanError ?? (scanned ? `${humanAgo(w.lastScanAt!)}扫描` : '排队中')}
-      className={`px-1.5 py-0.5 rounded text-xs ${
-        failed ? 'bg-[#d03b3b]/15 text-[#d03b3b]'
-          : scanned ? 'bg-neutral-800 text-neutral-400'
-          : 'bg-neutral-900 text-neutral-600'
-      }`}>
+      className={failed ? 'badge-fired' : scanned ? 'badge-quiet' : 'badge-quiet opacity-60'}>
       {w.chain}
       {failed && ' ✕'}
       {!scanned && !failed && ' …'}
@@ -114,8 +110,8 @@ export default function WalletList(
               (m, c) => (c.lastScanAt && (m === null || c.lastScanAt > m) ? c.lastScanAt : m), null);
             return (
               <li key={g.address}
-                className={`rounded border px-3 py-2 text-sm ${
-                  errs.length > 0 ? 'border-[#d03b3b]/50 bg-[#d03b3b]/5' : 'border-neutral-900 bg-neutral-950/60'
+                className={`rounded-lg px-3 py-2.5 text-sm border ${
+                  errs.length > 0 ? 'border-[#d03b3b]/50 bg-[#d03b3b]/8' : 'surface'
                 }`}>
                 <div className="flex items-baseline gap-2">
                   <span className="font-mono text-neutral-300 shrink-0">{short(g.address)}</span>

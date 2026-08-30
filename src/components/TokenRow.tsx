@@ -56,7 +56,7 @@ export default function TokenRow({ r }: { r: RowData }) {
         // neutral-800/50 合成后只有 rgb 24，与底色对比度仅 1.15:1，读不出来。
         // #333 合成后约 1.6:1，配上亮边框才是清晰的「已标记」。
         ? 'border-neutral-500 bg-[#333333]'
-        : 'border-neutral-900 bg-neutral-950/60 hover:border-neutral-800'
+        : 'surface-interactive'
     } ${dim ? 'opacity-50' : ''}`}>
       {/* 左缘：置顶时让位给置顶标识。
           严重度本来就由数字颜色表达了，这条色带是重复编码，
@@ -71,20 +71,22 @@ export default function TokenRow({ r }: { r: RowData }) {
           <div className="flex items-baseline gap-2">
             <PinButton tokenId={r.id} pinned={r.pinned} />
             <Link href={`/token/${encodeURIComponent(r.id)}`}
-              className="font-medium hover:text-sky-400 truncate">
+              className="text-[15px] font-medium hover:text-sky-400 truncate">
               {r.symbol ?? r.id.slice(0, 10)}
             </Link>
-            <span className="text-[11px] text-neutral-600 shrink-0">{r.chain}</span>
-            {r.isStale && <span className="text-[11px] text-[#d03b3b] shrink-0">失联</span>}
-            {r.frozen && <span className="text-[11px] text-neutral-600 shrink-0">已冻结</span>}
+            <span className="meta-label shrink-0">{r.chain}</span>
+            {r.isStale && <span className="badge-fired shrink-0">失联</span>}
+            {r.frozen && <span className="badge-quiet shrink-0">已冻结</span>}
           </div>
-          {r.note && <div className="text-xs text-amber-500/90 truncate mt-0.5">{r.note}</div>}
+          {/* 备注原本用琥珀色，和「回撤警告」是同一个颜色，两件事抢同一个信号。
+              改成中性灰：它是说明性文字，不该有告警的分量 */}
+          {r.note && <div className="text-xs text-neutral-500 truncate mt-1">{r.note}</div>}
           {r.createdBy && <div className="text-[11px] text-neutral-700 mt-0.5">{r.createdBy}</div>}
         </div>
 
         {/* 回撤 —— 整行的视觉锚点 */}
         <div className="col-span-5 md:col-span-2">
-          <div className={`text-2xl font-semibold tabular-nums leading-none ${severityClass(r.dd)}`}>
+          <div className={`text-[28px] font-semibold tabular-nums leading-none tracking-tight ${severityClass(r.dd)}`}>
             {fmtDd(r.dd)}
           </div>
           <div className="text-[11px] text-neutral-600 mt-1">
@@ -117,9 +119,7 @@ export default function TokenRow({ r }: { r: RowData }) {
             <div className="text-neutral-700">已过最高档</div>
           )}
           <div className="mt-1 flex items-center gap-2">
-            <span className={`text-[11px] px-1.5 py-0.5 rounded ${
-              r.state === 'FIRED' ? 'bg-[#d03b3b]/15 text-[#d03b3b]' : 'bg-neutral-900 text-neutral-500'
-            }`}>{r.state}</span>
+            <span className={r.state === 'FIRED' ? 'badge-fired' : 'badge-quiet'}>{r.state}</span>
             {r.primaryLabel && (
               <span className="text-[11px] text-neutral-600 truncate">{r.primaryLabel}</span>
             )}

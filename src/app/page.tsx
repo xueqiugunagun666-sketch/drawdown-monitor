@@ -89,10 +89,17 @@ export default async function Home({
   const pinnedCount = rows.filter((r) => r.pinned).length;
   const shown = onlyPinned ? rows.filter((r) => r.pinned) : rows;
 
+  /**
+   * 统计项。原本是四个带边框的小盒子，读起来像默认控件；
+   * 改成一条用发丝线分隔的横带，数字给到真正的字号 ——
+   * 这几个数是用来扫一眼的，不该和标签一样小。
+   */
   const stat = (label: string, value: string, tone = '') => (
-    <div className="px-2 md:px-3 py-2 rounded-lg bg-neutral-900/60 border border-neutral-900">
-      <div className="text-[10px] md:text-[11px] text-neutral-500 whitespace-nowrap">{label}</div>
-      <div className={`text-xs md:text-sm font-medium tabular-nums mt-0.5 whitespace-nowrap ${tone}`}>{value}</div>
+    <div className="px-3.5 first:pl-0 border-l border-neutral-800/60 first:border-l-0">
+      <div className="meta-label whitespace-nowrap">{label}</div>
+      <div className={`text-[17px] font-medium tabular-nums mt-1 whitespace-nowrap leading-none ${tone || 'text-neutral-200'}`}>
+        {value}
+      </div>
     </div>
   );
 
@@ -100,15 +107,15 @@ export default async function Home({
     <main className="p-4 md:p-8 max-w-[1500px] mx-auto">
       <Nav current="/" />
 
-      <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
+      <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4 mb-5">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">回撤监控</h1>
-          <p className="text-xs text-neutral-500 mt-1">
+          <h1 className="text-[26px] font-semibold tracking-tight leading-none">回撤监控</h1>
+          <p className="text-xs text-neutral-600 mt-2">
             {MODE_LABEL[activeMode]} · {cfg.defaultRule.quoteMode.toUpperCase()} 计价 ·
             档位 {levels.join(' / ')}% · k={cfg.defaultRule.athSustainCandles}
           </p>
         </div>
-        <div className="grid grid-cols-4 gap-2 w-full md:w-auto">
+        <div className="flex items-start">
           {stat('清单', String(tokens.length))}
           {stat('已触发', String(firedCount), firedCount > 0 ? 'text-[#d03b3b]' : '')}
           {stat('失联', String(staleCount), staleCount > 0 ? 'text-[#d03b3b]' : '')}

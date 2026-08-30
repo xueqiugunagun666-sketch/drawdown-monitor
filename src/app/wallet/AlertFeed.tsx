@@ -64,14 +64,14 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
         <ul className="space-y-1.5">
           {alerts.map((a) => (
             <li key={a.id}
-              className="relative flex items-center gap-3 rounded border border-neutral-900
-                         bg-neutral-950/60 pl-4 pr-3 py-2 text-sm overflow-hidden">
+              className="relative flex items-center gap-3 rounded-lg surface-interactive
+                         pl-4 pr-3 py-2.5 text-sm overflow-hidden">
               <span className={`absolute left-0 top-0 bottom-0 w-1 ${pumpBar(a.level)}`} />
               {/* 倍数用数字承载信息，颜色只是冗余强化 */}
               <span className={`${pumpClass(a.level)} tabular-nums font-medium w-16 shrink-0`}>
                 {new Decimal(a.multiple).toFixed(1)}x
               </span>
-              <span className="text-neutral-200 shrink-0 font-medium">{alertName(a)}</span>
+              <span className="text-[15px] text-neutral-200 shrink-0 font-medium">{alertName(a)}</span>
               <span className="text-neutral-500 text-xs shrink-0">
                 {describeBasis(a.timeframe, a.basis)}
               </span>

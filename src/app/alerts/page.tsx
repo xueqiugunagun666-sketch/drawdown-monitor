@@ -2,6 +2,7 @@ import Link from 'next/link';
 import Nav from '../../components/Nav.tsx';
 import { fmtUtc, humanAgo, nowSec } from '../../lib/time.ts';
 import * as repo from '../../db/repo.ts';
+import { severityClass, severityBar } from '../../lib/severity.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,15 +22,15 @@ export default function AlertsPage() {
   return (
     <main className="p-4 md:p-8 max-w-[1400px] mx-auto">
       <Nav current="/alerts" />
-      <h1 className="text-xl font-semibold mb-1">报警历史</h1>
-      <p className="text-xs text-neutral-500 mb-5">
+      <h1 className="text-[26px] font-semibold tracking-tight leading-none">报警历史</h1>
+      <p className="text-xs text-neutral-600 mt-2 mb-5">
         共 {alerts.length} 条。展开可看触发时的完整快照 —— 这是复盘阈值设得对不对的唯一依据
       </p>
 
       {alerts.length === 0 ? (
         <p className="text-sm text-neutral-600">还没有报警。</p>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {alerts.map((a) => {
             const t = tokens.get(a.tokenId);
             let snap: Snapshot = {};
@@ -39,29 +40,35 @@ export default function AlertsPage() {
             const failed = delivered.length > 0 && delivered.some((d) => !d.ok);
             const liqRatio = snap.athLiquidity && snap.liquidityTotal
               ? snap.liquidityTotal / snap.athLiquidity : null;
+            const dd = a.drawdownUsd !== null ? +a.drawdownUsd : null;
 
             return (
-              <details key={a.id} className="rounded border border-neutral-800 bg-neutral-950">
-                <summary className="p-3 cursor-pointer flex flex-wrap items-baseline gap-3 text-sm">
-                  <span className="text-neutral-500 text-xs w-32">{humanAgo(a.firedAt, now)}</span>
+              <details key={a.id} className="group surface-interactive rounded-lg overflow-hidden relative">
+                {/* 左缘严重度色带，与看板同一套语义 */}
+                <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${severityBar(dd)}`} />
+                <summary className="pl-4 pr-3 py-2.5 cursor-pointer list-none
+                                    flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  {/* 回撤幅度当锚点：27 行里最该被扫到的就是它，
+                      原本它排在时间和币名后面，且不分严重度 */}
+                  <span className={`text-lg font-semibold tabular-nums leading-none w-[4.5rem] shrink-0 ${severityClass(dd)}`}>
+                    {dd !== null ? `-${dd.toFixed(1)}%` : '—'}
+                  </span>
                   <Link href={`/token/${encodeURIComponent(a.tokenId)}`}
-                    className="font-medium hover:text-sky-400">
+                    className="text-[15px] font-medium hover:text-sky-400 shrink-0">
                     {t?.symbol ?? a.tokenId.split(':')[0]}
                   </Link>
-                  <span className="text-xs text-neutral-500">{a.tokenId.split(':')[0]}</span>
-                  <span className="text-red-400 font-medium tabular-nums">
-                    {a.drawdownUsd ? `-${(+a.drawdownUsd).toFixed(1)}%` : '—'}
+                  <span className="meta-label shrink-0">{a.tokenId.split(':')[0]}</span>
+                  <span className="badge-quiet shrink-0">{a.level}% 档</span>
+
+                  {/* 投递状态只在异常时显示。原本 27 行每行都挂一个「已送达」，
+                      正常状态重复 27 次是噪音，真正要看见的是没送到 */}
+                  {delivered.length === 0 && <span className="badge-warn shrink-0">未投递</span>}
+                  {failed && <span className="badge-fired shrink-0">投递失败</span>}
+
+                  <span className="ml-auto text-xs text-neutral-600 tabular-nums shrink-0">
+                    {humanAgo(a.firedAt, now)}
                   </span>
-                  <span className="text-xs px-1.5 py-0.5 rounded bg-neutral-900 text-neutral-400">
-                    {a.level}% 档
-                  </span>
-                  {delivered.length === 0 ? (
-                    <span className="text-xs text-amber-500">未投递</span>
-                  ) : failed ? (
-                    <span className="text-xs text-red-400">投递失败</span>
-                  ) : (
-                    <span className="text-xs text-neutral-600">已送达</span>
-                  )}
+                  <span className="text-neutral-700 text-xs shrink-0 group-open:rotate-90 transition-transform">›</span>
                 </summary>
 
                 <div className="px-3 pb-3 text-xs grid md:grid-cols-2 gap-x-8 gap-y-1 text-neutral-400">
