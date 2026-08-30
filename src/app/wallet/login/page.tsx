@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 export default function WalletLoginPage() {
   return (
     <main className="mx-auto max-w-md p-4">
-      <Nav current="/wallet" />
+      <Nav current="/wallet" showBadge={false} />
       <AccountForm />
     </main>
   );

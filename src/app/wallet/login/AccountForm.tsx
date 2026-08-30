@@ -1,32 +1,50 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 
 export default function AccountForm() {
-  const router = useRouter();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setErr(null);
+    setOk(null);
     try {
       const res = await fetch(`/api/account/${mode}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name, password }),
       });
-      const data = (await res.json()) as { error?: string };
+      const data = (await res.json()) as { error?: string; name?: string };
       if (!res.ok) { setErr(data.error ?? '失败了'); return; }
-      router.push('/wallet');
-      router.refresh();
+
+      // 接口返回成功不等于会话真的生效 —— 浏览器可能拦了 Cookie。
+      // 那种情况下直接跳转会被中间件弹回登录页，表现就是"什么都没发生"，
+      // 而用户完全看不出发生了什么。所以先拿一个需要鉴权的接口验一下
+      const verify = await fetch('/api/wallet/wallets');
+      if (!verify.ok) {
+        setErr(
+          `${mode === 'register' ? '账号已创建' : '密码正确'}，但登录状态没保持住。` +
+          '多半是浏览器拦了本站 Cookie —— 检查一下隐私设置，或者换个浏览器/关掉无痕模式。',
+        );
+        return;
+      }
+
+      setOk(`${mode === 'register' ? '注册成功' : '登录成功'}，正在进入…`);
+      // 用整页跳转而不是 router.push：
+      //   1. router.push 后紧跟 router.refresh 会互相打断
+      //   2. 软跳转走客户端路由缓存，而缓存里可能存着"未登录时 /wallet
+      //      被弹回登录页"那个结果，于是跳了等于没跳
+      // 登录状态刚变，整页重来最干净，也最不容易出玄学问题
+      window.location.href = '/wallet';
     } catch {
-      setErr('网络错误');
+      setErr('网络错误，检查一下连接');
     } finally {
       setBusy(false);
     }
@@ -65,11 +83,12 @@ export default function AccountForm() {
           className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm
                      text-neutral-200 placeholder-neutral-600 focus:border-neutral-600 outline-none"
         />
-        {err && <p className="text-sm text-[#d03b3b]">{err}</p>}
+        {err && <p className="text-sm text-[#d03b3b] leading-relaxed">{err}</p>}
+        {ok && <p className="text-sm text-[#3fbf7f]">{ok}</p>}
         <button type="submit" disabled={busy}
           className="w-full bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50
                      rounded px-3 py-2 text-sm text-neutral-100">
-          {busy ? '…' : mode === 'login' ? '登录' : '注册并登录'}
+          {busy ? '处理中…' : mode === 'login' ? '登录' : '注册并登录'}
         </button>
       </form>
 

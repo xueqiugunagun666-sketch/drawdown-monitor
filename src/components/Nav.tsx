@@ -10,7 +10,11 @@ const LINKS: Array<[href: string, label: string]> = [
   ['/settings', '设置'],
 ];
 
-export default function Nav({ current }: { current: string }) {
+/**
+ * @param showBadge 是否显示「署名」输入框。钱包登录页要关掉 ——
+ *   署名是共享看板用的，和下面的「用户名」摆在同一屏会让人填错框。
+ */
+export default function Nav({ current, showBadge = true }: { current: string; showBadge?: boolean }) {
   return (
     <nav className="flex items-center gap-1 mb-5 text-sm">
       {/* 窄屏横向滚动，不折行 —— 折行会把「加币」拆成上下两个字 */}
@@ -24,9 +28,11 @@ export default function Nav({ current }: { current: string }) {
         </Link>
       ))}
       </div>
-      <div className="ml-auto shrink-0">
-        <UserBadge />
-      </div>
+      {showBadge && (
+        <div className="ml-auto shrink-0">
+          <UserBadge />
+        </div>
+      )}
     </nav>
   );
 }
