@@ -313,15 +313,16 @@ test('持有人数缓存住，同一天不重复查', async () => {
   wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
   history(id, '1');
 
-  let calls = 0;
+  const asked: string[] = [];
   const d = {
     ...deps({ '0xcached': { priceUsd: '1' } }),
-    fetchTokenInfo: async () => { calls++; return { symbol: 'X', holderCount: 500 }; },
+    fetchTokenInfo: async (_c: string, a: string) => { asked.push(a); return { symbol: 'X', holderCount: 500 }; },
   };
   await runPumpTick(NOW, d);
   await runPumpTick(NOW + 120, d);
   await runPumpTick(NOW + 240, d);
-  assert.equal(calls, 1, `持有人数一天查一次就够，实际查了 ${calls} 次`);
+  const n = asked.filter((a) => a === '0xcached').length;
+  assert.equal(n, 1, `持有人数一天查一次就够，实际查了 ${n} 次`);
 });
 
 test('查不到持有人数也写缓存，不会每轮重试', async () => {
@@ -331,14 +332,14 @@ test('查不到持有人数也写缓存，不会每轮重试', async () => {
   wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
   history(id, '1');
 
-  let calls = 0;
+  const asked: string[] = [];
   const d = {
     ...deps({ '0xunknown': { priceUsd: '1' } }),
-    fetchTokenInfo: async () => { calls++; return null; },
+    fetchTokenInfo: async (_c: string, a: string) => { asked.push(a); return null; },
   };
   await runPumpTick(NOW, d);
   await runPumpTick(NOW + 120, d);
-  assert.equal(calls, 1);
+  assert.equal(asked.filter((a) => a === '0xunknown').length, 1);
   assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1, '查不到不该影响其它判定');
 });
 
@@ -353,5 +354,39 @@ test('取持有人数失败不影响本轮判定', async () => {
     ...deps({ '0xinfofail': { priceUsd: '1' } }),
     fetchTokenInfo: async () => { throw new Error('429 限流'); },
   });
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1);
+});
+
+test('被流动性挡掉的币不查持有人数 —— 省掉绝大部分 GMGN 请求', async () => {
+  // 线上 1206 个去重代币里只有一百多个能过流动性关。
+  // 对全部币无差别查询会把判定轮次从 120 秒拖到 2 分 40 秒
+  const id = 'bsc:0xdustnoinfo';
+  const u = wr.createUser(`dni${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xdn${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000', 18, 100);
+
+  // 只统计问到这个币的次数 —— runPumpTick 会遍历本文件之前测试留下的全部币
+  const asked: string[] = [];
+  await runPumpTick(NOW, {
+    ...deps({ '0xdustnoinfo': { priceUsd: '1', liquidityUsd: 10, volume24hUsd: 5 } }),
+    fetchTokenInfo: async (_c, a) => { asked.push(a); return { symbol: 'X', holderCount: 1 }; },
+  });
+  assert.ok(!asked.includes('0xdustnoinfo'), '流动性都不够的币，不该为它花一次请求');
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 0);
+});
+
+test('通过流动性的币才查持有人数', async () => {
+  const id = 'bsc:0xworthchecking';
+  const u = wr.createUser(`wc${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xwc${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  history(id, '1');
+
+  const asked: string[] = [];
+  await runPumpTick(NOW, {
+    ...deps({ '0xworthchecking': { priceUsd: '1', liquidityUsd: 50000, volume24hUsd: 99999 } }),
+    fetchTokenInfo: async (_c, a) => { asked.push(a); return { symbol: 'OK', holderCount: 500 }; },
+  });
+  assert.ok(asked.includes('0xworthchecking'), '够格的币必须查');
   assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1);
 });

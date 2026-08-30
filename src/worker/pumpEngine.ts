@@ -136,33 +136,46 @@ async function evaluateToken(
   getInfo: PumpDeps['fetchTokenInfo'] = fetchTokenInfo,
 ): Promise<void> {
   const [chain, addr] = tokenId.split(':');
+  let holderCount = wr.getTokenMeta(tokenId)?.holderCount ?? null;
+  // ---- 过滤：每个持有者各自维护滞回状态（below_since_ts 在 holdings 上）----
+  const holders = wr.usersHoldingToken(tokenId);
+  const rows = holders.map((h) => ({
+    h, row: wr.listHoldingsByWallet(h.walletId).find((x) => x.tokenId === tokenId),
+  })).filter((x) => x.row !== undefined);
+
+  const quoteIn = {
+    liquidityUsd: quote?.liquidityUsd ?? null,
+    volume24hUsd: quote?.volume24hUsd ?? null,
+  };
 
   /**
-   * 持有人数。全局缓存、跨用户共用 —— 这是链上事实，不因谁持有而不同。
-   * 变化很慢，一天查一次就够（META_TTL_SECONDS）。
+   * 持有人数是**最后一道闸**，只对已经通过流动性/成交量的币查。
+   *
+   * 一开始写成对全部持仓无差别查询，线上 1206 个去重代币里 923 个待查，
+   * 而元信息是串行 await 拉的，把判定轮次从 120 秒拖到了 2 分 40 秒。
+   * 其中绝大多数早被流动性门槛挡掉，根本用不着知道持有人数 ——
+   * 先跑前面的筛选，只有会进监控的才值得花一次 GMGN 请求。
    */
-  if (chain && addr && getInfo && wr.isTokenMetaStale(tokenId, now)) {
+  const wouldPass = rows.some(({ h, row }) => evaluateFilter(
+    { monitored: row!.monitored === 1, belowSinceTs: row!.belowSinceTs },
+    quoteIn, now, DEFAULT_THRESHOLDS,
+  ).monitored);
+
+  if (wouldPass && chain && addr && getInfo && wr.isTokenMetaStale(tokenId, now)) {
     try {
       const info = await getInfo(chain, addr);
       // 查不到也写一条，避免每轮都重试同一个查不到的币
       wr.setTokenMeta(tokenId, info?.holderCount ?? null, info?.symbol ?? null, now);
+      holderCount = info?.holderCount ?? null;
     } catch {
       // 限流之类的失败不影响本轮判定，下一轮再说
     }
   }
-  const holderCount = wr.getTokenMeta(tokenId)?.holderCount ?? null;
-  // ---- 过滤：每个持有者各自维护滞回状态（below_since_ts 在 holdings 上）----
-  const holders = wr.usersHoldingToken(tokenId);
+
   let stillMonitored = false;
-  for (const h of holders) {
-    const row = wr.listHoldingsByWallet(h.walletId).find((x) => x.tokenId === tokenId);
-    if (!row) continue;
-    const prev: FilterState = { monitored: row.monitored === 1, belowSinceTs: row.belowSinceTs };
-    const r = evaluateFilter(prev, {
-      liquidityUsd: quote?.liquidityUsd ?? null,
-      volume24hUsd: quote?.volume24hUsd ?? null,
-      holderCount,
-    }, now, DEFAULT_THRESHOLDS);
+  for (const { h, row } of rows) {
+    const prev: FilterState = { monitored: row!.monitored === 1, belowSinceTs: row!.belowSinceTs };
+    const r = evaluateFilter(prev, { ...quoteIn, holderCount }, now, DEFAULT_THRESHOLDS);
     wr.setHoldingMonitored(h.walletId, tokenId, r.monitored, r.reason, r.belowSinceTs);
     if (r.monitored) stillMonitored = true;
   }
