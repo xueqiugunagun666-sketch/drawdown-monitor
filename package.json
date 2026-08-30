@@ -22,7 +22,8 @@
     "repair": "tsx --env-file-if-exists=.env scripts/repair-token.ts",
     "bench": "tsx --env-file-if-exists=.env scripts/bench-engine.ts",
     "backup:pull": "bash scripts/pull-backup.sh",
-    "check:rpc": "tsx --env-file-if-exists=.env scripts/check-evm-rpc.ts"
+    "check:rpc": "tsx --env-file-if-exists=.env scripts/check-evm-rpc.ts",
+    "bench:pump": "tsx --env-file-if-exists=.env scripts/bench-pump.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
