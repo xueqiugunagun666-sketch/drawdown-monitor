@@ -11,6 +11,7 @@
  */
 import { currentUser } from '../../../../lib/accountAuth.ts';
 import { listPumpAlerts } from '../../../../db/walletRepo.ts';
+import { enrichAlerts } from '../../../../db/alertEnrich.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,7 +52,9 @@ export async function GET(req: Request) {
         }
         if (fresh.length === 0) return;
         for (const a of fresh) cursor = Math.max(cursor, a.firedAt);
-        send('pump', fresh);
+        // 必须补币名 —— 系统通知里没法复制粘贴，
+        // 弹出一串 0x 等于没告诉用户是哪个币
+        send('pump', enrichAlerts(fresh));
       }, POLL_MS);
 
       const beat = setInterval(() => {

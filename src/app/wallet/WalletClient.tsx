@@ -59,11 +59,24 @@ export default function WalletClient() {
 
       const top = added.reduce((m, a) => (a.level > m.level ? a : m));
       playPumpSound(top.level);
-      // 通知里必须写币名。写地址前缀等于没说 —— 用户看到一串十六进制
-      // 仍然不知道是哪个币
+      /**
+       * 通知标题必须写币名。系统通知里没法选中复制，弹出一串 0x
+       * 等于什么也没告诉用户。
+       *
+       * 实在没有币名时（新币还没拿到报价），至少把链名带上，
+       * 并在正文里给出完整地址 —— 正文虽然也不能复制，
+       * 但看得见总比只有截断的地址强。
+       */
+      const name = alertName(top);
+      const nameless = !top.symbol;
       notifyPump(
-        `${alertName(top)} 暴涨 ${Number(top.multiple).toFixed(1)}x`,
-        `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`,
+        nameless
+          ? `${top.chain ?? '未知链'} 上有币暴涨 ${Number(top.multiple).toFixed(1)}x`
+          : `${name} 暴涨 ${Number(top.multiple).toFixed(1)}x`,
+        [
+          `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`,
+          nameless ? top.address ?? top.tokenId : null,
+        ].filter(Boolean).join('\n'),
       );
       void load();     // 顺带刷新持仓价值
     });
