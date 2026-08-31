@@ -58,6 +58,22 @@ const amount = (v: string | null) => {
  * （不为进入监控之前的涨幅补报），所以只看报警记录的话，
  * 一个已经涨了 3 倍的币在页面上是完全不可见的 —— 用户会以为没在工作。
  */
+/**
+ * 搜索匹配。CA 与币名都能匹配 —— 你可能记得名字，也可能只有从
+ * 区块浏览器复制来的地址。
+ *
+ * 地址不区分大小写：EVM 地址常见校验和大小写混写（0xAbC…），
+ * 而人从各处复制来的写法五花八门，区分大小写等于搜不到。
+ */
+export function matchesQuery(h: HoldingRow, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (h.address?.toLowerCase().includes(q)) return true;
+  if (h.symbol?.toLowerCase().includes(q)) return true;
+  if (h.chain?.toLowerCase() === q) return true;
+  return false;
+}
+
 /** 窗口的短标签。表格里没有位置写"24 小时内从低点"，但必须让人知道是哪个窗口 */
 const TF_SHORT: Record<string, string> = { '5m': '5分', '1h': '1时', '6h': '6时', '24h': '24时' };
 
@@ -150,17 +166,25 @@ export default function HoldingsTable(
 ) {
   const alerted = new Set(alertedTokenIds);
   const [showAll, setShowAll] = useState(false);
+  const [query, setQuery] = useState('');
+  const searching = query.trim().length > 0;
+
   // 按当前倍数从高到低排 —— 你想第一眼看到的是"什么在涨"，
   // 而不是"什么值钱"。没有倍数数据的沉到后面
   const byMultiple = (a: HoldingRow, b: HoldingRow) =>
     Number(b.best?.multiple ?? 0) - Number(a.best?.multiple ?? 0);
+
+  const hit = holdings.filter((h) => matchesQuery(h, query));
   // 刚报过警的排最前，其次按当前倍数
-  const monitored = holdings.filter((h) => h.monitored).sort((a, b) => {
+  const monitored = hit.filter((h) => h.monitored).sort((a, b) => {
     const d = Number(alerted.has(b.tokenId)) - Number(alerted.has(a.tokenId));
     return d !== 0 ? d : byMultiple(a, b);
   });
-  const filtered = holdings.filter((h) => !h.monitored);
-  const total = monitored.reduce(
+  const filtered = hit.filter((h) => !h.monitored);
+
+  // 合计始终按全部监控中的算，不随搜索变 ——
+  // 搜索是"找一个币"，不是"看一个子集值多少钱"
+  const total = holdings.filter((h) => h.monitored).reduce(
     (s, h) => (h.valueUsd ? s.plus(new Decimal(h.valueUsd)) : s), new Decimal(0));
 
   return (
@@ -169,7 +193,9 @@ export default function HoldingsTable(
         <div>
           <h2 className="text-sm text-neutral-400">持仓</h2>
           <p className="text-xs text-neutral-600 mt-0.5">
-            监控中 {monitored.length}{filtered.length > 0 && ` · 已过滤 ${filtered.length}`}
+            {searching
+              ? `搜索结果 ${hit.length}`
+              : `监控中 ${monitored.length}${filtered.length > 0 ? ` · 已过滤 ${filtered.length}` : ''}`}
           </p>
         </div>
         {/* 合计是这一页最重要的数字，原本是最小号字挤在右边缘 */}
@@ -187,15 +213,45 @@ export default function HoldingsTable(
         </p>
       ) : (
         <>
+          {/* 一千多条持仓靠翻是找不到的。搜索时连被过滤的一起搜 ——
+              最常见的问题恰恰是"我这个币为什么没被监控" */}
+          <div className="relative mb-2">
+            <input
+              value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜合约地址或币名" spellCheck={false}
+              aria-label="搜索持仓"
+              className="w-full bg-neutral-950 border border-neutral-800 rounded-lg
+                         pl-3 pr-9 py-2 text-sm text-neutral-200 placeholder-neutral-600
+                         focus:border-neutral-600 outline-none font-mono"
+            />
+            {searching && (
+              <button type="button" onClick={() => setQuery('')} aria-label="清空搜索"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-600
+                           hover:text-neutral-300 text-lg leading-none px-1">
+                ×
+              </button>
+            )}
+          </div>
+
+          {searching && (
+            <p className="text-xs text-neutral-600 mb-2">
+              {hit.length === 0
+                ? '你的持仓里没有这个币。可能是还没扫到，或者余额已经清零。'
+                : `找到 ${hit.length} 个${filtered.length > 0 ? `（其中 ${filtered.length} 个未监控）` : ''}`}
+            </p>
+          )}
+
           <ul className="space-y-1.5">
             {monitored.map((h) => (
               <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={alerted.has(h.tokenId)} />
             ))}
-            {showAll && filtered.map((h) => (
+            {/* 搜索时被过滤的也直接展开，不用再点一次 */}
+            {(showAll || searching) && filtered.map((h) => (
               <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={false} />
             ))}
           </ul>
-          {filtered.length > 0 && (
+
+          {!searching && filtered.length > 0 && (
             <button type="button" onClick={() => setShowAll(!showAll)}
               className="mt-2 text-xs text-neutral-600 hover:text-neutral-400">
               {showAll ? '收起被过滤的' : `显示被过滤的 ${filtered.length} 个（流动性或成交量不足）`}
