@@ -77,6 +77,36 @@ export function updateTokenMeta(id: string, patch: Partial<TokenRow>): void {
   getDb().update(tokens).set(patch).where(eq(tokens.id, id)).run();
 }
 
+/**
+ * 带审计的元数据更新。备注是覆盖式的，旧内容不记下来就永久丢了。
+ * 停用/冻结全局生效且悄无声息，别人加的币被停了他不会知道 —— 也要记。
+ */
+export function updateTokenMetaAudited(
+  id: string,
+  patch: Record<string, unknown>,
+  audit: { actorId: string | null; actorName: string; label: string | null; oldNote: string | null },
+): void {
+  const db = getDb();
+  db.transaction(() => {
+    db.update(tokens).set(patch).where(eq(tokens.id, id)).run();
+    if (patch.note !== undefined) {
+      recordAudit({ actorId: audit.actorId, actorName: audit.actorName,
+        action: 'update_note', targetType: 'token', targetId: id, targetLabel: audit.label,
+        detail: { from: audit.oldNote, to: patch.note } });
+    }
+    if (patch.enabled !== undefined) {
+      recordAudit({ actorId: audit.actorId, actorName: audit.actorName,
+        action: 'set_enabled', targetType: 'token', targetId: id, targetLabel: audit.label,
+        detail: { to: patch.enabled } });
+    }
+    if (patch.frozen !== undefined) {
+      recordAudit({ actorId: audit.actorId, actorName: audit.actorName,
+        action: 'set_frozen', targetType: 'token', targetId: id, targetLabel: audit.label,
+        detail: { to: patch.frozen } });
+    }
+  });
+}
+
 /** 报价成功：更新符号/来源/时间并清零失败计数 */
 export function markQuoteSuccess(id: string, q: TokenQuote): void {
   getDb().update(tokens).set({

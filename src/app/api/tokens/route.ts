@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { checkAuth } from '../../../lib/auth.ts';
-import { readName } from '../../../lib/user.ts';
+import { actorFromRequest } from '../../../lib/accountAuthServer.ts';
 import * as repo from '../../../db/repo.ts';
 import { CHAIN_IDS } from '../../../sources/types.ts';
 
@@ -39,9 +39,17 @@ export async function POST(req: Request) {
   const errors = items.map(validate).map((e, i) => (e ? `第 ${i + 1} 个: ${e}` : null)).filter(Boolean);
   if (errors.length > 0) return NextResponse.json({ error: errors.join('；') }, { status: 400 });
 
-  const createdBy = readName(req);
+  const actor = actorFromRequest(req);
+  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
+
+  // 归属只从会话取，**绝不接受请求体里的 ownerId/createdBy** ——
+  // 一旦某个路由接受客户端传来的归属，权限就名存实亡：
+  // 改个参数就能把币记到别人名下，或者记到自己名下再删掉
   const added = items.map((i) =>
-    repo.addToken({ chain: i.chain!, address: i.address!, note: i.note!.trim(), createdBy }),
+    repo.addToken({
+      chain: i.chain!, address: i.address!, note: i.note!.trim(),
+      createdBy: actor.name, ownerId: actor.id,
+    }),
   );
   // 回填任务由 worker 在首次成功取价、确定主池后自动排队（OHLCV 是按池取的）
   return NextResponse.json({ tokens: added, count: added.length }, { status: 201 });
