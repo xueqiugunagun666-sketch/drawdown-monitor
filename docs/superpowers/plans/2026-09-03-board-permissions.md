@@ -904,25 +904,18 @@ Expected: FAIL（当前路由没有权限判定，多条断言不通过）
 
 ```ts
 import { NextResponse } from 'next/server';
-import { currentUser } from '../../../../lib/accountAuth.ts';
-import { isAdmin } from '../../../../lib/adminAuth.ts';
-import { canDelete, canEditMeta, canToggleGlobal, type Actor } from '../../../../lib/permissions.ts';
-import { recordAudit } from '../../../../db/auditLog.ts';
+import { actorFromRequest } from '../../../../lib/accountAuthServer.ts';
+import { canDelete, canEditMeta, canToggleGlobal } from '../../../../lib/permissions.ts';
 import { notifyPlain } from '../../../../worker/notifier.ts';
 import * as repo from '../../../../db/repo.ts';
 
 export const dynamic = 'force-dynamic';
 
-function actorOf(req: Request): Actor | null {
-  const a = currentUser(req);
-  return a ? { id: a.id, name: a.name, isAdmin: isAdmin(a) } : null;
-}
-
 const unauthorized = () => NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
 const forbidden = (msg: string) => NextResponse.json({ error: msg }, { status: 403 });
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const actor = actorOf(req);
+  const actor = actorFromRequest(req);
   if (!actor) return unauthorized();
 
   const { id } = await ctx.params;
@@ -962,7 +955,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 }
 
 export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const actor = actorOf(req);
+  const actor = actorFromRequest(req);
   if (!actor) return unauthorized();
 
   const { id } = await ctx.params;
@@ -1025,7 +1018,7 @@ export function updateTokenMetaAudited(
 把 `readName(req)` 那段换成：
 
 ```ts
-  const actor = actorOf(req);            // 与 [id]/route.ts 同样的取法
+  const actor = actorFromRequest(req);
   if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
 
   // 归属只从会话取，**绝不接受请求体里的 ownerId/createdBy** ——
