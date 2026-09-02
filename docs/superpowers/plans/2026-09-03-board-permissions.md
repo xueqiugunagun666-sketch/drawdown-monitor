@@ -1700,7 +1700,19 @@ ssh drawdown "grep -q '^ADMIN_ACCOUNT=' /opt/drawdown-monitor/.env || \
 
 Expected: `1`
 
-- [ ] **Step 5: 构建并重启（只重启 web，worker 不受影响）**
+- [ ] **Step 5a: 先显式跑迁移 —— 不能指望 worker**
+
+`next start` **不执行迁移**，只有 worker 启动时会跑（`src/worker/worker.ts:55`）。
+两个服务重启谁先谁后没有保证，web 先起来就会 500 报 `no such column: owner_id`。
+Task 11 实施时本地就撞上了这个。
+
+```bash
+ssh drawdown 'cd /opt/drawdown-monitor && sudo -u drawdown npm run db:migrate'
+```
+
+迁移幂等（`CREATE TABLE IF NOT EXISTS` + 逐列检查后 ALTER），重复跑无害。
+
+- [ ] **Step 5b: 构建并重启（这次 worker 也要重启）**
 
 ```bash
 ssh drawdown 'sudo rsync -a --delete --exclude ".git" --exclude "node_modules" \
