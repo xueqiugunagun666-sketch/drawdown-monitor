@@ -8,6 +8,17 @@
 
 **Tech Stack:** Next.js 15 (App Router)、better-sqlite3 + Drizzle、node:test、TypeScript（`.ts` 后缀 import）
 
+> **⚠ 事务有两套 API，别混。** 本仓库两种都在用：
+>
+> | 拿到 db 的方式 | `.transaction(fn)` 的语义 | 正确写法 |
+> |---|---|---|
+> | `getDb()`（drizzle） | **立即执行**，返回 fn 的返回值，结果**不可调用** | `db.transaction(() => { … });` |
+> | `getRawDb()`（better-sqlite3 原生） | 返回一个**可调用包装器**，不自动执行 | `const tx = db.transaction(() => { … }); tx();` |
+>
+> 在 drizzle 上多写一对括号（`db.transaction(fn)()`）会 `TypeError: ... is not a function`，
+> 而且是**在事务提交之后**才抛 —— 删除已经生效了，接口却返回 500，用户以为没删掉。
+> 本计划里所有审计相关的事务都用 `getDb()`，一律不加尾括号。
+
 **Spec:** `docs/superpowers/specs/2026-09-02-board-permissions-design.md`
 
 ---
@@ -519,7 +530,7 @@ test('审计写失败时主操作回滚 —— 这是整个设计的关键', () 
         actorId: 'u1', actorName: null as unknown as string, action: 'delete_token',
         targetType: 'token', targetId: 'x:1', targetLabel: 'X',
       });
-    })();
+    });
   }, '审计写入失败时事务应当抛错');
 
   const after = raw.prepare("SELECT COUNT(*) c FROM tokens WHERE id='x:1'").get() as { c: number };
@@ -656,7 +667,7 @@ export function deleteToken(id: string, audit: { actorId: string | null; actorNa
       detail: snapshot ? { chain: snapshot.chain, address: snapshot.address,
         note: snapshot.note, createdBy: snapshot.createdBy, ownerId: snapshot.ownerId } : null,
     });
-  })();
+  });
 }
 ```
 
@@ -681,7 +692,7 @@ export function deleteEvent(id: string, audit: { actorId: string | null; actorNa
       detail: snapshot ? { atTs: snapshot.atTs, note: snapshot.note,
         createdBy: snapshot.createdBy, ownerId: snapshot.ownerId } : null,
     });
-  })();
+  });
 }
 ```
 
@@ -989,7 +1000,7 @@ export function updateTokenMetaAudited(
         action: 'set_frozen', targetType: 'token', targetId: id, targetLabel: audit.label,
         detail: { to: patch.frozen } });
     }
-  })();
+  });
 }
 ```
 
