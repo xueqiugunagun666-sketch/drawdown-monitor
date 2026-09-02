@@ -6,7 +6,7 @@
 
 ## 目标
 
-给共享看板加真实身份与删除权限：任何登录用户都能添加代币，但**只有管理员能删除任何一个**，普通用户只能删自己加的。停用、冻结、改报警档位这三个全局生效的操作收归管理员。日历（events）适用同一套规则。
+给共享看板加真实身份与删除权限：任何登录用户都能添加代币，但**只有管理员能删除任何一个**，普通用户只能删自己加的。备注与标签同样收归添加者本人与管理员 —— 它记录的是「当初为什么关注它」，被别人改掉就丢了上下文。停用、冻结、改报警档位这三个全局生效的操作收归管理员。日历（events）适用同一套规则。
 
 ## 背景：现在为什么拦不住
 
@@ -41,7 +41,8 @@
 | 管理员标记方式 | 环境变量 `ADMIN_ACCOUNT` |
 | 删除粒度 | 管理员删任何；普通用户删自己加的 |
 | 额外收归管理员 | 停用（`enabled=0`）、冻结（`frozen=1`） |
-| 改备注 | **不限制**，任何登录用户可改 |
+| 改备注与标签 | 收归：管理员与添加者可改 |
+| 置顶 | **不限制** —— 见「置顶为什么不收」 |
 | 报警档位 `PUT /api/rules` | 收归管理员；读取不限制 |
 | 日历 | 一起做，同一套规则 |
 | 共享口令的归宿 | 最终取消，改为注册邀请码 —— **放第二步**，本文档不实施 |
@@ -134,9 +135,20 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 
 ### 历史数据
 
-**16 个代币与全部既有日程的 `owner_id` 保持 NULL**，效果是只有管理员能删。
+署名与账号是两个命名空间，无法从字符串推导对应关系。**以下映射由用户本人提供**，不是猜的：
 
-不做署名到账号的映射。`小牛` 对应不到任何账号，9 个代币本来就没署名，猜测映射等于伪造归属 —— 而这次改动的全部意义就是让归属可信。
+| 署名 | 账号 | 代币数 | 来源 |
+|---|---|---|---|
+| `小牛` | `pananiu` | 4 | 用户告知 |
+| `retend` | `retend666` | 2 | 用户告知 |
+| `307大王小锐` | 无对应账号 | 1 | 未确认，留 NULL |
+| （空） | — | 9 | 本来就没署名，留 NULL |
+
+一次性回填脚本 `scripts/backfill-token-owner.ts` 处理前两行共 6 个代币，**只按上表写入，不做任何字符串相似度匹配**。脚本幂等：只写 `owner_id IS NULL` 的行，重复执行不会覆盖后来的归属。
+
+其余 10 个代币与全部既有日程的 `owner_id` 保持 NULL，效果是只有管理员能删改。
+
+**为什么不猜剩下的**：`307大王小锐` 在 8 个账号里找不到对应，可能是没注册的人；9 个无署名的更是无从谈起。猜错的代价是把别人的东西记到某人名下，而这次改动的全部意义就是让归属可信。如果以后确认了，往上表加一行重跑脚本即可。
 
 ## 权限矩阵
 
@@ -144,7 +156,7 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 |---|---|---|---|---|
 | 浏览看板 / 日历 | ✗ | ✓ | ✓ | ✓ |
 | 添加代币 / 日程 | ✗ | ✓ | — | ✓ |
-| 改备注 / 标签 | ✗ | ✓ | ✓ | ✓ |
+| 改备注 / 标签 | ✗ | ✓ | ✗ | ✓ |
 | 置顶 | ✗ | ✓ | ✓ | ✓ |
 | 停用 `enabled` | ✗ | ✗ | ✗ | ✓ |
 | 冻结 `frozen` | ✗ | ✗ | ✗ | ✓ |
@@ -172,10 +184,10 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 |---|---|---|
 | `/api/tokens` | POST | 要登录；写 `owner_id` 与 `created_by`（账号名） |
 | `/api/tokens/[id]` | DELETE | 要登录；`isAdmin` 或 `owner_id === user.id`，否则 403 |
-| `/api/tokens/[id]` | PATCH | 要登录；`enabled`/`frozen` 字段要 `isAdmin`，否则 403；`note`/`tags`/`pinned` 只要登录 |
+| `/api/tokens/[id]` | PATCH | 要登录；`enabled`/`frozen` 要 `isAdmin`；`note`/`tags` 要 `isAdmin` 或 owner；`pinned` 只要登录。**任一字段不通过则整个请求 403，一个字段都不写** |
 | `/api/events` | POST | 要登录；写 `owner_id` 与 `created_by` |
 | `/api/events/[id]` | DELETE | 同 tokens DELETE |
-| `/api/events/[id]` | PATCH | 要登录（日程没有 enabled/frozen 概念） |
+| `/api/events/[id]` | PATCH | 要登录；`isAdmin` 或 owner（日程没有 enabled/frozen 概念，全部字段同一规则） |
 | `/api/rules` | PUT | 要 `isAdmin`，否则 403 |
 | `/api/user` | GET/POST | **整个删除** —— 署名机制被账号取代 |
 
@@ -189,9 +201,18 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 
 `GET /api/rules` 不限制 —— 所有人都该能看到当前档位是什么，否则报警来了不知道是按什么规则判的。
 
+### 置顶为什么不收
+
+备注收归是因为它记录的是**添加者的判断**（「当初为什么关注它」），被别人改掉就丢了上下文，而且改了不留痕迹。
+
+置顶不一样：它不承载任何人的判断，只是「这几个最近要盯着」的临时标记，本来就是给所有人看的协作信号。谁发现某个币值得注意都该能顶上去。误操作的代价也只是顺序变了，点一下就能撤销 —— 与备注被覆盖不可恢复不是一个量级。
+
+代价是别人能取消你的置顶。这个代价可以接受；真出现互相取消的情况再收。
+
 ## 前端
 
-- **`src/components/TokenActions.tsx`**：按权限渲染。非管理员且非 owner 时不显示「删除」；非管理员不显示「冻结」「停用」。「改备注」对所有登录用户保留。
+- **`src/components/TokenActions.tsx`**：按权限渲染。非管理员且非 owner 时不显示「删除」「改备注」；非管理员不显示「冻结」「停用」。置顶按钮（`PinButton`）对所有登录用户保留。
+  - 非 owner 看到的这一行可能一个按钮都不剩（16 个历史代币里有 10 个无主，对非管理员就是这种情况）。这时不要渲染出一条空的操作区 —— 留个「只有添加者或管理员能改」的灰字说明，否则用户会以为界面坏了。
 - **`src/components/Nav.tsx`**：删掉自填署名输入框。有了真账号之后它纯粹是冒充面。
 - **`src/components/UserBadge.tsx`**：改为显示当前账号名，管理员加一个标记。
 - **`/wallet/login`**：现在承担全站登录，页面文案里「钱包」的措辞要改成通用说法。路由路径不变（改路径会让 8 个人的书签失效，不值得）。
@@ -205,6 +226,7 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 - `src/lib/adminAuth.ts` —— `isAdmin()`
 - `src/lib/adminAuth.test.ts`
 - `src/app/api/tokens/[id]/route.test.ts`、`src/app/api/events/[id]/route.test.ts` 等路由测试
+- `scripts/backfill-token-owner.ts` —— 一次性回填 6 个已确认归属的代币（小牛→pananiu 4 个、retend→retend666 2 个），幂等，只写 `owner_id IS NULL` 的行
 
 **修改**
 - `src/db/schema.ts` —— tokens / events 加 `ownerId`
@@ -236,6 +258,8 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 | 未登录访问 API | 401 + `{ error: '需要登录个人账号' }` |
 | 已登录但删别人的 | 403 + `{ error: '只能删除自己添加的，或者找管理员' }` |
 | 已登录但改 enabled/frozen | 403 + `{ error: '停用与冻结仅管理员可操作' }` |
+| 已登录但改别人的备注/标签 | 403 + `{ error: '备注只有添加者本人或管理员能改' }` |
+| 已登录但改报警档位 | 403 + `{ error: '报警档位是全局设置，仅管理员可改' }` |
 | `ADMIN_ACCOUNT` 未配置 | 没有人是管理员；worker 启动时打 WARN，与现有 `ACCESS_TOKEN` 未配置的告警一致 |
 | `ADMIN_ACCOUNT` 配置了但账号不存在 | 同上：没有人是管理员，打 WARN 并写明配的是哪个名字（掩码） |
 
@@ -247,7 +271,12 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 
 1. `isAdmin`：配置为空 → 全部 false；配置的名字匹配 → true；大小写与前后空格；账号为 null → false
 2. `DELETE /api/tokens/[id]`：管理员删他人的 → 200；owner 删自己的 → 200；普通用户删他人的 → 403；普通用户删无主的 → 403；未登录 → 401
-3. `PATCH /api/tokens/[id]`：普通用户改 note → 200；普通用户改 enabled → 403；管理员改 enabled → 200；同时提交 note 与 enabled 且非管理员 → 403 且 **note 也不能被写入**（部分成功会让人以为整个请求成功了）
+3. `PATCH /api/tokens/[id]`：
+   - owner 改自己的 note → 200；普通用户改**他人的** note → 403；管理员改任何 note → 200；改无主的 note 非管理员 → 403
+   - 普通用户改 enabled/frozen → 403；管理员 → 200
+   - 任何登录用户改 pinned（含他人的、无主的）→ 200
+   - **原子性**：同时提交 `{ note, enabled }` 且非管理员 → 403，且 **note 一并不写入**。部分成功会让人以为整个请求成功了，回头发现只改了一半
+   - **原子性**：同时提交 `{ pinned, note }` 改他人的币 → 403，`pinned` 也不写入（单看 pinned 是允许的，但请求整体被拒）
 4. `POST /api/tokens`：写入的 `owner_id` 等于当前账号 id，**不取请求体里的任何 user 字段**
 5. 日历同构用例
 6. `PUT /api/rules`：普通用户 → 403；管理员 → 200；`GET /api/rules` 普通用户 → 200
