@@ -1,9 +1,11 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import Sparkline from './Sparkline.tsx';
 import TokenActions from './TokenActions.tsx';
 import PinButton from './PinButton.tsx';
+import { copyText, selectElement } from '../lib/copy.ts';
 import { severityClass, severityBar } from '../lib/severity.ts';
 
 export interface RowData {
@@ -43,6 +45,66 @@ function fmtUsd(n: number): string {
   return `$${Math.round(n)}`;
 }
 
+/**
+ * 代币名，点一下复制合约地址。
+ *
+ * 看完一行之后最常做的下一件事就是拿 CA 去交易所或行情站，
+ * 而同名假币很多，最终认的是 CA。详情页改由整行承载 ——
+ * 行内任意空白处点进去。
+ */
+function CopyName({ tokenId, symbol }: { tokenId: string; symbol: string | null }) {
+  const [state, setState] = useState<'idle' | 'ok' | 'selected'>('idle');
+  const revealRef = useRef<HTMLElement | null>(null);
+  const address = tokenId.split(':')[1] ?? '';   // id 的形状是 "{chain}:{address}"
+  const label = symbol ?? tokenId.slice(0, 10);
+
+  // 复制失败时把完整地址显示出来并选中，用户长按或 Ctrl+C 仍能拿到。
+  // 放在 effect 里而不是 setTimeout：元素是这次渲染才出现的，
+  // 靠定时器去猜提交时机会抢在它之前，然后静默什么也不做
+  useEffect(() => {
+    if (state === 'selected' && revealRef.current) selectElement(revealRef.current);
+  }, [state]);
+
+  // 没有地址就没有可复制的东西。保持成普通文本，
+  // 而不是给一个点下去毫无反应的按钮 —— 静默失效比不提供更糟
+  if (!address) {
+    return <span className="relative z-10 text-[15px] font-medium truncate">{label}</span>;
+  }
+
+  async function copy() {
+    const ok = await copyText(address);
+    setState(ok ? 'ok' : 'selected');
+    // 失败的那份要留久一点，用户得有时间自己选中复制
+    setTimeout(() => setState('idle'), ok ? 1800 : 8000);
+  }
+
+  return (
+    <>
+      <button type="button" onClick={() => void copy()}
+        title={`点击复制合约地址\n${address}`}
+        className={`relative z-10 text-[15px] font-medium truncate transition-colors
+                    underline-offset-4 hover:underline hover:decoration-dotted ${
+          state === 'ok' ? 'text-[#3fbf7f]'
+          : state === 'selected' ? 'text-[#fab219]'
+          : 'hover:text-sky-400'
+        }`}>
+        {label}
+      </button>
+      {state === 'ok' && (
+        <span className="relative z-10 text-[11px] text-[#3fbf7f] shrink-0">已复制</span>
+      )}
+      {state === 'selected' && (
+        // basis-full 另起一行；order-last 让它排到最后 ——
+        // 否则它会把后面的链徽标、失联/冻结徽标一起挤到下一行去
+        <code ref={revealRef}
+          className="relative z-10 order-last basis-full text-[11px] font-mono text-[#fab219] break-all">
+          {address}
+        </code>
+      )}
+    </>
+  );
+}
+
 export default function TokenRow({ r }: { r: RowData }) {
   const dim = r.frozen || !r.enabled;
 
@@ -65,15 +127,24 @@ export default function TokenRow({ r }: { r: RowData }) {
         ? <div className="absolute left-0 top-0 bottom-0 w-1 bg-neutral-100" />
         : <div className={`absolute left-0 top-3 bottom-3 w-[3px] rounded-full ${severityBar(r.dd)}`} />}
 
+      {/* 整行都是通往详情页的入口 —— 代币名让给了「复制 CA」。
+          用真的 <a> 铺满整行，而不是给容器挂 onClick：
+          cmd+点击开新标签、中键、右键「在新标签页打开」都得能用。
+          绝对定位元素在命中测试里压在普通内容之上，所以行内每个
+          可交互元素都要 relative z-10 抬上来，否则点击会被这一层吃掉。 */}
+      <Link href={`/token/${encodeURIComponent(r.id)}`}
+        aria-label={`${r.symbol ?? r.id} 详情`}
+        className="absolute inset-0" />
+
       <div className="pl-4 pr-3 py-3 grid grid-cols-12 gap-3 items-center">
         {/* 代币 */}
         <div className="col-span-12 md:col-span-3 min-w-0">
-          <div className="flex items-baseline gap-2">
-            <PinButton tokenId={r.id} pinned={r.pinned} />
-            <Link href={`/token/${encodeURIComponent(r.id)}`}
-              className="text-[15px] font-medium hover:text-sky-400 truncate">
-              {r.symbol ?? r.id.slice(0, 10)}
-            </Link>
+          {/* flex-wrap 是给复制失败时露出的完整地址留的换行位 */}
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="relative z-10 flex shrink-0">
+              <PinButton tokenId={r.id} pinned={r.pinned} />
+            </span>
+            <CopyName tokenId={r.id} symbol={r.symbol} />
             <span className="meta-label shrink-0">{r.chain}</span>
             {r.isStale && <span className="badge-fired shrink-0">失联</span>}
             {r.frozen && <span className="badge-quiet shrink-0">已冻结</span>}
@@ -133,7 +204,7 @@ export default function TokenRow({ r }: { r: RowData }) {
 
         {/* 三种 ATH —— 次要信息，默认收起 */}
         <div className="col-span-12 md:col-span-1 flex md:justify-end">
-          <details className="text-[11px] w-full md:w-auto">
+          <details className="relative z-10 text-[11px] w-full md:w-auto">
             <summary className="cursor-pointer text-neutral-600 hover:text-neutral-400 list-none">
               三种 ATH
             </summary>
@@ -152,9 +223,15 @@ export default function TokenRow({ r }: { r: RowData }) {
         </div>
       </div>
 
-      {/* 操作：hover 才出现，平时不占视觉 */}
-      <div className="px-4 pb-2 -mt-1 opacity-0 group-hover:opacity-100 transition-opacity
-                      focus-within:opacity-100">
+      {/* 操作：hover 才出现，平时不占视觉。
+          pointer-events-none 是必须的 —— opacity-0 的按钮照样能点，
+          手机上没有 hover，这一条隐形的「冻结/停用/删除」就横在整行下沿，
+          现在整行都能点进详情页，误触的代价更大了。
+          键盘 Tab 不受 pointer-events 影响，focus-within 仍能把它唤出来。 */}
+      <div className="relative z-10 px-4 pb-2 -mt-1 opacity-0 pointer-events-none
+                      group-hover:opacity-100 group-hover:pointer-events-auto
+                      focus-within:opacity-100 focus-within:pointer-events-auto
+                      transition-opacity">
         <TokenActions tokenId={r.id} symbol={r.symbol} note={r.note}
           frozen={r.frozen} enabled={r.enabled} />
       </div>

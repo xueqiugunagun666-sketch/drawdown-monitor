@@ -23,6 +23,19 @@ export async function copyText(text: string, fallbackElementId?: string): Promis
 function selectElementText(id: string): void {
   const el = document.getElementById(id);
   if (!el) return;
+  selectElement(el);
+}
+
+/**
+ * 按元素引用选中，供"复制失败 → 先把地址渲染出来 → 再选中"这种两步场景。
+ *
+ * 这种场景不能用上面按 id 找的版本：元素是在失败之后才渲染的，
+ * 而 React 的提交时机（调度器走 MessageChannel）与 setTimeout(0)
+ * 谁先执行没有保证 —— 抢在提交前查就是 getElementById 返回 null，
+ * 然后静默什么也不做。调用方拿 ref 在 useEffect 里调这个，
+ * 元素必定已经在 DOM 里。
+ */
+export function selectElement(el: Element): void {
   try {
     const range = document.createRange();
     range.selectNodeContents(el);
