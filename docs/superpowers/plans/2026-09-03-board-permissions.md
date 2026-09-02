@@ -730,26 +730,42 @@ git commit -m "feat: 删除写审计，与删除同事务；addToken 接受 owne
 ```ts
 // src/lib/accountAuthServer.ts
 /**
- * 服务端组件取当前账号。
+ * 把「会话」翻译成「Actor」的唯一入口。
+ *
+ * 两个函数对应两种调用场景，但结论必须一致 —— 所以共用同一个
+ * toActor：服务端组件按它渲染按钮，路由按它判权限，两边算法一旦
+ * 分叉就会出现「按钮看得见但点了被拒」或者更糟的反过来。
  *
  * 单独一个文件而不是塞进 accountAuth.ts：`next/headers` 只能在
  * Next 的服务端上下文里 import，混进去会让 accountAuth.ts 在
  * node:test 与 worker 进程里直接崩掉。
  */
 import { cookies } from 'next/headers';
+import { currentUser } from './accountAuth.ts';
 import { SESSION_COOKIE, hashToken } from './session.ts';
 import { findUserBySessionHash } from '../db/walletRepo.ts';
 import { isAdmin } from './adminAuth.ts';
 import type { Actor } from './permissions.ts';
 
-export async function currentActor(): Promise<Actor | null> {
-  const raw = (await cookies()).get(SESSION_COOKIE)?.value;
-  if (!raw) return null;
-  const account = findUserBySessionHash(hashToken(raw), Math.floor(Date.now() / 1000));
+function toActor(account: { id: string; name: string } | null): Actor | null {
   if (!account) return null;
   return { id: account.id, name: account.name, isAdmin: isAdmin(account) };
 }
+
+/** 服务端组件用：从 next/headers 取 cookie */
+export async function currentActor(): Promise<Actor | null> {
+  const raw = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!raw) return null;
+  return toActor(findUserBySessionHash(hashToken(raw), Math.floor(Date.now() / 1000)));
+}
+
+/** API 路由用：从 Request 取。Task 8/9/10 三个路由都 import 这个 */
+export function actorFromRequest(req: Request): Actor | null {
+  return toActor(currentUser(req));
+}
 ```
+
+`actorFromRequest` 放在这里而不是各路由里各写一份：三个路由都要用，复制粘贴迟早会分叉。它不依赖 `next/headers`，但和 `currentActor` 放一起才能共用 `toActor` —— 这是保证「前端看到的权限」和「后端判定的权限」永远一致的关键。
 
 - [ ] **Step 2: 类型检查**
 
@@ -1023,7 +1039,7 @@ export function updateTokenMetaAudited(
   );
 ```
 
-同时删掉 `import { readName } from '../../../lib/user.ts';`，并把 `actorOf` 抽到 `src/lib/permissions.ts` 之外的共用位置 —— 放在 `src/lib/accountAuthServer.ts` 里新增一个 `actorFromRequest(req)` 供两个路由 import，避免复制粘贴。
+同时删掉 `import { readName } from '../../../lib/user.ts';`。`actorFromRequest` 由 Task 7 建好了，直接 `import { actorFromRequest } from '../../../lib/accountAuthServer.ts'` 即可，不要在路由里再写一份 `actorOf`。
 
 - [ ] **Step 6: 跑测试确认通过**
 
