@@ -16,11 +16,12 @@ const WALLET_COOKIE = 'wallet_session';
 const PUBLIC_PATHS = ['/login', '/api/login'];
 
 /**
- * 钱包区：在全站口令之上再要一次个人账号登录。
- * 这几条自己不能被拦，否则会重定向到自己形成死循环。
+ * 账号闸门覆盖全站（原本只管 /wallet）。
+ *
+ * 豁免的只有两类：共享口令入口，以及账号注册/登录入口本身 ——
+ * 它们不能被账号闸门拦，否则会重定向到自己形成死循环。
  */
-const WALLET_PREFIXES = ['/wallet', '/api/wallet'];
-const WALLET_PUBLIC = ['/wallet/login', '/api/account'];
+const WALLET_PUBLIC = ['/login', '/api/login', '/wallet/login', '/api/account'];
 
 export function middleware(req: NextRequest) {
   const expected = process.env.ACCESS_TOKEN;
@@ -55,8 +56,6 @@ export function middleware(req: NextRequest) {
  * 中间件挡掉未登录的浏览，路由做真正的鉴权。只有中间件是不够的。
  */
 function walletGate(req: NextRequest, pathname: string) {
-  const needsAccount = WALLET_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'));
-  if (!needsAccount) return NextResponse.next();
   if (WALLET_PUBLIC.some((p) => pathname === p || pathname.startsWith(p + '/'))) {
     return NextResponse.next();
   }
