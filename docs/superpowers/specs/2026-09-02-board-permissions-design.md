@@ -31,7 +31,7 @@
 - **查不到是谁干的**：`drawdown-web` 的日志只记录登录事件，没有任何删除动作的记录
 - 那 6 小时内有三个不同 IP 用共享口令登录过，全部无身份
 
-这不是假想的风险，是已经发生的事实。也说明为什么审计日志值得单独评估（见「明确不做」）。
+这不是假想的风险，是已经发生的事实。**它直接导致本次一并加审计日志**（见「审计日志」一节）—— 权限收紧后能删的人从「拿到口令的任何人」缩到「管理员 + 添加者」，风险大降但没归零，而现在连"降没降"都无从验证。
 
 ### 生产现状（2026-09-03 实测）
 
@@ -70,6 +70,8 @@
 | 日历 | 一起做，同一套规则 |
 | 共享口令的归宿 | 最终取消，改为注册邀请码 —— **放第二步**，本文档不实施 |
 | 没账号的人被挡在外面 | 可接受，需要注册 |
+| 审计日志 | **做** —— 删除/改备注/停用/冻结/改档位入库，与主操作同事务 |
+| 删除时推 Telegram | 做，复用 notifyPlain，事务提交后尽力推送 |
 
 ## 分两步走
 
@@ -185,6 +187,55 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 
 **为什么不猜剩下的两条**：它们在 8 个账号里找不到对应，可能是没注册的人。猜错的代价是把别人的东西记到某人名下，而这次改动的全部意义就是让归属可信。以后确认了，往映射表加一行重跑即可。
 
+### 审计日志
+
+PONZI 那次删除完全查不到人，所以这次一并做。新表：
+
+```ts
+export const auditLog = sqliteTable('audit_log', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  atTs: integer('at_ts').notNull(),
+  actorId: text('actor_id'),                  // users.id
+  actorName: text('actor_name').notNull(),    // 账号名快照
+  action: text('action').notNull(),           // delete_token / update_note / ...
+  targetType: text('target_type').notNull(),  // token / event / rules
+  targetId: text('target_id'),
+  targetLabel: text('target_label'),          // symbol 或 title 的快照
+  detail: text('detail'),                     // JSON，主要存旧值
+});
+```
+
+**记这些动作**：
+
+| action | 为什么 |
+|---|---|
+| `delete_token` / `delete_event` | 不可逆。`detail` 存被删记录的快照，至少知道丢了什么 |
+| `update_note` | 覆盖式，旧备注永久丢失。`detail` 存旧内容 |
+| `set_enabled` / `set_frozen` | 全局生效且悄无声息，别人加的币被停了他不会知道 |
+| `update_rules` | 全局报警档位 |
+
+**不记**：置顶（可逆、无内容损失）、添加（`owner_id` 本身就是记录）。
+
+四个设计要点：
+
+1. **与主操作同一个事务。** 日志写失败则整个操作回滚。best-effort 的审计日志在最需要它的时候（出问题时）恰好可能是空的 —— 那还不如不做。SQLite 是本地单文件，插入失败说明有更严重的问题，此时拒绝删除是对的。
+
+2. **`actorName` 与 `targetLabel` 存快照，不做 JOIN。** 账号将来可能改名，代币删掉之后光看 id 根本不知道是什么。审计日志必须能脱离其他表独立读懂 —— 否则它记录的历史会被后来的变更改写。
+
+3. **不设保留期。** 按现在的量（一周几次），十年也就几千行。加清理逻辑是新的出错点，收益为零。
+
+4. **只做 CLI，不做网页。** `npm run audit` 打印最近 N 条。管理员一个人看，加页面就要再加权限判定、分页、筛选，成本远大于收益。
+
+### 删除时推 Telegram
+
+删除是唯一不可逆的操作，出了事需要**当时就知道**，而不是事后想起来翻日志。
+
+复用 `src/worker/notifier.ts` 的 `notifyPlain()` —— 已核实它只依赖 `getSecrets()` 与 `httpGet`，不碰 worker 状态，可以从网页进程直接调用（API 路由跑 Node runtime，不是 edge）。
+
+消息形如：`pananiu 删除了 PONZI (robinhood)`。
+
+**推送不进事务**：网络调用绝不能放在数据库事务里。顺序是「事务提交 → 再推送」，推送失败只记日志不影响删除。审计行是持久记录，推送是尽力而为的提醒，两者的可靠性要求不同，不能混在一起。
+
 ## 权限矩阵
 
 | 操作 | 未登录 | 普通用户（自己的） | 普通用户（他人/无主） | 管理员 |
@@ -261,10 +312,13 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 - `src/lib/adminAuth.ts` —— `isAdmin()`
 - `src/lib/adminAuth.test.ts`
 - `src/app/api/tokens/[id]/route.test.ts`、`src/app/api/events/[id]/route.test.ts` 等路由测试
+- `scripts/audit.ts` —— `npm run audit` 打印最近 N 条审计记录
+- `src/db/auditLog.ts` —— 写入与查询，供路由调用
+- `src/db/auditLog.test.ts`
 - `scripts/backfill-owner.ts` —— 一次性回填已确认归属的代币与日程（见「历史数据」的映射表），按署名值匹配而非数量，幂等，只写 `owner_id IS NULL` 的行
 
 **修改**
-- `src/db/schema.ts` —— tokens / events 加 `ownerId`
+- `src/db/schema.ts` —— tokens / events 加 `ownerId`；新增 `audit_log` 表
 - `src/db/migrate.ts` —— `ADDED_COLUMNS` 加两行
 - `src/db/repo.ts` —— `addToken` / `addEvent` 接受 ownerId；新增按 id 取 owner 的查询
 - `src/lib/config.ts` —— `getSecrets()` 加 `adminAccount`
@@ -315,8 +369,9 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 4. `POST /api/tokens`：写入的 `owner_id` 等于当前账号 id，**不取请求体里的任何 user 字段**
 5. 日历同构用例
 6. `PUT /api/rules`：普通用户 → 403；管理员 → 200；`GET /api/rules` 普通用户 → 200
-7. 中间件：豁免路径可达；其他路径无 `wallet_session` 时被拦
-8. **回归护栏**：`POST /api/tokens` 与 `POST /api/events` 忽略请求体里的 `ownerId` / `owner_id` / `createdBy` 字段。这是隔离的命门 —— 一旦某个路由接受了客户端传来的归属，权限就名存实亡，任何人改个参数就能把币记到别人名下再以「自己的」删掉
+7. 审计日志：删除成功后有且仅有一条 `delete_token`，`actor_name` 与 `target_label` 是快照值；**日志写入失败时删除必须回滚**（注入一个会抛错的写入验证事务边界）；改备注时 `detail` 里存的是旧内容而不是新内容
+8. 中间件：豁免路径可达；其他路径无 `wallet_session` 时被拦
+9. **回归护栏**：`POST /api/tokens` 与 `POST /api/events` 忽略请求体里的 `ownerId` / `owner_id` / `createdBy` 字段。这是隔离的命门 —— 一旦某个路由接受了客户端传来的归属，权限就名存实亡，任何人改个参数就能把币记到别人名下再以「自己的」删掉
 
 ## 风险
 
@@ -334,5 +389,5 @@ ownerId: text('owner_id'),          // users.id，无主为 NULL
 - 多管理员、角色系统、权限组 —— 只有一个管理员，YAGNI
 - 管理员在网页上提权/降权的界面 —— 改 `.env` 重启即可
 - 把历史署名映射到账号 —— 见「历史数据」一节
-- 审计日志（谁删了什么）—— **本次不做，但需要单独决定**。PONZI 那次删除证明现在完全查不到人。权限上线后，能删的人从「拿到口令的任何人」缩到「管理员 + 添加者本人」，风险大幅下降但没有归零；写一行删除日志的成本很低（一张表 + 删除路由里加一次写入），要不要做请单独确认
+- 审计日志的**网页界面** —— 只做 `npm run audit` 这个 CLI。日志本身要做，见「审计日志」一节
 - 更改 `/wallet/login` 的路由路径 —— 会让现有书签失效
