@@ -12,6 +12,7 @@ import { nowSec, align5m } from '../lib/time.ts';
 import type { TokenQuote } from '../sources/types.ts';
 import type { AthResult } from '../worker/ath.ts';
 import type { StateSnapshot } from '../worker/stateMachine.ts';
+import { recordAudit } from './auditLog.ts';
 
 export type TokenRow = typeof tokens.$inferSelect;
 export type RuleRow = typeof alertRules.$inferSelect;
@@ -29,7 +30,8 @@ export function getToken(id: string): TokenRow | undefined {
 }
 
 export function addToken(input: {
-  chain: string; address: string; note: string; tags?: string[]; createdBy?: string | null;
+  chain: string; address: string; note: string; tags?: string[];
+  createdBy?: string | null; ownerId?: string | null;
 }): TokenRow {
   const id = `${input.chain}:${input.address}`;
   const row = {
@@ -37,20 +39,38 @@ export function addToken(input: {
     addedAt: nowSec(), note: input.note, tags: JSON.stringify(input.tags ?? []),
     frozen: 0, enabled: 1, lastSource: null, lastQuoteAt: null, failCount: 0,
     createdBy: input.createdBy ?? null,
+    ownerId: input.ownerId ?? null,
   };
   getDb().insert(tokens).values(row).onConflictDoNothing().run();
   return getToken(id)!;
 }
 
-export function deleteToken(id: string): void {
+/**
+ * 删除代币，连带清掉它的 K 线/池子/报警历史。
+ *
+ * 审计参数是必填的：删除不可逆，没有记录就等于没发生过 ——
+ * PONZI 那次就是这样，只能靠比对备份才知道丢了什么。
+ * 审计写失败时整个删除回滚（同一个事务）。
+ */
+export function deleteToken(id: string, audit: { actorId: string | null; actorName: string }): void {
   const db = getDb();
-  db.delete(backfillJobs).where(eq(backfillJobs.tokenId, id)).run();
-  db.delete(alerts).where(eq(alerts.tokenId, id)).run();
-  db.delete(alertStates).where(eq(alertStates.tokenId, id)).run();
-  db.delete(athState).where(eq(athState.tokenId, id)).run();
-  db.delete(candles).where(eq(candles.tokenId, id)).run();
-  db.delete(pools).where(eq(pools.tokenId, id)).run();
-  db.delete(tokens).where(eq(tokens.id, id)).run();
+  const snapshot = getToken(id);
+  db.transaction(() => {
+    db.delete(backfillJobs).where(eq(backfillJobs.tokenId, id)).run();
+    db.delete(alerts).where(eq(alerts.tokenId, id)).run();
+    db.delete(alertStates).where(eq(alertStates.tokenId, id)).run();
+    db.delete(athState).where(eq(athState.tokenId, id)).run();
+    db.delete(candles).where(eq(candles.tokenId, id)).run();
+    db.delete(pools).where(eq(pools.tokenId, id)).run();
+    db.delete(tokens).where(eq(tokens.id, id)).run();
+    recordAudit({
+      actorId: audit.actorId, actorName: audit.actorName,
+      action: 'delete_token', targetType: 'token',
+      targetId: id, targetLabel: snapshot?.symbol ?? null,
+      detail: snapshot ? { chain: snapshot.chain, address: snapshot.address,
+        note: snapshot.note, createdBy: snapshot.createdBy, ownerId: snapshot.ownerId } : null,
+    });
+  });
 }
 
 export function updateTokenMeta(id: string, patch: Partial<TokenRow>): void {
@@ -514,8 +534,19 @@ export function upsertEvent(e: typeof events.$inferInsert): void {
   getDb().insert(events).values(e).onConflictDoUpdate({ target: events.id, set: e }).run();
 }
 
-export function deleteEvent(id: string): void {
-  getDb().delete(events).where(eq(events.id, id)).run();
+export function deleteEvent(id: string, audit: { actorId: string | null; actorName: string }): void {
+  const db = getDb();
+  const snapshot = getEvent(id);
+  db.transaction(() => {
+    db.delete(events).where(eq(events.id, id)).run();
+    recordAudit({
+      actorId: audit.actorId, actorName: audit.actorName,
+      action: 'delete_event', targetType: 'event',
+      targetId: id, targetLabel: snapshot?.title ?? null,
+      detail: snapshot ? { atTs: snapshot.atTs, note: snapshot.note,
+        createdBy: snapshot.createdBy, ownerId: snapshot.ownerId } : null,
+    });
+  });
 }
 
 /** 待提醒的事件：启用、且尚有未发出的提醒点 */

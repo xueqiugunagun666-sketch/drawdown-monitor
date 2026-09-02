@@ -34,7 +34,7 @@ test('时间未到不提醒', () => {
 });
 
 test('到点触发，且只触发该提醒点', () => {
-  repo.deleteEvent('a');
+  repo.deleteEvent('a', { actorId: null, actorName: 'test' });
   mkEvent('b', NOW + 3600, [1440, 60, 0]);
   const due = dueReminders(NOW);
   assert.equal(due.length, 1);
@@ -48,7 +48,7 @@ test('发过的不再发', () => {
 });
 
 test('多个提醒点分别独立触发', () => {
-  repo.deleteEvent('b');
+  repo.deleteEvent('b', { actorId: null, actorName: 'test' });
   const e = mkEvent('c', NOW + 60, [60, 0]);
   // 此刻距事件 1 分钟：60 分钟前那个点早过了但在容忍窗口外？——它是 59 分钟前，超过 30 分钟容忍
   const due = dueReminders(NOW);
@@ -61,7 +61,7 @@ test('多个提醒点分别独立触发', () => {
 });
 
 test('过期太久的提醒被标记为已发但不推送', () => {
-  repo.deleteEvent('c');
+  repo.deleteEvent('c', { actorId: null, actorName: 'test' });
   mkEvent('d', NOW - 7200, [0]);   // 事件在 2 小时前
   assert.equal(dueReminders(NOW).length, 0, '错过的 mint 时间点事后补推没有价值');
   // 且已被标记，下次不会重复处理
@@ -70,7 +70,7 @@ test('过期太久的提醒被标记为已发但不推送', () => {
 });
 
 test('消息内容：北京时间 + 原始时区 + 链接 + 署名', () => {
-  repo.deleteEvent('d');
+  repo.deleteEvent('d', { actorId: null, actorName: 'test' });
   // 项目按美东公告 mint 时间
   const at = wallTimeToUtcSeconds('2026-07-15T12:00', 'America/New_York')!;
   const e = mkEvent('e', at, [60], {
@@ -95,7 +95,7 @@ test('消息内容：北京时间 + 原始时区 + 链接 + 署名', () => {
 });
 
 test('停用的事件不提醒', () => {
-  repo.deleteEvent('e');
+  repo.deleteEvent('e', { actorId: null, actorName: 'test' });
   mkEvent('f', NOW + 60, [0], { enabled: 0 });
   assert.equal(dueReminders(NOW + 60).length, 0);
 });

@@ -46,6 +46,6 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
   const { id } = await ctx.params;
   if (!repo.getEvent(id)) return NextResponse.json({ error: '日程不存在' }, { status: 404 });
-  repo.deleteEvent(id);
+  repo.deleteEvent(id, { actorId: null, actorName: 'system' });
   return NextResponse.json({ deleted: id });
 }
