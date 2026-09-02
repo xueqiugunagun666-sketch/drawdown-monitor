@@ -28,6 +28,8 @@ export const tokens = sqliteTable('tokens', {
   /** 'public' 进共享看板 | 'wallet' 只在个人钱包页可见。
    *  两人持有同一个币时共用这一条记录，价格只轮询一次。 */
   visibility: text('visibility').default('public').notNull(),
+  /** 添加者的 users.id。NULL = 无主（账号系统上线前加的），只有管理员能动 */
+  ownerId: text('owner_id'),
 });
 
 export const pools = sqliteTable('pools', {
@@ -152,6 +154,7 @@ export const events = sqliteTable('events', {
   /** 已发出的提醒，JSON 数字数组 —— 去重用，防止重启后重复推 */
   remindedOffsets: text('reminded_offsets'),
   createdBy: text('created_by'),
+  ownerId: text('owner_id'),
   createdAt: integer('created_at').notNull(),
   enabled: integer('enabled').default(1).notNull(),
 });
@@ -296,4 +299,23 @@ export const tokenMeta = sqliteTable('token_meta', {
   fetchedAt: integer('fetched_at').notNull(),
   /** 上次跑过判定的时刻。已被挡掉的币不必每轮重查报价 */
   lastEvalAt: integer('last_eval_at'),
+});
+
+/**
+ * 审计日志。
+ *
+ * actor_name 与 target_label 存**快照**而不是 JOIN 出来：账号会改名，
+ * 代币删掉之后光看 id 根本不知道是什么。审计日志必须能脱离其他表
+ * 独立读懂 —— 否则它记录的历史会被后来的变更改写。
+ */
+export const auditLog = sqliteTable('audit_log', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  atTs: integer('at_ts').notNull(),
+  actorId: text('actor_id'),
+  actorName: text('actor_name').notNull(),
+  action: text('action').notNull(),
+  targetType: text('target_type').notNull(),
+  targetId: text('target_id'),
+  targetLabel: text('target_label'),
+  detail: text('detail'),
 });

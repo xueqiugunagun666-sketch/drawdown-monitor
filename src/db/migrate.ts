@@ -138,6 +138,18 @@ CREATE INDEX IF NOT EXISTS idx_pump_alerts_user ON pump_alerts(user_id, fired_at
 CREATE TABLE IF NOT EXISTS token_meta (
   token_id TEXT PRIMARY KEY, holder_count INTEGER, symbol TEXT, fetched_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at_ts INTEGER NOT NULL,
+  actor_id TEXT,
+  actor_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT,
+  target_label TEXT,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at_ts DESC);
 `;
 
 /**
@@ -164,6 +176,8 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['tokens', 'visibility', "TEXT NOT NULL DEFAULT 'public'"],
   ['holdings', 'symbol', 'TEXT'],
   ['token_meta', 'last_eval_at', 'INTEGER'],
+  ['tokens', 'owner_id', 'TEXT'],
+  ['events', 'owner_id', 'TEXT'],
 ];
 
 export function runMigrations(): void {
