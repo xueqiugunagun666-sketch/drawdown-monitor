@@ -405,7 +405,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at_ts DESC);
 ```bash
 cd /Users/pananiu/projects/drawdown-monitor
 cp data/monitor.db /tmp/mig-test.db
-DATABASE_PATH=/tmp/mig-test.db npx tsx -e "
+BEFORE=$(sqlite3 /tmp/mig-test.db 'SELECT COUNT(*) FROM tokens;')
+DATABASE_PATH=/tmp/mig-test.db BEFORE="$BEFORE" npx tsx -e "
 import { runMigrations } from './src/db/migrate.ts';
 import { getRawDb } from './src/db/index.ts';
 runMigrations(); runMigrations();          // 跑两次验幂等
@@ -413,10 +414,11 @@ const db = getRawDb();
 const t = db.prepare('PRAGMA table_info(tokens)').all().map(c => c.name);
 const e = db.prepare('PRAGMA table_info(events)').all().map(c => c.name);
 const a = db.prepare('PRAGMA table_info(audit_log)').all().map(c => c.name);
+const after = db.prepare('SELECT COUNT(*) c FROM tokens').get().c;
 console.log('tokens.owner_id:', t.includes('owner_id'));
 console.log('events.owner_id:', e.includes('owner_id'));
 console.log('audit_log 列:', a.join(','));
-console.log('原有数据还在:', db.prepare('SELECT COUNT(*) c FROM tokens').get().c);
+console.log('迁移前后代币数一致:', String(after) === process.env.BEFORE, \`(\${process.env.BEFORE} -> \${after})\`);
 "
 rm -f /tmp/mig-test.db*
 ```
@@ -426,8 +428,10 @@ Expected:
 tokens.owner_id: true
 events.owner_id: true
 audit_log 列: id,at_ts,actor_id,actor_name,action,target_type,target_id,target_label,detail
-原有数据还在: 15
+迁移前后代币数一致: true (N -> N)
 ```
+
+**不要写死行数**：本地库与生产库的代币数不同（写这份计划时本地 3、生产 15），而且看板一直在变。要验的不变量是「迁移没弄丢数据」，也就是前后相等 —— 写死数字只会在换环境时产生假警报。
 
 - [ ] **Step 5: 全量测试与类型检查**
 
