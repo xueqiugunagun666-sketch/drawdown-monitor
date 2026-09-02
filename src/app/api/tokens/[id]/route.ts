@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { checkAuth } from '../../../../lib/auth.ts';
 import { actorFromRequest } from '../../../../lib/accountAuthServer.ts';
 import { canDelete, canEditMeta, canToggleGlobal } from '../../../../lib/permissions.ts';
 import { notifyPlain } from '../../../../worker/notifier.ts';
@@ -9,7 +10,22 @@ export const dynamic = 'force-dynamic';
 const unauthorized = () => NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
 const forbidden = (msg: string) => NextResponse.json({ error: msg }, { status: 403 });
 
+/**
+ * 两道闸门都在路由里再查一遍，与本项目其余 10 个路由一致。
+ *
+ * 中间件已经查过，这里是纵深防御：middleware 的 matcher 排除了静态资源，
+ * 将来若有人再加一条排除规则，没有自查的路由会**悄无声息**地失去闸门。
+ * 口令那层将来要整体拆掉（改注册邀请码），届时这一行随其余 10 处一起删。
+ */
+function gate(req: Request): Response | null {
+  const auth = checkAuth(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  return null;
+}
+
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const denied = gate(req);
+  if (denied) return denied;
   const actor = actorFromRequest(req);
   if (!actor) return unauthorized();
 
@@ -50,6 +66,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 }
 
 export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const denied = gate(req);
+  if (denied) return denied;
   const actor = actorFromRequest(req);
   if (!actor) return unauthorized();
 
