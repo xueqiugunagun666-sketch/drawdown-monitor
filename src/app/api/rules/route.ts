@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 import { checkAuth } from '../../../lib/auth.ts';
+import { actorFromRequest } from '../../../lib/accountAuthServer.ts';
+import { canToggleGlobal } from '../../../lib/permissions.ts';
+import { recordAudit } from '../../../db/auditLog.ts';
 import * as repo from '../../../db/repo.ts';
 
 export const dynamic = 'force-dynamic';
@@ -18,6 +21,11 @@ const NUM_FIELDS = [
 export async function PUT(req: Request) {
   const auth = checkAuth(req);
   if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = actorFromRequest(req);
+  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
+  if (!canToggleGlobal(actor)) {
+    return NextResponse.json({ error: '报警档位是全局设置，仅管理员可改' }, { status: 403 });
+  }
 
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 }); }
@@ -55,5 +63,9 @@ export async function PUT(req: Request) {
   if (body.enabled !== undefined) patch.enabled = body.enabled ? 1 : 0;
 
   repo.upsertRule(patch as Parameters<typeof repo.upsertRule>[0]);
+  recordAudit({
+    actorId: actor.id, actorName: actor.name, action: 'update_rules',
+    targetType: 'rules', targetId: null, targetLabel: null, detail: body,
+  });
   return NextResponse.json({ rule: repo.listRules().find((r) => r.id === id) });
 }
