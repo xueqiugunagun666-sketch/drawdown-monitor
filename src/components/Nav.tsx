@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import UserBadge from './UserBadge.tsx';
+import { currentActor } from '../lib/accountAuthServer.ts';
 
 const LINKS: Array<[href: string, label: string]> = [
   ['/', '看板'],
@@ -11,10 +12,11 @@ const LINKS: Array<[href: string, label: string]> = [
 ];
 
 /**
- * @param showBadge 是否显示「署名」输入框。钱包登录页要关掉 ——
- *   署名是共享看板用的，和下面的「用户名」摆在同一屏会让人填错框。
+ * @param showBadge 是否显示账号名。钱包登录页要关掉 ——
+ *   这块是共享看板用的，和下面的「用户名」摆在同一屏容易看混。
  */
-export default function Nav({ current, showBadge = true }: { current: string; showBadge?: boolean }) {
+export default async function Nav({ current, showBadge = true }: { current: string; showBadge?: boolean }) {
+  const actor = await currentActor();
   return (
     <nav className="flex items-center gap-1 mb-5 text-sm">
       {/* 窄屏横向滚动，不折行 —— 折行会把「加币」拆成上下两个字 */}
@@ -30,7 +32,7 @@ export default function Nav({ current, showBadge = true }: { current: string; sh
       </div>
       {showBadge && (
         <div className="ml-auto shrink-0">
-          <UserBadge />
+          <UserBadge name={actor?.name ?? null} isAdmin={actor?.isAdmin ?? false} />
         </div>
       )}
     </nav>

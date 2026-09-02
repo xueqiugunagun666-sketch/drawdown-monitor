@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { hashPassword } from '../../../../lib/password.ts';
 import { newSessionToken, hashToken, SESSION_COOKIE, SESSION_TTL_SECONDS } from '../../../../lib/session.ts';
 import { createUser, createSession } from '../../../../db/walletRepo.ts';
-import { sanitizeName } from '../../../../lib/user.ts';
+import { sanitizeName } from '../../../../lib/sanitizeName.ts';
 import { checkRateLimit, recordFailure, clientIp } from '../../../../lib/authToken.ts';
 import { makeLogger } from '../../../../lib/log.ts';
 
