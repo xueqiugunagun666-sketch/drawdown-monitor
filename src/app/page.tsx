@@ -7,6 +7,8 @@ import { nowSec, humanAgo } from '../lib/time.ts';
 import { ATH_MODES, ROLLING_WINDOW_SECONDS, type AthMode } from '../worker/athModes.ts';
 import { backfillProgress } from '../worker/backfill.ts';
 import * as repo from '../db/repo.ts';
+import { currentActor } from '../lib/accountAuthServer.ts';
+import { canDelete, canEditMeta, canToggleGlobal } from '../lib/permissions.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +20,7 @@ export default async function Home({
   searchParams,
 }: { searchParams: Promise<{ pinned?: string }> }) {
   const onlyPinned = (await searchParams).pinned === '1';
+  const actor = await currentActor();
   const cfg = getConfig();
   const tokens = repo.listAllTokens();
   const lastRun = repo.getLastPollRun();
@@ -76,6 +79,9 @@ export default async function Home({
       primaryShare: primary && liqTotal > 0 ? (primary.liquidityUsd ?? 0) / liqTotal : 1,
       spark: repo.sparklinePoints(t.id, sinceTs),
       modes: modes.map((m) => ({ label: m.label, value: m.value, dd: m.dd, partial: m.partial })),
+      canDelete: canDelete(actor, t.ownerId ?? null),
+      canEditMeta: canEditMeta(actor, t.ownerId ?? null),
+      canToggleGlobal: canToggleGlobal(actor),
     };
   }).sort((a, b) => {
     // 置顶的排最前 —— 盯着但还没跌的币，按跌幅排会沉到底下看不见。

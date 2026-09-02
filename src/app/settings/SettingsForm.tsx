@@ -18,7 +18,7 @@ const NUM: Array<[key: keyof RuleShape, label: string, hint: string]> = [
   ['athSustainCandles', 'k（第 k 高收盘价）', 'ATH 取合格 candle 中第 k 高的 close，越大越保守'],
 ];
 
-export default function SettingsForm({ rule }: { rule: RuleShape }) {
+export default function SettingsForm({ rule, canEdit }: { rule: RuleShape; canEdit: boolean }) {
   const router = useRouter();
   const [form, setForm] = useState(() => ({
     ...rule,
@@ -57,14 +57,15 @@ export default function SettingsForm({ rule }: { rule: RuleShape }) {
       <div>
         <label className="block text-sm mb-1">报警档位</label>
         <input value={form.levelsText} onChange={(e) => setForm({ ...form, levelsText: e.target.value })}
-          className={field} placeholder="80, 85, 90, 95" />
+          disabled={!canEdit} className={field} placeholder="80, 85, 90, 95" />
         <p className="text-xs text-neutral-600 mt-1">逗号分隔。每档独立触发一次，但受下面的冷却间隔约束</p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm mb-1">ATH 模式</label>
-          <select value={form.athMode} onChange={(e) => setForm({ ...form, athMode: e.target.value })} className={field}>
+          <select value={form.athMode} onChange={(e) => setForm({ ...form, athMode: e.target.value })}
+            disabled={!canEdit} className={field}>
             <option value="rolling_90d">90 天滚动</option>
             <option value="since_added">加入以来</option>
             <option value="all_time">全历史</option>
@@ -72,7 +73,8 @@ export default function SettingsForm({ rule }: { rule: RuleShape }) {
         </div>
         <div>
           <label className="block text-sm mb-1">计价</label>
-          <select value={form.quoteMode} onChange={(e) => setForm({ ...form, quoteMode: e.target.value })} className={field}>
+          <select value={form.quoteMode} onChange={(e) => setForm({ ...form, quoteMode: e.target.value })}
+            disabled={!canEdit} className={field}>
             <option value="usd">USD</option>
             <option value="native">原生币</option>
           </select>
@@ -85,7 +87,7 @@ export default function SettingsForm({ rule }: { rule: RuleShape }) {
             <label className="block text-sm mb-1">{label}</label>
             <input type="number" value={String(form[key])}
               onChange={(e) => setForm({ ...form, [key]: Number(e.target.value) })}
-              className={field} />
+              disabled={!canEdit} className={field} />
             <p className="text-xs text-neutral-600 mt-1">{hint}</p>
           </div>
         ))}
@@ -94,10 +96,14 @@ export default function SettingsForm({ rule }: { rule: RuleShape }) {
       {err && <div className="p-3 rounded border border-red-900 bg-red-950/40 text-sm text-red-300">{err}</div>}
       {msg && <div className="p-3 rounded border border-green-900 bg-green-950/30 text-sm text-green-300">{msg}</div>}
 
-      <button onClick={save} disabled={busy}
-        className="px-4 py-2 rounded bg-sky-800 text-sm hover:bg-sky-700 disabled:opacity-40">
-        {busy ? '保存中…' : '保存'}
-      </button>
+      {canEdit ? (
+        <button onClick={save} disabled={busy}
+          className="px-4 py-2 rounded bg-sky-800 text-sm hover:bg-sky-700 disabled:opacity-40">
+          {busy ? '保存中…' : '保存'}
+        </button>
+      ) : (
+        <p className="text-xs text-neutral-600">报警档位是全局设置，只有管理员能改</p>
+      )}
     </div>
   );
 }

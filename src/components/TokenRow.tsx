@@ -32,6 +32,9 @@ export interface RowData {
   primaryShare: number;
   spark: { points: number[]; athIndex: number | null };
   modes: Array<{ label: string; value: string | null; dd: number | null; partial: boolean }>;
+  canDelete: boolean;
+  canEditMeta: boolean;
+  canToggleGlobal: boolean;
 }
 
 function fmtDd(v: number | null, digits = 1): string {
@@ -233,7 +236,8 @@ export default function TokenRow({ r }: { r: RowData }) {
                       focus-within:opacity-100 focus-within:pointer-events-auto
                       transition-opacity">
         <TokenActions tokenId={r.id} symbol={r.symbol} note={r.note}
-          frozen={r.frozen} enabled={r.enabled} />
+          frozen={r.frozen} enabled={r.enabled}
+          canDelete={r.canDelete} canEditMeta={r.canEditMeta} canToggleGlobal={r.canToggleGlobal} />
       </div>
     </div>
   );

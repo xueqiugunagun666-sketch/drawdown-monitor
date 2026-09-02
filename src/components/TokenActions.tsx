@@ -9,9 +9,14 @@ interface Props {
   note: string | null;
   frozen: boolean;
   enabled: boolean;
+  canDelete: boolean;
+  canEditMeta: boolean;
+  canToggleGlobal: boolean;
 }
 
-export default function TokenActions({ tokenId, symbol, note, frozen, enabled }: Props) {
+export default function TokenActions({
+  tokenId, symbol, note, frozen, enabled, canDelete, canEditMeta, canToggleGlobal,
+}: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note ?? '');
@@ -76,19 +81,36 @@ export default function TokenActions({ tokenId, symbol, note, frozen, enabled }:
     );
   }
 
+  const nothing = !canEditMeta && !canToggleGlobal && !canDelete;
+  if (nothing) {
+    // 回填后 15 个代币里 12 个归 pananiu，所以对多数普通用户
+    // 「一个按钮都没有」是常态而不是边缘情况。空着不说明理由会被当成界面坏了
+    return (
+      <div className="mt-1 text-xs text-neutral-700">只有添加者本人或管理员能修改</div>
+    );
+  }
+
   return (
     <div className="mt-1">
       <div className="flex gap-2 text-xs text-neutral-600">
-        <button onClick={() => setEditing(true)} className="hover:text-neutral-300">改备注</button>
-        <button disabled={busy} onClick={() => void patch({ frozen: !frozen })}
-          className="hover:text-neutral-300 disabled:opacity-40">
-          {frozen ? '解冻' : '冻结'}
-        </button>
-        <button disabled={busy} onClick={() => void patch({ enabled: !enabled })}
-          className="hover:text-neutral-300 disabled:opacity-40">
-          {enabled ? '停用' : '启用'}
-        </button>
-        <button disabled={busy} onClick={remove} className="hover:text-red-400 disabled:opacity-40">删除</button>
+        {canEditMeta && (
+          <button onClick={() => setEditing(true)} className="hover:text-neutral-300">改备注</button>
+        )}
+        {canToggleGlobal && (
+          <button disabled={busy} onClick={() => void patch({ frozen: !frozen })}
+            className="hover:text-neutral-300 disabled:opacity-40">
+            {frozen ? '解冻' : '冻结'}
+          </button>
+        )}
+        {canToggleGlobal && (
+          <button disabled={busy} onClick={() => void patch({ enabled: !enabled })}
+            className="hover:text-neutral-300 disabled:opacity-40">
+            {enabled ? '停用' : '启用'}
+          </button>
+        )}
+        {canDelete && (
+          <button disabled={busy} onClick={remove} className="hover:text-red-400 disabled:opacity-40">删除</button>
+        )}
       </div>
       {err && <div className="text-xs text-red-400 mt-1">{err}</div>}
     </div>

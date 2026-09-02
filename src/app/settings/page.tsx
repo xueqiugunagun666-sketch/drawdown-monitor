@@ -3,14 +3,17 @@ import SettingsForm, { type RuleShape } from './SettingsForm.tsx';
 import { getConfig, getSecrets } from '../../lib/config.ts';
 import { mask } from '../../lib/mask.ts';
 import * as repo from '../../db/repo.ts';
+import { currentActor } from '../../lib/accountAuthServer.ts';
+import { canToggleGlobal } from '../../lib/permissions.ts';
 
 export const dynamic = 'force-dynamic';
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
   const rule = repo.listRules().find((r) => r.id === 'default');
   const cfg = getConfig();
   const s = getSecrets();
   const health = repo.listSourceHealth();
+  const canEdit = canToggleGlobal(await currentActor());
 
   return (
     <main className="p-4 md:p-8 max-w-[1400px] mx-auto">
@@ -19,7 +22,7 @@ export default function SettingsPage() {
       <p className="text-xs text-neutral-500 mb-5">全局默认规则。单代币覆盖规则暂未实现</p>
 
       {rule ? (
-        <SettingsForm rule={rule as unknown as RuleShape} />
+        <SettingsForm rule={rule as unknown as RuleShape} canEdit={canEdit} />
       ) : (
         <p className="text-sm text-amber-400">还没有默认规则 —— 启动一次 worker 会自动创建。</p>
       )}
