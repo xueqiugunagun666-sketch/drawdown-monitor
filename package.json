@@ -12,7 +12,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/*.test.ts src/db/*.test.ts src/sources/*.test.ts src/worker/*.test.ts src/app/wallet/*.test.ts src/app/wallet/login/*.test.ts",
+    "test": "tsx --test src/lib/*.test.ts src/db/*.test.ts src/sources/*.test.ts src/worker/*.test.ts src/app/wallet/*.test.ts src/app/wallet/login/*.test.ts 'src/app/api/**/*.test.ts'",
     "check:sources": "tsx --env-file-if-exists=.env scripts/check-sources.ts",
     "check:outliers": "tsx --env-file-if-exists=.env scripts/check-pool-outliers.ts",
     "token:add": "tsx --env-file-if-exists=.env scripts/add-token.ts",
