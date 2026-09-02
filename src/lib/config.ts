@@ -45,6 +45,7 @@ export interface Secrets {
   coingeckoApiKey: string | undefined;
   gmgnApiKey: string | undefined;
   evmRpcBase: string | undefined;
+  adminAccount: string | undefined;
 }
 
 let _secrets: Secrets | null = null;
@@ -58,6 +59,7 @@ export function getSecrets(): Secrets {
     coingeckoApiKey: process.env.COINGECKO_API_KEY || undefined,
     gmgnApiKey: process.env.GMGN_API_KEY || undefined,
     evmRpcBase: process.env.EVM_RPC_BASE || undefined,
+    adminAccount: process.env.ADMIN_ACCOUNT || undefined,
   };
   // 注册后，任何日志/报错里出现这些值都会被自动掩码
   registerSecret(s.telegramBotToken);
