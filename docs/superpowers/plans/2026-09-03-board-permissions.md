@@ -1340,15 +1340,35 @@ import { canDelete, canEditMeta, canToggleGlobal } from '../lib/permissions.ts';
   );
 ```
 
-- [ ] **Step 4: 类型检查与构建**
+- [ ] **Step 4: 设置页的报警档位也要按权限渲染**
+
+`PUT /api/rules` 已在 Task 10 收归管理员，但 `src/app/settings/SettingsForm.tsx`
+仍然对所有人显示可编辑的档位表单 —— 非管理员填完点保存才收到 403。
+
+`src/app/settings/page.tsx` 是服务端组件，加：
+
+```ts
+import { currentActor } from '../../lib/accountAuthServer.ts';
+import { canToggleGlobal } from '../../lib/permissions.ts';
+```
+
+把 `canToggleGlobal(await currentActor())` 传给 `SettingsForm`，组件据此：
+- 管理员：照旧
+- 非管理员：档位输入框设为 `disabled`，保存按钮不渲染，旁边一行灰字
+  「报警档位是全局设置，只有管理员能改」
+
+**不要整个隐藏这一块** —— 所有人都该看得到当前档位是多少，否则报警来了
+不知道是按什么规则判的（这也是 Task 10 让 `GET /api/rules` 保持开放的原因）。
+
+- [ ] **Step 5: 类型检查与构建**
 
 Run: `npx tsc --noEmit && npm run build`
 Expected: 均无错误
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
-git add src/components/TokenRow.tsx src/components/TokenActions.tsx src/app/page.tsx
+git add src/components/TokenRow.tsx src/components/TokenActions.tsx src/app/page.tsx src/app/settings
 git commit -m "feat: 操作按钮按权限渲染，无权限时说明原因而不是留空"
 ```
 
