@@ -23,7 +23,10 @@ export const tokens = sqliteTable('tokens', {
   /** §2.4：主池选举时刻，用于 6 小时粘性 */
   primaryElectedAt: integer('primary_elected_at'),
   failCount: integer('fail_count').default(0).notNull(),
-  createdBy: text('created_by'),          // 谁加的（署名，非身份）
+  /** 添加者的账号名，展示用。权限一律看 ownerId，不看这里 ——
+   *  账号改名之后这里就成了旧名字的快照，正是想要的效果（历史记录不该被后来的改名改写）。
+   *  账号系统之前的旧行里是自填署名，可能对应不到任何账号。 */
+  createdBy: text('created_by'),
   pinned: integer('pinned').default(0).notNull(),   // 置顶高亮，与跌幅无关
   /** 'public' 进共享看板 | 'wallet' 只在个人钱包页可见。
    *  两人持有同一个币时共用这一条记录，价格只轮询一次。 */
