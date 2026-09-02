@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { checkAuth } from '../../../../lib/auth.ts';
+import { actorFromRequest } from '../../../../lib/accountAuthServer.ts';
+import { canDelete, canEditMeta } from '../../../../lib/permissions.ts';
 import { parseEventInput } from '../../../../lib/eventInput.ts';
 import * as repo from '../../../../db/repo.ts';
 
@@ -8,10 +10,17 @@ export const dynamic = 'force-dynamic';
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const auth = checkAuth(req);
   if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = actorFromRequest(req);
+  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
 
   const { id } = await ctx.params;
   const existing = repo.getEvent(id);
   if (!existing) return NextResponse.json({ error: '日程不存在' }, { status: 404 });
+
+  // 日历没有 enabled/frozen，全部字段同一规则
+  if (!canEditMeta(actor, existing.ownerId)) {
+    return NextResponse.json({ error: '只能修改自己添加的，或者找管理员' }, { status: 403 });
+  }
 
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 }); }
@@ -44,8 +53,17 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const auth = checkAuth(req);
   if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = actorFromRequest(req);
+  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
+
   const { id } = await ctx.params;
-  if (!repo.getEvent(id)) return NextResponse.json({ error: '日程不存在' }, { status: 404 });
-  repo.deleteEvent(id, { actorId: null, actorName: 'system' });
+  const event = repo.getEvent(id);
+  if (!event) return NextResponse.json({ error: '日程不存在' }, { status: 404 });
+
+  if (!canDelete(actor, event.ownerId)) {
+    return NextResponse.json({ error: '只能修改自己添加的，或者找管理员' }, { status: 403 });
+  }
+
+  repo.deleteEvent(id, { actorId: actor.id, actorName: actor.name });
   return NextResponse.json({ deleted: id });
 }

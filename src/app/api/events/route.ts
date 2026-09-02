@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { checkAuth } from '../../../lib/auth.ts';
-import { readName } from '../../../lib/user.ts';
+import { actorFromRequest } from '../../../lib/accountAuthServer.ts';
 import { parseEventInput } from '../../../lib/eventInput.ts';
 import { nowSec } from '../../../lib/time.ts';
 import * as repo from '../../../db/repo.ts';
@@ -18,6 +18,8 @@ export function GET(req: Request) {
 export async function POST(req: Request) {
   const auth = checkAuth(req);
   if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = actorFromRequest(req);
+  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
 
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 }); }
@@ -33,7 +35,8 @@ export async function POST(req: Request) {
     links: JSON.stringify(v.links),
     remindOffsets: JSON.stringify(v.remindOffsets),
     remindedOffsets: null,
-    createdBy: readName(req),
+    createdBy: actor.name,
+    ownerId: actor.id,
     createdAt: nowSec(), enabled: 1,
   });
   return NextResponse.json({ event: repo.getEvent(id) }, { status: 201 });
