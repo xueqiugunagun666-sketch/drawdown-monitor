@@ -38,15 +38,23 @@ export function soundStatus(): SoundStatus {
  * 两个来源都要听：AudioContext 自己的 statechange，以及标签页重新可见时
  * 主动复查（某些浏览器挂起时不发 statechange）。
  */
+const watchers = new Set<(s: SoundStatus) => void>();
+
+/** 通知所有订阅者。ctx 换了、状态变了、页面回到前台，都走这里 */
+function notifyWatchers(): void {
+  const s = soundStatus();
+  for (const w of watchers) w(s);
+}
+
 export function watchSoundStatus(cb: (s: SoundStatus) => void): () => void {
-  const fire = () => cb(soundStatus());
-  ctx?.addEventListener('statechange', fire);
-  const onVisible = () => { if (document.visibilityState === 'visible') fire(); };
+  watchers.add(cb);
+  cb(soundStatus());                     // 订阅时先给一次当前值，别让调用方等第一次变化
+  const onVisible = () => { if (document.visibilityState === 'visible') notifyWatchers(); };
   document.addEventListener('visibilitychange', onVisible);
-  // 挂起有时既不发事件也不在切换可见性时发生，兜一个低频轮询
-  const timer = setInterval(fire, 15_000);
+  // 挂起有时既不发 statechange 也不伴随可见性切换，兜一个低频轮询
+  const timer = setInterval(notifyWatchers, 15_000);
   return () => {
-    ctx?.removeEventListener('statechange', fire);
+    watchers.delete(cb);
     document.removeEventListener('visibilitychange', onVisible);
     clearInterval(timer);
   };
@@ -159,7 +167,16 @@ export async function unlockAudio(): Promise<SoundStatus> {
     type WithWebkit = typeof globalThis & { webkitAudioContext?: typeof AudioContext };
     const Ctor = window.AudioContext ?? (globalThis as WithWebkit).webkitAudioContext;
     if (!Ctor) return 'blocked';
-    if (!ctx) ctx = new Ctor();
+    if (!ctx) {
+      ctx = new Ctor();
+      /**
+       * statechange 必须在**这里**挂，不能在 watchSoundStatus 里挂：
+       * 订阅者（看门狗、开关）都在页面加载时就订阅了，那时 ctx 还是 null，
+       * 挂不上任何东西，只能靠 15 秒轮询兜底 —— 音频被挂起要等最多 15 秒
+       * 才发现。挂在这里就是即时的。
+       */
+      ctx.addEventListener('statechange', notifyWatchers);
+    }
     if (ctx.state === 'suspended') await ctx.resume();
 
     await loadVoice();
@@ -169,6 +186,7 @@ export async function unlockAudio(): Promise<SoundStatus> {
       try { speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch { /* 忽略 */ }
     }
     chime();          // 让用户听见确认，否则无法验证真的能响
+    notifyWatchers();
     return soundStatus();
   } catch {
     return 'blocked';
