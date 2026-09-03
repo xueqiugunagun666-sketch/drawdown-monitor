@@ -15,7 +15,19 @@ export default function WalletClient() {
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
   const seen = useRef(new Set<string>());
+  /**
+   * seen 只在**第一次**加载时灌历史。
+   *
+   * 之前每次 load() 都灌，于是有个隐蔽的顺序问题：断线期间发的报警，
+   * 只要 load() 先跑（比如从睡眠中醒来刷新列表），就会被标成"见过"，
+   * 随后 SSE 补播过来时被 added 过滤掉 —— 列表里有，人却没被通知。
+   * seen 该表达的是"这条已经通知过用户了"，不是"这条显示过了"。
+   */
+  const seeded = useRef(false);
+  /** 已收到的最后一条报警时刻。主动重建连接时带给服务端接着发 */
+  const cursor = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -33,7 +45,11 @@ export default function WalletClient() {
       setChains(w.chains ?? []);
       setHoldings(h.holdings ?? []);
       const list = a.alerts ?? [];
-      for (const x of list) seen.current.add(x.id);
+      if (!seeded.current) {
+        for (const x of list) seen.current.add(x.id);
+        seeded.current = true;
+      }
+      for (const x of list) cursor.current = Math.max(cursor.current, x.firedAt);
       setAlerts(list);
       setErr(null);
     } catch {
@@ -48,39 +64,81 @@ export default function WalletClient() {
   // SSE：不能用轮询拉报警 —— 后台标签页的定时器会被节流到约一分钟，
   // 而暴涨报警慢一分钟基本就没意义了
   useEffect(() => {
-    const es = new EventSource('/api/wallet/stream');
-    es.addEventListener('pump', (e) => {
-      let fresh: AlertRow[];
-      try { fresh = JSON.parse((e as MessageEvent<string>).data) as AlertRow[]; } catch { return; }
-      const added = fresh.filter((a) => !seen.current.has(a.id));
-      if (added.length === 0) return;
-      for (const a of added) seen.current.add(a.id);
-      setAlerts((prev) => [...added, ...prev]);
+    let es: EventSource;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
 
-      const top = added.reduce((m, a) => (a.level > m.level ? a : m));
-      playPumpSound(top.level);
+    const connect = () => {
       /**
-       * 通知标题必须写币名。系统通知里没法选中复制，弹出一串 0x
-       * 等于什么也没告诉用户。
-       *
-       * 实在没有币名时（新币还没拿到报价），至少把链名带上，
-       * 并在正文里给出完整地址 —— 正文虽然也不能复制，
-       * 但看得见总比只有截断的地址强。
+       * 带上游标。EventSource 自动重连用的是建连时那个 URL，改不了，
+       * 所以这里的 since 只对**主动重建**有效；自动重连靠服务端读
+       * Last-Event-ID。两条路都要留：401（会话过期）会让 EventSource
+       * 彻底关闭，不会自动重连，只能靠主动重建。
        */
-      const name = alertName(top);
-      const nameless = !top.symbol;
-      notifyPump(
-        nameless
-          ? `${top.chain ?? '未知链'} 上有币暴涨 ${Number(top.multiple).toFixed(1)}x`
-          : `${name} 暴涨 ${Number(top.multiple).toFixed(1)}x`,
-        [
-          `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`,
-          nameless ? top.address ?? top.tokenId : null,
-        ].filter(Boolean).join('\n'),
-      );
-      void load();     // 顺带刷新持仓价值
-    });
-    return () => es.close();
+      const q = cursor.current > 0 ? `?since=${cursor.current}` : '';
+      es = new EventSource(`/api/wallet/stream${q}`);
+
+      es.addEventListener('ready', () => setOffline(false));
+
+      /**
+       * 连接断了必须让用户看见。
+       *
+       * 这是这个页面最危险的静默失效：SSE 死掉之后页面看起来一切正常，
+       * 而"没有报警"和"收不到报警"长得一模一样 —— 用户会以为行情很安静。
+       */
+      es.onerror = () => {
+        if (stopped) return;
+        setOffline(true);
+        if (es.readyState !== EventSource.CLOSED) return;   // 浏览器会自己重连
+        clearTimeout(retry);
+        retry = setTimeout(connect, 5000);                  // 彻底关了才自己重建
+      };
+
+      es.addEventListener('pump', (e) => {
+        setOffline(false);
+        let fresh: AlertRow[];
+        try { fresh = JSON.parse((e as MessageEvent<string>).data) as AlertRow[]; } catch { return; }
+        for (const a of fresh) cursor.current = Math.max(cursor.current, a.firedAt);
+        const added = fresh.filter((a) => !seen.current.has(a.id));
+        if (added.length === 0) return;
+        for (const a of added) seen.current.add(a.id);
+        setAlerts((prev) => [...added, ...prev]);
+
+        const top = added.reduce((m, a) => (a.level > m.level ? a : m));
+        playPumpSound(top.level);
+        /**
+         * 通知标题必须写币名。系统通知里没法选中复制，弹出一串 0x
+         * 等于什么也没告诉用户。
+         *
+         * 实在没有币名时（新币还没拿到报价），至少把链名带上，
+         * 并在正文里给出完整地址 —— 正文虽然也不能复制，
+         * 但看得见总比只有截断的地址强。
+         */
+        const name = alertName(top);
+        const nameless = !top.symbol;
+        notifyPump(
+          nameless
+            ? `${top.chain ?? '未知链'} 上有币暴涨 ${Number(top.multiple).toFixed(1)}x`
+            : `${name} 暴涨 ${Number(top.multiple).toFixed(1)}x`,
+          [
+            `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`,
+            nameless ? top.address ?? top.tokenId : null,
+          ].filter(Boolean).join('\n'),
+        );
+        void load();     // 顺带刷新持仓价值
+      });
+    };
+
+    connect();
+    /** 从睡眠/后台回来时补一次：SSE 若已彻底死掉，这是唯一的兜底 */
+    const onVisible = () => { if (document.visibilityState === 'visible') void load(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stopped = true;
+      clearTimeout(retry);
+      document.removeEventListener('visibilitychange', onVisible);
+      es.close();
+    };
   }, [load]);
 
   if (loading) return <p className="text-sm text-neutral-600">加载中…</p>;
@@ -97,6 +155,12 @@ export default function WalletClient() {
   return (
     <div className="space-y-6">
       <SoundToggle />
+      {/* 连不上就必须说出来 —— 否则"没有报警"和"收不到报警"长得一模一样 */}
+      {offline && (
+        <p className="rounded border border-[#fab219] bg-[#fab219]/10 px-3 py-2 text-sm text-[#8a6100]">
+          实时推送已断开，正在重连 —— 这段时间的暴涨不会播报。重连后会自动补上。
+        </p>
+      )}
       {/* 横幅放最顶上：用户是听到播报才打开页面的，第一眼必须看到是哪个币 */}
       <LatestAlertBanner alerts={alerts} onFocus={focusToken} />
       <WalletList wallets={wallets} chains={chains} onChange={load} />

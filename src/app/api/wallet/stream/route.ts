@@ -8,10 +8,19 @@
  *
  * 服务端每 3 秒查一次本地 SQLite。这是本地文件读，成本可忽略，
  * 比让 worker 和 web 进程之间搞一套 IPC 简单得多。
+ *
+ * **断线必须能补**：浏览器重连时会自动带上 Last-Event-ID（上一条发出去的
+ * 事件的 id），服务端从那里接着发。没有它，重连后 cursor 从"此刻"开始，
+ * 断开期间发的报警永远不会补播、也不会进列表 —— 而这正是 9-03 FLETCH
+ * 那次可能的丢法：一条报警确实写进了库，用户却什么都没听见。
+ *
+ * ready 事件也带 id，否则"连上之后一条报警都没发就断了"这种最常见的
+ * 情况仍然没有游标可用。
  */
 import { currentUser } from '../../../../lib/accountAuth.ts';
 import { listPumpAlerts } from '../../../../db/walletRepo.ts';
 import { enrichAlerts } from '../../../../db/alertEnrich.ts';
+import { resolveCursor } from '../../../../lib/sseCursor.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,23 +33,31 @@ export async function GET(req: Request) {
   if (!u) return new Response('需要登录个人账号', { status: 401 });
 
   const url = new URL(req.url);
-  // 客户端重连时带上游标，不会漏；不带就从此刻开始
-  let cursor = Number(url.searchParams.get('since') ?? 0) || Math.floor(Date.now() / 1000);
+  let cursor = resolveCursor(
+    req.headers.get('last-event-id'),
+    url.searchParams.get('since'),
+    Math.floor(Date.now() / 1000),
+  );
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
       let closed = false;
-      const send = (event: string, data: unknown) => {
+      const send = (event: string, data: unknown, id?: number) => {
         if (closed) return;
+        const head = id === undefined ? '' : `id: ${id}\n`;
         try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          controller.enqueue(encoder.encode(
+            `${head}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+          ));
         } catch {
           closed = true;
         }
       };
 
-      send('ready', { cursor });
+      // ready 带 id：这一条就是"我已经把 cursor 之前的都交代过了"的书面凭据，
+      // 之后就算一条报警都没发就断了，重连也有得接
+      send('ready', { cursor }, cursor);
 
       const tick = setInterval(() => {
         if (closed) return;
@@ -54,7 +71,7 @@ export async function GET(req: Request) {
         for (const a of fresh) cursor = Math.max(cursor, a.firedAt);
         // 必须补币名 —— 系统通知里没法复制粘贴，
         // 弹出一串 0x 等于没告诉用户是哪个币
-        send('pump', enrichAlerts(fresh));
+        send('pump', enrichAlerts(fresh), cursor);
       }, POLL_MS);
 
       const beat = setInterval(() => {
