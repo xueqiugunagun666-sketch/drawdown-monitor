@@ -26,6 +26,32 @@ export function soundStatus(): SoundStatus {
   return ctx.state === 'running' ? 'ready' : 'blocked';
 }
 
+/**
+ * 状态变化时回调。返回取消订阅的函数。
+ *
+ * 存在的理由是一次真实事故：开关只在页面加载时查一次状态，而浏览器会在
+ * 后台标签页、系统休眠之后**挂起 AudioContext**。一旦挂起，chime() 里
+ * `ctx.state !== 'running'` 直接 return，什么都不响，页面上却仍然写着
+ * 「● 声音已开启」。用户网页开了一下午，以为在盯着，其实早就哑了 ——
+ * 正是第 4 条铁律说的那种静默失效。
+ *
+ * 两个来源都要听：AudioContext 自己的 statechange，以及标签页重新可见时
+ * 主动复查（某些浏览器挂起时不发 statechange）。
+ */
+export function watchSoundStatus(cb: (s: SoundStatus) => void): () => void {
+  const fire = () => cb(soundStatus());
+  ctx?.addEventListener('statechange', fire);
+  const onVisible = () => { if (document.visibilityState === 'visible') fire(); };
+  document.addEventListener('visibilitychange', onVisible);
+  // 挂起有时既不发事件也不在切换可见性时发生，兜一个低频轮询
+  const timer = setInterval(fire, 15_000);
+  return () => {
+    ctx?.removeEventListener('statechange', fire);
+    document.removeEventListener('visibilitychange', onVisible);
+    clearInterval(timer);
+  };
+}
+
 /* ---------------- 语音 ---------------- */
 
 /**
@@ -156,7 +182,16 @@ export async function unlockAudio(): Promise<SoundStatus> {
  * 而具体涨了多少倍在通知和页面上都写着，不需要靠声音表达。
  */
 export function playPumpSound(_level?: number): void {
-  chime();
+  /**
+   * 被挂起就先试着唤醒。不带用户手势的 resume() 不保证成功 ——
+   * 成功了这次报警照常响，失败了 watchSoundStatus 会把开关翻回
+   * 「未开启」，让用户看见。两条路都好过安静地什么都不做。
+   */
+  if (ctx && ctx.state === 'suspended') {
+    void ctx.resume().then(() => chime()).catch(() => { /* 唤不醒就靠横幅提示 */ });
+  } else {
+    chime();
+  }
   // 让提示音先响完再说话，叠在一起会互相盖住
   setTimeout(() => {
     if (!speakPump()) fallbackTone();

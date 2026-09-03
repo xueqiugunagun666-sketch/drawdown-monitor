@@ -12,6 +12,8 @@ export interface AlertRow {
   level: number; multiple: string; priceUsd: string | null; basePriceUsd: string | null;
   valueUsd: string | null;
   symbol: string | null; address: string | null; chain: string | null;
+  /** 投递序号。只有 SSE 推来的带，/api/wallet/alerts 的历史列表没有 */
+  seq?: number;
 }
 
 /** 币名优先，没有才退回地址 —— 显示一串十六进制等于没说 */

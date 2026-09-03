@@ -5,7 +5,7 @@
  * 不能"先查出来再在代码里比较"。** 这个功能的全部意义就是互不查看持仓，
  * 这里是最后一道闸；漏一个条件就等于没做隔离。
  */
-import { eq, and, gte, desc, sql } from 'drizzle-orm';
+import { eq, and, gte, desc, asc, sql, getTableColumns } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { Decimal } from '../lib/decimal.ts';
 import { getDb, getRawDb } from './index.ts';
@@ -210,6 +210,41 @@ export function listPumpAlerts(userId: string, sinceTs: number): PumpAlertRow[] 
   return getDb().select().from(pumpAlerts)
     .where(and(eq(pumpAlerts.userId, userId), gte(pumpAlerts.firedAt, sinceTs)))
     .orderBy(desc(pumpAlerts.firedAt)).all();
+}
+
+/**
+ * 推送游标**不能用 fired_at**，必须用写入顺序。
+ *
+ * fired_at 存的是那一轮**开始**的时刻，而这一行要等引擎遍历到这个币才写进来 ——
+ * 实测 FLETCH 那条 fired_at=17:24:14、实际落库 17:24:37，差 23 秒；一轮要跑
+ * 五百多个币，最坏能差一整轮（线上实测 60~79 秒）。拿时间戳当游标就有两种漏法：
+ *
+ *   1. 连接在这段间隔里重连 —— 游标取"此刻"，已经越过了这条的 fired_at，
+ *      它从此对推送永远不可见
+ *   2. 同一轮里两条报警共用同一个 fired_at，先送到的那条把游标推到该值，
+ *      下一次查 `> 游标` 就把同轮的另一条漏掉（9-03 pananiu 就中了 3 次）
+ *
+ * rowid 是写入顺序，单调且与时间无关，正好是"投递到哪儿了"该用的东西。
+ * pump_alerts 从不删行（全库 grep 过），所以 rowid 不会被回收重用。
+ */
+export interface PumpAlertWithSeq extends PumpAlertRow { seq: number }
+
+const ROWID = sql<number>`rowid`;
+
+export function pumpAlertsAfterSeq(userId: string, seq: number): PumpAlertWithSeq[] {
+  // 走 drizzle 的 select 而不是裸 SQL：裸 SQL 的 `*` 回的是 snake_case 列名，
+  // 与 PumpAlertRow 的 camelCase 对不上，enrichAlerts 会拿到一堆 undefined
+  return getDb().select({ ...getTableColumns(pumpAlerts), seq: ROWID })
+    .from(pumpAlerts)
+    .where(and(eq(pumpAlerts.userId, userId), sql`rowid > ${seq}`))
+    .orderBy(asc(ROWID))
+    .all();
+}
+
+/** 当前最大写入序号。新连接从这里开始，不重播历史 */
+export function maxPumpAlertSeq(): number {
+  const r = getDb().get<{ n: number | null }>(sql`SELECT MAX(rowid) AS n FROM pump_alerts`);
+  return r?.n ?? 0;
 }
 
 /* ---------------- 钱包币的 5m candle ---------------- */

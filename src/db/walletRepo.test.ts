@@ -424,3 +424,68 @@ test('usersHoldingToken 带出各自的阈值 —— 扇出要按人判', () => 
   assert.equal(rows.find((r) => r.userId === a.id)?.minAlertValueUsd, 500);
   assert.equal(rows.find((r) => r.userId === b.id)?.minAlertValueUsd, null);
 });
+
+/* ---------- 推送游标：必须按写入顺序，不能按 fired_at ---------- */
+
+function alertRow(userId: string, tokenId: string, firedAt: number, level = 2) {
+  wr.insertPumpAlert({
+    id: `${tokenId}-${firedAt}-${level}-${++seq}`, userId, tokenId, firedAt,
+    timeframe: '6h', basis: 'low', level, multiple: String(level),
+    priceUsd: '1', basePriceUsd: '0.5', balance: '1', valueUsd: '100', ackedAt: null,
+  });
+}
+
+test('同一轮里两条报警共用 fired_at，一条都不能漏', () => {
+  // 线上真实发生过：9-03 pananiu 有 3 次两条报警共用同一个 fired_at。
+  // 用 fired_at 当游标时，先送到的那条会把同轮的另一条永久顶掉。
+  const u = wr.createUser(`seq1${++seq}`, 'h')!;
+  const start = wr.maxPumpAlertSeq();
+  alertRow(u.id, 'bsc:0xaaa', 1788443275);
+  alertRow(u.id, 'bsc:0xbbb', 1788443275);          // 同一个 fired_at
+
+  const first = wr.pumpAlertsAfterSeq(u.id, start);
+  assert.equal(first.length, 2, '两条都要拿到');
+  // 模拟"先送到第一条"：游标推进到它的 seq，第二条仍然要能拿到
+  const afterFirst = wr.pumpAlertsAfterSeq(u.id, first[0]!.seq);
+  assert.equal(afterFirst.length, 1);
+  assert.equal(afterFirst[0]!.tokenId, 'bsc:0xbbb');
+});
+
+test('fired_at 比游标早的新行照样送得出去 —— 那 23 秒的窗口', () => {
+  // FLETCH 那条：fired_at=17:24:14（轮次开始时刻），实际落库 17:24:37。
+  // 若此间重连、游标取"此刻"，用时间戳就永远送不出去了
+  const u = wr.createUser(`seq2${++seq}`, 'h')!;
+  const start = wr.maxPumpAlertSeq();
+  alertRow(u.id, 'bsc:0xlate', 1788427454);         // fired_at 早于"此刻"
+  const got = wr.pumpAlertsAfterSeq(u.id, start);
+  assert.equal(got.length, 1, '按写入顺序就不受 fired_at 影响');
+  assert.equal(got[0]!.tokenId, 'bsc:0xlate');
+});
+
+test('游标按 seq 递增，且拿不到别人的报警', () => {
+  const a = wr.createUser(`seq3${++seq}`, 'h')!, b = wr.createUser(`seq4${++seq}`, 'h')!;
+  const start = wr.maxPumpAlertSeq();
+  alertRow(a.id, 'bsc:0xmine', 1788400000);
+  alertRow(b.id, 'bsc:0xtheirs', 1788400001);
+  const mine = wr.pumpAlertsAfterSeq(a.id, start);
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0]!.tokenId, 'bsc:0xmine');
+});
+
+test('从当前最大 seq 开始的新连接不重播历史', () => {
+  const u = wr.createUser(`seq5${++seq}`, 'h')!;
+  alertRow(u.id, 'bsc:0xold', 1788400000);
+  const cursor = wr.maxPumpAlertSeq();
+  assert.equal(wr.pumpAlertsAfterSeq(u.id, cursor).length, 0);
+  alertRow(u.id, 'bsc:0xnew', 1788400001);
+  assert.equal(wr.pumpAlertsAfterSeq(u.id, cursor).length, 1);
+});
+
+test('返回顺序是写入顺序（升序），不是 fired_at 顺序', () => {
+  const u = wr.createUser(`seq6${++seq}`, 'h')!;
+  const start = wr.maxPumpAlertSeq();
+  alertRow(u.id, 'bsc:0xlater', 1788400500);        // fired_at 更晚，先写入
+  alertRow(u.id, 'bsc:0xearlier', 1788400100);      // fired_at 更早，后写入
+  const got = wr.pumpAlertsAfterSeq(u.id, start);
+  assert.deepEqual(got.map((r) => r.tokenId), ['bsc:0xlater', 'bsc:0xearlier']);
+});

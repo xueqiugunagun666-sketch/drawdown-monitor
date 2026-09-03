@@ -10,15 +10,20 @@
  * 比让 worker 和 web 进程之间搞一套 IPC 简单得多。
  *
  * **断线必须能补**：浏览器重连时会自动带上 Last-Event-ID（上一条发出去的
- * 事件的 id），服务端从那里接着发。没有它，重连后 cursor 从"此刻"开始，
+ * 事件的 id），服务端从那里接着发。没有它，重连后 cursor 从头开始算，
  * 断开期间发的报警永远不会补播、也不会进列表 —— 而这正是 9-03 FLETCH
- * 那次可能的丢法：一条报警确实写进了库，用户却什么都没听见。
+ * 那次的丢法：一条报警确实写进了库，用户网页也开着，却什么都没听见。
  *
  * ready 事件也带 id，否则"连上之后一条报警都没发就断了"这种最常见的
  * 情况仍然没有游标可用。
+ *
+ * **游标是写入序号，不是时间戳。** 第一版用 fired_at 做游标，堵不住那次
+ * 事故：fired_at 记的是轮次**开始**的时刻，而这一行要等引擎遍历到这个币
+ * 才写进来，实测差 23 秒、最坏差一整轮（60~79 秒）。详见 walletRepo
+ * .pumpAlertsAfterSeq 上的说明。
  */
 import { currentUser } from '../../../../lib/accountAuth.ts';
-import { listPumpAlerts } from '../../../../db/walletRepo.ts';
+import { pumpAlertsAfterSeq, maxPumpAlertSeq } from '../../../../db/walletRepo.ts';
 import { enrichAlerts } from '../../../../db/alertEnrich.ts';
 import { resolveCursor } from '../../../../lib/sseCursor.ts';
 
@@ -36,7 +41,7 @@ export async function GET(req: Request) {
   let cursor = resolveCursor(
     req.headers.get('last-event-id'),
     url.searchParams.get('since'),
-    Math.floor(Date.now() / 1000),
+    maxPumpAlertSeq(),
   );
 
   const encoder = new TextEncoder();
@@ -63,12 +68,13 @@ export async function GET(req: Request) {
         if (closed) return;
         let fresh;
         try {
-          fresh = listPumpAlerts(u.id, cursor + 1);
+          fresh = pumpAlertsAfterSeq(u.id, cursor);
         } catch {
           return;                       // 下一轮再试，不要因为一次读库失败就断流
         }
         if (fresh.length === 0) return;
-        for (const a of fresh) cursor = Math.max(cursor, a.firedAt);
+        // 按写入顺序取最后一条的序号：同一轮里的多条不会互相顶掉
+        cursor = fresh[fresh.length - 1]!.seq;
         // 必须补币名 —— 系统通知里没法复制粘贴，
         // 弹出一串 0x 等于没告诉用户是哪个币
         send('pump', enrichAlerts(fresh), cursor);

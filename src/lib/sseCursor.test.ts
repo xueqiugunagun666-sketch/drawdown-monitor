@@ -1,33 +1,44 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveCursor } from './sseCursor.ts';
+import { resolveCursor, MAX_PLAUSIBLE_SEQ } from './sseCursor.ts';
 
-const NOW = 1_788_450_000;
+const MAX_SEQ = 41230;
 
-test('都不带就从此刻开始 —— 首连不该把历史从 SSE 再灌一遍', () => {
-  assert.equal(resolveCursor(null, null, NOW), NOW);
+test('都不带就从当前最大序号开始 —— 新连接不重播历史', () => {
+  assert.equal(resolveCursor(null, null, MAX_SEQ), MAX_SEQ);
 });
 
 test('Last-Event-ID 优先于 ?since —— 自动重连带的才是最新的', () => {
-  assert.equal(resolveCursor('1788440000', '1788400000', NOW), 1788440000);
+  assert.equal(resolveCursor('41000', '40000', MAX_SEQ), 41000);
 });
 
 test('只有 ?since 时用 ?since —— 主动重建连接走这条', () => {
-  assert.equal(resolveCursor(null, '1788400000', NOW), 1788400000);
+  assert.equal(resolveCursor(null, '40000', MAX_SEQ), 40000);
 });
 
-test('垃圾值一律当作没给，绝不回退成 0', () => {
-  // 回退成 0 会把七天的历史报警全部重播一遍，比丢一条还糟
-  for (const junk of ['', '  ', 'abc', '0', '-1', 'NaN', 'Infinity']) {
-    assert.equal(resolveCursor(junk, null, NOW), NOW, `Last-Event-ID=${JSON.stringify(junk)}`);
-    assert.equal(resolveCursor(null, junk, NOW), NOW, `since=${JSON.stringify(junk)}`);
+test('0 是合法游标 —— 库里一条都还没有时就是 0', () => {
+  assert.equal(resolveCursor('0', null, MAX_SEQ), 0);
+});
+
+test('旧客户端留下的时间戳游标当作没给，而不是当序号用', () => {
+  // 拿 1788427454 当 rowid 去比，`rowid > 17亿` 永远为空，
+  // 这个连接从此一条报警都收不到 —— 比不续传还糟
+  assert.equal(resolveCursor('1788427454', null, MAX_SEQ), MAX_SEQ);
+  assert.equal(resolveCursor(null, '1788427454', MAX_SEQ), MAX_SEQ);
+  assert.equal(resolveCursor(String(MAX_PLAUSIBLE_SEQ), null, MAX_SEQ), MAX_SEQ);
+});
+
+test('垃圾值一律当作没给', () => {
+  for (const junk of ['', '  ', 'abc', '-1', 'NaN', 'Infinity']) {
+    assert.equal(resolveCursor(junk, null, MAX_SEQ), MAX_SEQ, `Last-Event-ID=${JSON.stringify(junk)}`);
+    assert.equal(resolveCursor(null, junk, MAX_SEQ), MAX_SEQ, `since=${JSON.stringify(junk)}`);
   }
 });
 
-test('Last-Event-ID 是垃圾时退到 ?since，而不是直接跳到此刻', () => {
-  assert.equal(resolveCursor('abc', '1788400000', NOW), 1788400000);
+test('Last-Event-ID 是垃圾时退到 ?since，而不是直接跳到最新', () => {
+  assert.equal(resolveCursor('abc', '40000', MAX_SEQ), 40000);
 });
 
-test('小数截断成整秒', () => {
-  assert.equal(resolveCursor('1788440000.9', null, NOW), 1788440000);
+test('小数截断成整数', () => {
+  assert.equal(resolveCursor('40000.9', null, MAX_SEQ), 40000);
 });

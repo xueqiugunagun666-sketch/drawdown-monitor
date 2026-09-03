@@ -29,7 +29,10 @@ export default function WalletClient() {
    * seen 该表达的是"这条已经通知过用户了"，不是"这条显示过了"。
    */
   const seeded = useRef(false);
-  /** 已收到的最后一条报警时刻。主动重建连接时带给服务端接着发 */
+  /**
+   * 投递游标 —— 是 pump_alerts 的**写入序号**，不是时间戳。
+   * 由 ready 事件播种、由每条 pump 事件推进；主动重建连接时带给服务端接着发。
+   */
   const cursor = useRef(0);
 
   const load = useCallback(async () => {
@@ -55,7 +58,6 @@ export default function WalletClient() {
         for (const x of list) seen.current.add(x.id);
         seeded.current = true;
       }
-      for (const x of list) cursor.current = Math.max(cursor.current, x.firedAt);
       setAlerts(list);
       setErr(null);
     } catch {
@@ -84,7 +86,14 @@ export default function WalletClient() {
       const q = cursor.current > 0 ? `?since=${cursor.current}` : '';
       es = new EventSource(`/api/wallet/stream${q}`);
 
-      es.addEventListener('ready', () => setOffline(false));
+      es.addEventListener('ready', (e) => {
+        setOffline(false);
+        // 服务端在这里告诉我们它从哪个序号开始盯 —— 主动重建时要从这里接着要
+        try {
+          const d = JSON.parse((e as MessageEvent<string>).data) as { cursor?: number };
+          if (typeof d.cursor === 'number') cursor.current = d.cursor;
+        } catch { /* 拿不到就退回不带 since，等于从最新开始，不会重播 */ }
+      });
 
       /**
        * 连接断了必须让用户看见。
@@ -104,7 +113,9 @@ export default function WalletClient() {
         setOffline(false);
         let fresh: AlertRow[];
         try { fresh = JSON.parse((e as MessageEvent<string>).data) as AlertRow[]; } catch { return; }
-        for (const a of fresh) cursor.current = Math.max(cursor.current, a.firedAt);
+        for (const a of fresh) {
+          if (typeof a.seq === 'number') cursor.current = Math.max(cursor.current, a.seq);
+        }
         const added = fresh.filter((a) => !seen.current.has(a.id));
         if (added.length === 0) return;
         for (const a of added) seen.current.add(a.id);
