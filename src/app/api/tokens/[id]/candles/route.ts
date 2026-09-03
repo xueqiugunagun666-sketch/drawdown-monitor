@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkAuth } from '../../../../../lib/auth.ts';
+import { requireActor, isDenied } from '../../../../../lib/accountAuthServer.ts';
 import * as repo from '../../../../../db/repo.ts';
 
 export const dynamic = 'force-dynamic';
@@ -8,8 +8,8 @@ export async function GET(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
 
   const { id } = await ctx.params;
   const tokenId = decodeURIComponent(id);

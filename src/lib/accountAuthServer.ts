@@ -28,7 +28,33 @@ export async function currentActor(): Promise<Actor | null> {
   return toActor(findUserBySessionHash(hashToken(raw), Math.floor(Date.now() / 1000)));
 }
 
-/** API 路由用：从 Request 取。Task 8/9/10 三个路由都 import 这个 */
+/** API 路由用：从 Request 取 */
 export function actorFromRequest(req: Request): Actor | null {
   return toActor(currentUser(req));
+}
+
+/**
+ * 路由里的标准开头：没登录直接 401。
+ *
+ * **每个路由都必须调用它，只读的也不例外。** 中间件跑在 edge runtime
+ * 查不了数据库，只能判断 `wallet_session` cookie 存不存在、判断不了
+ * 有没有效 —— 手动设一个 `wallet_session=x` 就能过中间件。共享口令
+ * 撤掉之后，只读接口若不自查，整个看板会被读出去。
+ *
+ * 用法：
+ *   const actor = requireActor(req);
+ *   if (isDenied(actor)) return actor;
+ */
+export function requireActor(req: Request): Actor | Response {
+  const actor = actorFromRequest(req);
+  if (!actor) {
+    return new Response(JSON.stringify({ error: '需要登录' }), {
+      status: 401, headers: { 'content-type': 'application/json' },
+    });
+  }
+  return actor;
+}
+
+export function isDenied(x: Actor | Response): x is Response {
+  return x instanceof Response;
 }

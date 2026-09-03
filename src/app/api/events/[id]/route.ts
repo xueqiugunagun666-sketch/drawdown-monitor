@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkAuth } from '../../../../lib/auth.ts';
-import { actorFromRequest } from '../../../../lib/accountAuthServer.ts';
+import { requireActor, isDenied } from '../../../../lib/accountAuthServer.ts';
 import { canDelete, canEditMeta } from '../../../../lib/permissions.ts';
 import { parseEventInput } from '../../../../lib/eventInput.ts';
 import * as repo from '../../../../db/repo.ts';
@@ -8,10 +7,8 @@ import * as repo from '../../../../db/repo.ts';
 export const dynamic = 'force-dynamic';
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
-  const actor = actorFromRequest(req);
-  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
 
   const { id } = await ctx.params;
   const existing = repo.getEvent(id);
@@ -51,10 +48,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 }
 
 export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
-  const actor = actorFromRequest(req);
-  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
 
   const { id } = await ctx.params;
   const event = repo.getEvent(id);

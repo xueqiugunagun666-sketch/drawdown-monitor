@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { checkAuth } from '../../../lib/auth.ts';
-import { actorFromRequest } from '../../../lib/accountAuthServer.ts';
+import { requireActor, isDenied } from '../../../lib/accountAuthServer.ts';
 import { parseEventInput } from '../../../lib/eventInput.ts';
 import { nowSec } from '../../../lib/time.ts';
 import * as repo from '../../../db/repo.ts';
@@ -9,17 +8,15 @@ import * as repo from '../../../db/repo.ts';
 export const dynamic = 'force-dynamic';
 
 export function GET(req: Request) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
   const includePast = new URL(req.url).searchParams.get('past') === '1';
   return NextResponse.json({ events: repo.listEvents({ includePast }) });
 }
 
 export async function POST(req: Request) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
-  const actor = actorFromRequest(req);
-  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
 
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 }); }

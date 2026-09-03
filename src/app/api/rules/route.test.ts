@@ -54,8 +54,17 @@ test('管理员 PUT 成功', async () => {
 });
 
 test('普通用户 GET 200 —— 档位是所有人都该看到的', async () => {
-  const res = await GET(new Request('http://x/'));
+  // 必须带会话。这条原本用的是匿名请求，当时能过是因为 GET 只查全站口令，
+  // 而测试环境没设 ACCESS_TOKEN 所以直接放行 —— 验的其实不是「普通用户」。
+  // 全站口令撤掉之后只读接口也要会话，改成带 bob 的 cookie 才是本意
+  const res = await GET(req(bobTok));
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.ok(Array.isArray(body.rules));
+});
+
+test('未登录 GET 401 —— 只读接口也不能裸奔', async () => {
+  // 中间件只能判断 cookie 存不存在、判断不了有没有效，
+  // 所以每个路由都得自查，只读的也不例外
+  assert.equal((await GET(new Request('http://x/'))).status, 401);
 });

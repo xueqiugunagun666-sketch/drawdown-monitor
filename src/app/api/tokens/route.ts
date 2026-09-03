@@ -1,14 +1,13 @@
 import { NextResponse } from 'next/server';
-import { checkAuth } from '../../../lib/auth.ts';
-import { actorFromRequest } from '../../../lib/accountAuthServer.ts';
+import { requireActor, isDenied } from '../../../lib/accountAuthServer.ts';
 import * as repo from '../../../db/repo.ts';
 import { CHAIN_IDS } from '../../../sources/types.ts';
 
 export const dynamic = 'force-dynamic';
 
 export function GET(req: Request) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
   return NextResponse.json({ tokens: repo.listAllTokens() });
 }
 
@@ -25,8 +24,9 @@ function validate(item: AddItem): string | null {
 }
 
 export async function POST(req: Request) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  // 鉴权放在最前：没登录就不该解析请求体、更不该跑校验
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
 
   let body: AddItem | { tokens: AddItem[] };
   try { body = await req.json(); } catch { return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 }); }
@@ -38,9 +38,6 @@ export async function POST(req: Request) {
   // 全部校验通过才写入，避免一半成功一半失败
   const errors = items.map(validate).map((e, i) => (e ? `第 ${i + 1} 个: ${e}` : null)).filter(Boolean);
   if (errors.length > 0) return NextResponse.json({ error: errors.join('；') }, { status: 400 });
-
-  const actor = actorFromRequest(req);
-  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
 
   // 归属只从会话取，**绝不接受请求体里的 ownerId/createdBy** ——
   // 一旦某个路由接受客户端传来的归属，权限就名存实亡：

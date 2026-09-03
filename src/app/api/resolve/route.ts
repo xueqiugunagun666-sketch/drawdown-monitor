@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkAuth } from '../../../lib/auth.ts';
+import { requireActor, isDenied } from '../../../lib/accountAuthServer.ts';
 import { parseMany } from '../../../lib/parseTokenInput.ts';
 import { resolveInput } from '../../../sources/resolve.ts';
 import * as repo from '../../../db/repo.ts';
@@ -8,8 +8,8 @@ export const dynamic = 'force-dynamic';
 
 /** 加币前的预览：把粘贴的内容解析成确定的代币，前端确认后再提交 */
 export async function POST(req: Request) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
 
   let body: { text?: string };
   try { body = await req.json(); } catch { return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 }); }

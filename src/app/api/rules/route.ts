@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkAuth } from '../../../lib/auth.ts';
-import { actorFromRequest } from '../../../lib/accountAuthServer.ts';
+import { requireActor, isDenied } from '../../../lib/accountAuthServer.ts';
 import { canToggleGlobal } from '../../../lib/permissions.ts';
 import { recordAudit } from '../../../db/auditLog.ts';
 import * as repo from '../../../db/repo.ts';
@@ -8,8 +7,8 @@ import * as repo from '../../../db/repo.ts';
 export const dynamic = 'force-dynamic';
 
 export function GET(req: Request) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
   return NextResponse.json({ rules: repo.listRules() });
 }
 
@@ -19,10 +18,8 @@ const NUM_FIELDS = [
 ] as const;
 
 export async function PUT(req: Request) {
-  const auth = checkAuth(req);
-  if (!auth.ok) return NextResponse.json({ error: auth.reason }, { status: 401 });
-  const actor = actorFromRequest(req);
-  if (!actor) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
+  const actor = requireActor(req);
+  if (isDenied(actor)) return actor;
   if (!canToggleGlobal(actor)) {
     return NextResponse.json({ error: '报警档位是全局设置，仅管理员可改' }, { status: 403 });
   }
