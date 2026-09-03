@@ -321,6 +321,15 @@ export const tokenMeta = sqliteTable('token_meta', {
    * 不因谁持有而不同 —— 两个人持有同一个币不该有两个答案。
    */
   lastLiquidityUsd: real('last_liquidity_usd'),
+  /**
+   * 上次**尝试**回填的时刻（不是成功的时刻）。
+   *
+   * 没有它，稀疏的币会每一轮都重试一次回填：needsBackfill 要求 24 小时内
+   * 有 144 根 5m candle，而上游对没成交的币根本给不出这么多 —— 条件永远为真。
+   * 线上实测 296 个监控中的币里有 52 个天天如此，每轮 52 个串行的 GMGN
+   * 请求（限速 80/分钟），占掉判定轮次一半以上的时间。
+   */
+  lastBackfillAt: integer('last_backfill_at'),
 });
 
 /**

@@ -146,6 +146,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
     (byChain.get(chain) ?? byChain.set(chain, []).get(chain)!).push(addr);
   }
 
+  const t0 = Date.now();
   const quotes = new Map<string, BatchQuote>();
   for (const [chain, addrs] of byChain) {
     try {
@@ -155,6 +156,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       log.warn(`${chain} 批量报价失败: ${safeErrorMessage(err)}`);
     }
   }
+  const quoteMs = Date.now() - t0;
 
   for (const tokenId of tokenIds) {
     try {
@@ -167,6 +169,20 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
     }
   }
+
+  /**
+   * 轮次耗时的分段账。
+   *
+   * 加这个是因为吃过亏：轮次超时的时候连着猜了两次瓶颈都猜错了
+   * （先怪批量请求，又怪持仓查询），改完才发现真正的大头是回填重试。
+   * 有分段数字就不用猜。超预算才打 INFO，正常时打 DEBUG，不刷屏。
+   */
+  const totalMs = Date.now() - t0;
+  const line = `轮次 ${tokenIds.length} 个币：报价 ${(quoteMs / 1000).toFixed(1)}s`
+    + `（${byChain.size} 条链），判定 ${((totalMs - quoteMs) / 1000).toFixed(1)}s，`
+    + `共 ${(totalMs / 1000).toFixed(1)}s`;
+  if (totalMs > TICK_INTERVAL_SECONDS * 1000) log.info(`${line} —— 超出 ${TICK_INTERVAL_SECONDS}s 预算`);
+  else log.debug(line);
 }
 
 async function evaluateToken(
@@ -237,10 +253,19 @@ async function evaluateToken(
   if (!isWatchlistToken(tokenId)) {
     wr.upsertWalletCandle(tokenId, quote.priceUsd, quote.liquidityUsd, now);
 
-    // 历史不足时补 24 小时的 5m K 线。必须在算窗口与 seed 之前做完 ——
-    // 基于空历史 seed 出来的状态，等回填补上后就全错了。
-    // 一个币一次 GMGN 请求（288 根 < limit 1000），失败也不影响判定
-    if (needsBackfill(tokenId, now)) {
+    /**
+     * 历史不足时补 24 小时的 5m K 线。必须在算窗口与 seed 之前做完 ——
+     * 基于空历史 seed 出来的状态，等回填补上后就全错了。
+     *
+     * 加冷却是因为 needsBackfill 对**稀疏的币永远为真**：它要求 24 小时内
+     * 有 144 根 candle，而上游对没成交的币根本给不出这么多。线上 296 个
+     * 监控中的币里有 52 个天天如此，每轮都白打一次串行的 GMGN 请求
+     * （限速 80/分钟），占掉判定轮次一半以上的时间。
+     *
+     * 首次不受冷却影响 —— 新进监控的币立刻回填，FLETCH 那种情况正需要。
+     */
+    if (needsBackfill(tokenId, now) && wr.shouldTryBackfill(tokenId, now)) {
+      wr.markBackfillAttempted(tokenId, now);      // 先记再打：失败的也要计入冷却
       await backfillWalletToken(tokenId, now, backfillDeps, price);
     }
   }

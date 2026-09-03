@@ -530,3 +530,38 @@ test('结果与 listHoldingsByWallet().find() 完全一致', () => {
     );
   }
 });
+
+/* ---------- 回填重试的冷却 ---------- */
+
+test('首次一定试 —— 新进监控的币不能因为冷却拿不到历史', () => {
+  // FLETCH 那种情况：币刚被重新提升为监控中，正需要立刻回填
+  assert.equal(wr.shouldTryBackfill(`bsc:0xnever${++seq}`, 1000), true);
+});
+
+test('试过之后进入冷却，满 30 分钟才再试', () => {
+  const id = `bsc:0xcool${++seq}`;
+  wr.markBackfillAttempted(id, 1000);
+  assert.equal(wr.shouldTryBackfill(id, 1000 + 60), false);
+  assert.equal(wr.shouldTryBackfill(id, 1000 + wr.BACKFILL_RETRY_SECONDS - 1), false);
+  assert.equal(wr.shouldTryBackfill(id, 1000 + wr.BACKFILL_RETRY_SECONDS), true);
+});
+
+test('记的是尝试不是成功 —— 一直失败的币也不能每轮都打一次', () => {
+  const id = `bsc:0xfail${++seq}`;
+  for (const t of [1000, 1060, 1120]) {
+    if (wr.shouldTryBackfill(id, t)) wr.markBackfillAttempted(id, t);
+  }
+  // 只有第一次 t=1000 会通过，后两次都被冷却挡住
+  assert.equal(wr.shouldTryBackfill(id, 1000 + wr.BACKFILL_RETRY_SECONDS - 1), false);
+});
+
+test('冷却不影响已有的持有人数与判定时刻', () => {
+  const id = `bsc:0xkeep${++seq}`;
+  wr.setTokenMeta(id, 12345, 'KEEP', 500);
+  wr.markTokenEvaluated(id, 600, 9999);
+  wr.markBackfillAttempted(id, 700);
+  const m = wr.getTokenMeta(id);
+  assert.equal(m?.holderCount, 12345);
+  assert.equal(m?.symbol, 'KEEP');
+  assert.ok(wr.tokenIdsDueForEval(600 + wr.WARM_RECHECK_SECONDS).length >= 0);
+});

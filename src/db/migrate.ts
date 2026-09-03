@@ -186,6 +186,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['holdings', 'symbol', 'TEXT'],
   ['token_meta', 'last_eval_at', 'INTEGER'],
   ['token_meta', 'last_liquidity_usd', 'REAL'],
+  ['token_meta', 'last_backfill_at', 'INTEGER'],
   ['users', 'min_alert_value_usd', 'REAL'],
   ['tokens', 'owner_id', 'TEXT'],
   ['events', 'owner_id', 'TEXT'],

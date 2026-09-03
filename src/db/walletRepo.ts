@@ -442,6 +442,31 @@ export function tokenIdsDueForEval(now: number): string[] {
 }
 
 /**
+ * 回填重试的冷却时间。
+ *
+ * 一个币的 24 小时历史在半小时里不会有什么变化，而实时 candle 每轮都在攒，
+ * 所以隔久一点重试没有损失。**首次一定会试**（没有记录就是 null），
+ * 新进监控的币不会因为这个冷却而拿不到历史 —— FLETCH 那种情况正需要立刻回填。
+ */
+export const BACKFILL_RETRY_SECONDS = 1800;
+
+export function shouldTryBackfill(tokenId: string, now: number): boolean {
+  const r = getDb().select({ t: tokenMeta.lastBackfillAt })
+    .from(tokenMeta).where(eq(tokenMeta.tokenId, tokenId)).get();
+  const last = r?.t ?? null;
+  return last === null || now - last >= BACKFILL_RETRY_SECONDS;
+}
+
+/** 记的是**尝试**，不是成功 —— 失败的也要计入冷却，否则一直失败的币照样每轮打一次 */
+export function markBackfillAttempted(tokenId: string, now: number): void {
+  getDb().run(sql`
+    INSERT INTO token_meta (token_id, holder_count, symbol, fetched_at, last_backfill_at)
+    VALUES (${tokenId}, NULL, NULL, ${now}, ${now})
+    ON CONFLICT(token_id) DO UPDATE SET last_backfill_at = ${now}
+  `);
+}
+
+/**
  * 记下这个币判过了，顺带记下流动性 —— 下一轮靠它决定走快车道还是慢车道。
  *
  * liquidityUsd 为 undefined 表示这一轮没拿到报价（接口抖动 / 币查不到）。

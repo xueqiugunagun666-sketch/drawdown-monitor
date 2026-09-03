@@ -6,6 +6,7 @@ import WalletList, { type WalletRow } from './WalletList.tsx';
 import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
 import AlertFeed, { LatestAlertBanner, alertName, type AlertRow } from './AlertFeed.tsx';
 import ValueFilter from './ValueFilter.tsx';
+import HealthWatch from './HealthWatch.tsx';
 import { playPumpSound, notifyPump } from '../../lib/pumpSound.ts';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 
@@ -188,6 +189,9 @@ export default function WalletClient() {
 
   return (
     <div className="space-y-6">
+      {/* 看门狗：提示音或推送失效时走系统通知 + 标签页告警。
+          页面内的横幅在下面，但横幅救不了"人没在看页面"这种情况 */}
+      <HealthWatch streamConnected={!offline} />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <SoundToggle />
         <ValueFilter value={minValue ?? 0} onSave={saveMinValue} />
