@@ -150,6 +150,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at_ts DESC);
+
+CREATE TABLE IF NOT EXISTS invite_codes (
+  code_hash TEXT PRIMARY KEY,
+  label TEXT,
+  max_uses INTEGER NOT NULL,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER
+);
 `;
 
 /**

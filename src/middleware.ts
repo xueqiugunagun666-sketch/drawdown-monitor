@@ -1,72 +1,46 @@
 /**
  * 未登录一律挡在门外。
  *
- * 之前只有 API 路由检查鉴权，页面本身是裸奔的 —— 放到公网上
- * 任何人都能直接打开看板。这里统一在中间件拦。
+ * 以前是两道门：全站共用一个口令进站，进来再登个人账号。共用口令
+ * 已经撤掉 —— 它永不过期、发出去就收不回、也分不清是谁在用。现在
+ * 只剩账号一道门，新人凭**邀请码**注册（见 src/db/inviteRepo.ts）。
  *
- * 中间件跑在 edge runtime，不能用 node 的 fs，因此直接读 env，
- * 不走 lib/config.ts。
+ * 中间件跑在 edge runtime，**不能查数据库**，所以这里只判断
+ * `wallet_session` cookie 在不在，判断不了它有没有效。真正的校验
+ * 由各路由的 requireActor() 做。这不是冗余而是分工：中间件挡掉
+ * 未登录的浏览，路由做真鉴权。
+ *
+ * **每个路由都必须自查**，只读的也不例外 —— 手动设一个
+ * wallet_session=x 就能过这一层。
  */
 import { NextResponse, type NextRequest } from 'next/server';
 
-const COOKIE_NAME = 'access_token';
-const WALLET_COOKIE = 'wallet_session';
-
-/** 不需要全站口令就能访问的路径 */
-const PUBLIC_PATHS = ['/login', '/api/login'];
+const SESSION_COOKIE = 'wallet_session';
 
 /**
- * 账号闸门覆盖全站（原本只管 /wallet）。
- *
- * 豁免的只有两类：共享口令入口，以及账号注册/登录入口本身 ——
- * 它们不能被账号闸门拦，否则会重定向到自己形成死循环。
+ * 不需要登录就能访问的路径：注册与登录入口本身。
+ * 它们不能被闸门拦，否则会重定向到自己形成死循环。
  */
-const WALLET_PUBLIC = ['/login', '/api/login', '/wallet/login', '/api/account'];
+const PUBLIC_PATHS = ['/wallet/login', '/api/account'];
 
 export function middleware(req: NextRequest) {
-  const expected = process.env.ACCESS_TOKEN;
-  // 没设口令 = 本机开发模式，不拦（worker 启动时会打警告）
-  if (!expected) return NextResponse.next();
-
   const { pathname } = req.nextUrl;
+
   if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))) {
     return NextResponse.next();
   }
-
-  const provided = req.cookies.get(COOKIE_NAME)?.value;
-  const bearer = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
-  const siteOk = provided === expected || bearer === expected;
-  if (siteOk) return walletGate(req, pathname);
+  if (req.cookies.get(SESSION_COOKIE)?.value) return NextResponse.next();
 
   // API 请求返回 401，页面请求跳登录
   if (pathname.startsWith('/api/')) {
-    return NextResponse.json({ error: '未授权' }, { status: 401 });
+    return NextResponse.json({ error: '需要登录' }, { status: 401 });
   }
-  const url = req.nextUrl.clone();
-  url.pathname = '/login';
-  url.search = '';
-  return NextResponse.redirect(url);
-}
 
-/**
- * 钱包区的第二道闸。
- *
- * 中间件跑在 edge runtime，**不能查数据库**，所以这里只看 cookie 在不在。
- * 会话是否真的有效由各路由里的 currentUser() 判定 —— 这是有意的两层：
- * 中间件挡掉未登录的浏览，路由做真正的鉴权。只有中间件是不够的。
- */
-function walletGate(req: NextRequest, pathname: string) {
-  if (WALLET_PUBLIC.some((p) => pathname === p || pathname.startsWith(p + '/'))) {
-    return NextResponse.next();
-  }
-  if (req.cookies.get(WALLET_COOKIE)?.value) return NextResponse.next();
-
-  if (pathname.startsWith('/api/')) {
-    return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
-  }
+  // 把原本想去的地方带上，登录后跳回去。
+  // 不带的话，为了看看板而来的人登完会落在别处，还得自己找回来
   const url = req.nextUrl.clone();
   url.pathname = '/wallet/login';
-  url.search = '';
+  url.search = pathname === '/' ? '' : `?next=${encodeURIComponent(pathname)}`;
   return NextResponse.redirect(url);
 }
 

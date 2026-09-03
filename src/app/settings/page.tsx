@@ -52,8 +52,8 @@ export default async function SettingsPage() {
               </td>
             </tr>
             <tr className="border-b border-neutral-900">
-              <td className="py-1.5 text-neutral-500">ACCESS_TOKEN</td>
-              <td>{s.accessToken ? <>已配置 {mask(s.accessToken)}</> : <span className="text-amber-400">未配置 —— API 无鉴权，仅可本机使用</span>}</td>
+              <td className="py-1.5 text-neutral-500">注册方式</td>
+              <td>邀请码。生成与查看用 <code className="text-neutral-400">npm run invite</code></td>
             </tr>
             {health.map((h) => (
               <tr key={h.sourceId} className="border-b border-neutral-900">

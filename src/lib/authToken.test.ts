@@ -1,16 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tokenMatches, checkRateLimit, recordFailure, clearFailures, clientIp } from './authToken.ts';
-
-test('口令一致才通过', () => {
-  assert.equal(tokenMatches('abc123', 'abc123'), true);
-  assert.equal(tokenMatches('abc124', 'abc123'), false);
-});
-
-test('长度不同也安全返回 false，不抛错', () => {
-  assert.equal(tokenMatches('short', 'a-much-longer-token'), false);
-  assert.equal(tokenMatches('', 'x'), false);
-});
+import { checkRateLimit, recordFailure, clearFailures, clientIp } from './authToken.ts';
 
 test('限流：超过次数后拒绝，并给出等待时间', () => {
   const ip = '1.2.3.4';

@@ -41,7 +41,6 @@ export function getConfig(): AppConfig {
 export interface Secrets {
   telegramBotToken: string | undefined;
   telegramChatId: string | undefined;
-  accessToken: string | undefined;
   coingeckoApiKey: string | undefined;
   gmgnApiKey: string | undefined;
   evmRpcBase: string | undefined;
@@ -55,7 +54,6 @@ export function getSecrets(): Secrets {
   const s: Secrets = {
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || undefined,
     telegramChatId: process.env.TELEGRAM_CHAT_ID || undefined,
-    accessToken: process.env.ACCESS_TOKEN || undefined,
     coingeckoApiKey: process.env.COINGECKO_API_KEY || undefined,
     gmgnApiKey: process.env.GMGN_API_KEY || undefined,
     evmRpcBase: process.env.EVM_RPC_BASE || undefined,
@@ -63,7 +61,6 @@ export function getSecrets(): Secrets {
   };
   // 注册后，任何日志/报错里出现这些值都会被自动掩码
   registerSecret(s.telegramBotToken);
-  registerSecret(s.accessToken);
   registerSecret(s.coingeckoApiKey);
   registerSecret(s.gmgnApiKey);
   // RPC 端点是用户的私有基础设施，按密钥处理：

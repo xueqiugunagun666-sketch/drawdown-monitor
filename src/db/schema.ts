@@ -207,7 +207,7 @@ export const pollRuns = sqliteTable('poll_runs', {
 /* ============ 钱包暴涨异动监控（spec 2026-08-30） ============ */
 
 /**
- * 个人账号。与全站共用的 ACCESS_TOKEN 是两回事 —— 那个是"进不进得来"，
+ * 个人账号。这是全站唯一的身份来源（共用口令已撤销）——
  * 这个是"进来之后你是谁"。钱包持仓必须按人隔离，而 display_name 是
  * 自己填的署名、能冒充，所以必须有真密码。
  */
@@ -321,4 +321,26 @@ export const auditLog = sqliteTable('audit_log', {
   targetId: text('target_id'),
   targetLabel: text('target_label'),
   detail: text('detail'),
+});
+
+/**
+ * 注册邀请码。
+ *
+ * 取代原来那个「所有人共用一个、永不过期」的全站口令：一个码带一个
+ * 使用次数上限，用完自动失效，发给谁也能标注。
+ *
+ * 只存哈希，和密码、会话一个做法 —— 库泄露也拿不到可用的码。
+ * 代价是丢了查不回来，但重新生成只是一条命令。
+ *
+ * **只在注册时校验并消耗**：登录和日常访问都不需要码，
+ * 已有账号的人一次都不会消耗额度。
+ */
+export const inviteCodes = sqliteTable('invite_codes', {
+  codeHash: text('code_hash').primaryKey(),
+  /** 发给谁了，纯备注，方便你回头对账 */
+  label: text('label'),
+  maxUses: integer('max_uses').notNull(),
+  usedCount: integer('used_count').default(0).notNull(),
+  createdAt: integer('created_at').notNull(),
+  lastUsedAt: integer('last_used_at'),
 });

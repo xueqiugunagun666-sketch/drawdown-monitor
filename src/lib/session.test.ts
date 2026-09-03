@@ -27,7 +27,11 @@ test('TTL 有限且合理', () => {
   assert.ok(SESSION_TTL_SECONDS > 0 && SESSION_TTL_SECONDS <= 90 * 86400);
 });
 
-test('cookie 名与全站口令的 cookie 不冲突', () => {
+test('不能复用已废弃的 cookie 名', () => {
+  // access_token（全站口令）和 display_name（自填署名）都已经删掉了，
+  // 但**用户浏览器里还留着这两个 cookie**，而且不会自己消失。
+  // 会话 cookie 万一改名撞上它们，就会读到一个过期的旧值 ——
+  // 表现是"莫名其妙以别人的身份登录"或者"登录状态时有时无"
   assert.notEqual(SESSION_COOKIE, 'access_token');
   assert.notEqual(SESSION_COOKIE, 'display_name');
 });

@@ -42,7 +42,7 @@ function logStartupConfig(): void {
   log.info(`轮询间隔 ${cfg.polling.intervalSeconds}s，并发 ${cfg.polling.maxConcurrency}，失联阈值 ${cfg.polling.staleMinutes} 分钟`);
   // 配置一律输出掩码值
   log.info(`TELEGRAM_BOT_TOKEN=${mask(s.telegramBotToken)}  TELEGRAM_CHAT_ID=${mask(s.telegramChatId)}`);
-  log.info(`ACCESS_TOKEN=${mask(s.accessToken)}  COINGECKO_API_KEY=${mask(s.coingeckoApiKey)}`);
+  log.info(`COINGECKO_API_KEY=${mask(s.coingeckoApiKey)}`);
   log.info(`GMGN_API_KEY=${mask(s.gmgnApiKey)}  ${s.gmgnApiKey ? '(OHLCV 回填走 GMGN，GT 兜底)' : '(未配置，回填走 GeckoTerminal)'}`);
   if (!s.telegramBotToken || !s.telegramChatId) {
     log.warn('Telegram 未配置，报警将无法投递（会在 alerts.delivered 中记录失败）');

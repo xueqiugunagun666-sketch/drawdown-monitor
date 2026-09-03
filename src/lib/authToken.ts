@@ -1,5 +1,5 @@
 /**
- * ACCESS_TOKEN 的比较与登录限流。
+ * 登录限流。按 IP 计数，账号登录与注册共用。
  *
  * 单用户/小圈子工具，不做用户系统（规格 §10）——
  * 一个长随机口令，登录后写 httpOnly cookie。
@@ -7,17 +7,6 @@
 import { timingSafeEqual } from 'node:crypto';
 
 /** 恒定时间比较，避免通过响应时间逐字符猜口令 */
-export function tokenMatches(provided: string, expected: string): boolean {
-  const a = Buffer.from(provided, 'utf8');
-  const b = Buffer.from(expected, 'utf8');
-  // 长度不同时 timingSafeEqual 会抛错，先用等长缓冲区比一次维持恒定时间
-  if (a.length !== b.length) {
-    timingSafeEqual(b, b);
-    return false;
-  }
-  return timingSafeEqual(a, b);
-}
-
 /** 按 IP 的登录失败限流：10 分钟内最多 8 次 */
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 8;
@@ -57,4 +46,3 @@ export function clientIp(req: Request): string {
   return req.headers.get('x-real-ip') ?? 'unknown';
 }
 
-export const COOKIE_NAME = 'access_token';

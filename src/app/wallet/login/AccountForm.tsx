@@ -2,10 +2,29 @@
 
 import { useState } from 'react';
 
+/**
+ * 登录后跳回原本要去的地方。
+ *
+ * 中间件把原路径放在 ?next= 里。**必须校验成站内相对路径** ——
+ * 直接拿去跳转就是个开放重定向，别人能构造
+ * /wallet/login?next=https://钓鱼站 的链接骗人。
+ *
+ * 取不到就回首页看板，而不是 /wallet：多数人是为了看板才登录的。
+ */
+function safeNext(): string {
+  try {
+    const raw = new URLSearchParams(window.location.search).get('next');
+    // 必须以单个 / 开头：// 开头会被浏览器当成协议相对的外站地址
+    if (raw && raw.startsWith('/') && !raw.startsWith('//')) return raw;
+  } catch { /* 拿不到就用默认值 */ }
+  return '/';
+}
+
 export default function AccountForm() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
+  const [invite, setInvite] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -19,7 +38,7 @@ export default function AccountForm() {
       const res = await fetch(`/api/account/${mode}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, password }),
+        body: JSON.stringify(mode === 'register' ? { name, password, invite } : { name, password }),
       });
       const data = (await res.json()) as { error?: string; name?: string };
       if (!res.ok) { setErr(data.error ?? '失败了'); return; }
@@ -42,7 +61,7 @@ export default function AccountForm() {
       //   2. 软跳转走客户端路由缓存，而缓存里可能存着"未登录时 /wallet
       //      被弹回登录页"那个结果，于是跳了等于没跳
       // 登录状态刚变，整页重来最干净，也最不容易出玄学问题
-      window.location.href = '/wallet';
+      window.location.href = safeNext();
     } catch {
       setErr('网络错误，检查一下连接');
     } finally {
@@ -52,10 +71,11 @@ export default function AccountForm() {
 
   return (
     <div className="mt-6">
-      <h1 className="text-lg text-neutral-200 mb-1">钱包异动监控</h1>
+      <h1 className="text-lg text-neutral-200 mb-1">回撤监控</h1>
       <p className="text-sm text-neutral-500 mb-5 leading-relaxed">
-        这一区需要单独的个人账号。持仓按账号隔离，
-        <span className="text-neutral-400">其他人看不到你的钱包和持仓</span>。
+        看板、日历、钱包都需要登录。加币和加日程记在你名下，
+        <span className="text-neutral-400">只有你自己和管理员能删改</span>；
+        钱包持仓按账号隔离，别人看不到。
       </p>
 
       <div className="flex gap-1 mb-4 text-sm">
@@ -83,6 +103,18 @@ export default function AccountForm() {
           className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm
                      text-neutral-200 placeholder-neutral-600 focus:border-neutral-600 outline-none"
         />
+        {mode === 'register' && (
+          <input
+            value={invite} onChange={(e) => setInvite(e.target.value)}
+            placeholder="邀请码" autoComplete="off" required
+            // 码里没有小写字母，自动大写省得用户自己切输入法。
+            // 后端也会规范化，这里只是让输入过程顺一点
+            style={{ textTransform: 'uppercase' }}
+            className="w-full bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm
+                       text-neutral-200 placeholder-neutral-600 focus:border-neutral-600 outline-none
+                       font-mono tracking-wider"
+          />
+        )}
         {err && <p className="text-sm text-[#d03b3b] leading-relaxed">{err}</p>}
         {ok && <p className="text-sm text-[#3fbf7f]">{ok}</p>}
         <button type="submit" disabled={busy}
@@ -94,8 +126,8 @@ export default function AccountForm() {
 
       {mode === 'register' && (
         <p className="text-xs text-neutral-600 mt-4 leading-relaxed">
-          这个密码和进站口令是两回事。进站口令是大家共用的，这个只有你自己知道。
-          忘了没法找回，我这边看不到明文。
+          邀请码找管理员要，一个码只能用有限次。
+          密码只有你自己知道，忘了没法找回 —— 库里存的是哈希，我这边看不到明文。
         </p>
       )}
     </div>

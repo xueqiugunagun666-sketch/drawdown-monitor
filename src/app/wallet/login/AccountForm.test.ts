@@ -24,11 +24,28 @@ test('会话没生效时要给出可操作的提示，不能只是不跳转', ()
 
 test('用整页跳转而不是 router.push', () => {
   // router.push 会走客户端路由缓存，而缓存里可能存着
-  // "未登录时 /wallet 被弹回登录页"那个结果，于是跳了等于没跳
-  assert.match(code, /window\.location\.href\s*=\s*'\/wallet'/);
+  // "未登录时被弹回登录页"那个结果，于是跳了等于没跳。
+  // 只钉「整页跳转」这条约定，不钉具体目标 —— 目标现在由 ?next= 决定
+  assert.match(code, /window\.location\.href\s*=/);
   assert.ok(!code.includes('router.push'), '不该再用 router.push');
   assert.ok(!code.includes('router.refresh'), 'push 后紧跟 refresh 会互相打断');
   assert.ok(!code.includes('useRouter'), '不再需要 useRouter');
+});
+
+test('跳转目标必须挡住开放重定向', () => {
+  // ?next= 直接拿去跳转的话，别人能构造
+  // /wallet/login?next=https://钓鱼站 的链接骗人。
+  //
+  // 这条断言必须对 src 而不是 code：上面那个剥注释的正则是按
+  // 「两个斜杠到行尾」粗暴切的，而要匹配的代码里恰好有字符串
+  // 字面量 '//'，会被它当成注释开头整行吃掉
+  assert.match(src, /startsWith\('\/'\)/, 'next 必须是站内相对路径');
+  assert.match(src, /startsWith\('\/\/'\)/, '协议相对地址（两个斜杠开头）指向外站，要挡');
+});
+
+test('注册要带邀请码，登录不带', () => {
+  // 登录也要码的话，已有账号的人会被莫名其妙挡住，而额度也会被白白耗掉
+  assert.match(code, /mode === 'register' \? \{ name, password, invite \}/);
 });
 
 test('成功和失败都要有可见反馈', () => {

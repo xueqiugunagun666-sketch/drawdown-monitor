@@ -105,16 +105,15 @@ if [ -f "$APP_DIR/.env" ]; then
 else
   read -rp "  Telegram Bot Token: " TG_TOKEN
   read -rp "  Telegram Chat ID:   " TG_CHAT
-  read -rp "  网页登录口令（留空则自动生成一个强口令）: " WEB_PASS
-  if [ -z "$WEB_PASS" ]; then
-    WEB_PASS=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)
-    ylw "  已生成登录口令：$WEB_PASS"
-    ylw "  ^^^ 现在就记下来，之后不会再显示 ^^^"
+  read -rp "  管理员账号名（之后用这个名字注册，只有它能删东西）: " ADMIN_NAME
+  if [ -z "$ADMIN_NAME" ]; then
+    red "  管理员账号名不能留空 —— 不填就没有人能删除任何东西（fail closed）"
+    exit 1
   fi
   cat > "$APP_DIR/.env" <<ENVEOF
 TELEGRAM_BOT_TOKEN=${TG_TOKEN}
 TELEGRAM_CHAT_ID=${TG_CHAT}
-ACCESS_TOKEN=${WEB_PASS}
+ADMIN_ACCOUNT=${ADMIN_NAME}
 DATABASE_PATH=./data/monitor.db
 COINGECKO_API_KEY=
 ENVEOF
@@ -185,12 +184,23 @@ done
 echo
 grn "部署完成"
 echo
+
+# 注册需要邀请码，而全新安装一个码都没有 —— 不在这里生成的话，
+# 第一个人（包括管理员自己）永远注册不进去
+if [ -z "$(cd "$APP_DIR" && sudo -u "$APP_USER" npm run --silent invite 2>/dev/null | grep -c '^[0-9a-f]\{8\} ')" ] \
+   || ! (cd "$APP_DIR" && sudo -u "$APP_USER" npm run --silent invite 2>/dev/null | grep -q '^[0-9a-f]\{8\} '); then
+  ylw "  正在生成首个邀请码……"
+  (cd "$APP_DIR" && sudo -u "$APP_USER" npm run --silent invite -- new 10 "首次安装" 2>/dev/null | grep -v '^\[')
+fi
+
+echo
 echo "  访问：https://${DOMAIN}"
-echo "  登录口令在 ${APP_DIR}/.env 里的 ACCESS_TOKEN"
+echo "  用上面那个邀请码注册，用户名填 ${ADMIN_NAME:-你配置的管理员名} 就是管理员"
 echo
 echo "常用命令："
 echo "  看日志      journalctl -u drawdown-worker -f"
 echo "  重启        systemctl restart drawdown-worker drawdown-web"
-echo "  更新代码    cd ${APP_DIR} && git pull && sudo -u ${APP_USER} npm ci && sudo -u ${APP_USER} npm run build && systemctl restart drawdown-worker drawdown-web"
+echo "  更新代码    见 deploy/README.md「更新代码」一节（rsync，不是 git pull）"
+echo "  邀请码      cd ${APP_DIR} && sudo -u ${APP_USER} npm run invite"
 echo "  手动备份    systemctl start drawdown-backup"
 echo "  查看备份    ls -lh ${APP_DIR}/backups"

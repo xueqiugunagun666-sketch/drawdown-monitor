@@ -3,6 +3,7 @@ import { hashPassword } from '../../../../lib/password.ts';
 import { newSessionToken, hashToken, SESSION_COOKIE, SESSION_TTL_SECONDS } from '../../../../lib/session.ts';
 import { createUser, createSession } from '../../../../db/walletRepo.ts';
 import { sanitizeName } from '../../../../lib/sanitizeName.ts';
+import { consumeInviteCode, refundInviteCode } from '../../../../db/inviteRepo.ts';
 import { checkRateLimit, recordFailure, clientIp } from '../../../../lib/authToken.ts';
 import { makeLogger } from '../../../../lib/log.ts';
 
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: { name?: string; password?: string };
+  let body: { name?: string; password?: string; invite?: string };
   try { body = await req.json(); } catch { return NextResponse.json({ error: '请求格式错误' }, { status: 400 }); }
 
   const name = sanitizeName(body.name ?? '');
@@ -32,8 +33,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `密码至少 ${MIN_PASSWORD} 位` }, { status: 400 });
   }
 
+  // 邀请码放在最后校验、也就是所有格式问题都排除之后：
+  // 用户名重复或密码太短就把码消耗掉，那一次额度就白扔了
+  const invite = consumeInviteCode(body.invite ?? '');
+  if (!invite.ok) {
+    recordFailure(ip);
+    return NextResponse.json({ error: invite.reason }, { status: 403 });
+  }
+
   const user = createUser(name, await hashPassword(password));
   if (!user) {
+    // 码已经核销但账号没建成，把这一次退回去 —— 否则用户换个名字重试
+    // 就会发现码莫名其妙少了一次，而他什么都没得到
+    refundInviteCode(body.invite ?? '');
     recordFailure(ip);
     return NextResponse.json({ error: '这个用户名已经被用了' }, { status: 409 });
   }
@@ -41,7 +53,7 @@ export async function POST(req: Request) {
   // 注册成功直接登录，省一步
   const token = newSessionToken();
   createSession(user.id, hashToken(token), Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS);
-  log.info(`新账号: ${name}`);
+  log.info(`新账号: ${name}（邀请码剩余 ${invite.remaining} 次${invite.label ? `，备注 ${invite.label}` : ''}）`);
 
   const res = NextResponse.json({ ok: true, name: user.name });
   // 不要手动 encodeURIComponent —— cookies.set 已经会编码，
