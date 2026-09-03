@@ -45,7 +45,8 @@ const deps = (quotes: Record<string, Partial<BatchQuote>>): PumpDeps => ({
     const m = new Map<string, BatchQuote>();
     for (const a of addrs) {
       const q = quotes[a];
-      if (q) m.set(a, { priceUsd: '1', liquidityUsd: 50000, volume24hUsd: 99999, symbol: 'T', ...q });
+      if (q) m.set(a, { priceUsd: '1', liquidityUsd: 50000, volume24hUsd: 99999,
+                   volume1hUsd: 9999, marketCapUsd: null, symbol: 'T', ...q });
     }
     return m;
   },
@@ -437,4 +438,55 @@ test('同一个币，仓位大的收到、仓位小的不收到', async () => {
 test('门槛是 1 美元', async () => {
   const { MIN_ALERT_VALUE_USD } = await import('./pumpEngine.ts');
   assert.equal(MIN_ALERT_VALUE_USD, 1);
+});
+
+/* ---------- FLETCH 那个坑的回归测试 ---------- */
+
+/** 建一个**被挡在监控外**的持仓：流动性够，只是没成交量 */
+function coldHolder(tokenId: string, balance = '1000000000000000000') {
+  const u = wr.createUser(`cold${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xcw${seq}`, null)!;
+  wr.upsertHolding(w.id, tokenId, balance, 18, 100);
+  wr.setHoldingMonitored(w.id, tokenId, false, '24h 成交 $3,000 < $10,000', null);
+  return { userId: u.id, walletId: w.id };
+}
+
+test('休眠的币靠 1h 成交量重新进监控 —— 不必等 24h 量爬回来', async () => {
+  const id = 'bsc:0xfletch';
+  const { walletId } = coldHolder(id);
+  history(id, '1');
+  wr.markTokenEvaluated(id, NOW - 1000, 32457);
+
+  // 24h 量还是不够（$3,000 < $10,000），但一小时已经成交 $3,705
+  await runPumpTick(NOW, deps({
+    '0xfletch': { priceUsd: '1', liquidityUsd: 32457, volume24hUsd: 3000, volume1hUsd: 3705 },
+  }));
+
+  const row = wr.listHoldingsByWallet(walletId).find((x) => x.tokenId === id);
+  assert.equal(row?.monitored, 1, '1h 量够就该重新进监控');
+});
+
+test('休眠的币 1h 量也不够时保持在监控外', async () => {
+  const id = 'bsc:0xstilldead';
+  const { walletId } = coldHolder(id);
+  history(id, '1');
+  wr.markTokenEvaluated(id, NOW - 1000, 32457);
+
+  await runPumpTick(NOW, deps({
+    '0xstilldead': { priceUsd: '1', liquidityUsd: 32457, volume24hUsd: 3000, volume1hUsd: 50 },
+  }));
+
+  const row = wr.listHoldingsByWallet(walletId).find((x) => x.tokenId === id);
+  assert.equal(row?.monitored, 0);
+});
+
+test('判定后把流动性记进 token_meta —— 快车道靠它分流', async () => {
+  const id = 'bsc:0xliqrec';
+  holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xliqrec': { priceUsd: '1', liquidityUsd: 77777 } }));
+  const meta = getRawDb()
+    .prepare('SELECT last_liquidity_usd AS liq FROM token_meta WHERE token_id = ?')
+    .get(id) as { liq: number | null } | undefined;
+  assert.equal(meta?.liq, 77777);
 });

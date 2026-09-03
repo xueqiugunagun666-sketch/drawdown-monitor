@@ -6,7 +6,7 @@
  * 走 /tokens/v1/{chain}/{addr1,addr2,...}，一次最多 30 个地址。
  *
  * 实测（BSC，三个地址）：返回数组，每项含 baseToken.address、priceUsd、
- * liquidity.usd、volume.h24，每个代币回一个池。
+ * liquidity.usd、volume.h24、volume.h1、marketCap，每个代币回一个池。
  *
  * **响应可能不覆盖全部请求地址** —— 这是 errors.ts 里已经记录过的坑：
  * DexScreener 会在结果超限时静默丢弃多余代币。缺失的地址必须显式标出，
@@ -34,6 +34,17 @@ export interface BatchQuote {
   priceUsd: string;          // 保持字符串 —— 中途不许过 Number
   liquidityUsd: number;
   volume24hUsd: number;
+  /**
+   * 1 小时成交量。同一个响应里本来就有，白拿。
+   *
+   * 存在的理由是 24h 量守不住「币刚醒」这件事：实测 FLETCH 在 9-03 凌晨
+   * 因为 24h 量跌破退出线被降级，17:15 行情启动时 24h 量还远没爬回
+   * $10,000，靠它重新进监控要等一整天。而那五分钟的成交已经是 $3,705，
+   * 1 小时口径立刻就看得见。
+   */
+  volume1hUsd: number;
+  /** 市值。用户是按市值思考的（「从 50K 涨到 100K」），报警里要能说人话 */
+  marketCapUsd: number | null;
   symbol: string | null;
 }
 
@@ -41,7 +52,8 @@ interface RawPair {
   baseToken?: { address?: string; symbol?: string };
   priceUsd?: string;
   liquidity?: { usd?: number };
-  volume?: { h24?: number };
+  volume?: { h24?: number; h1?: number };
+  marketCap?: number;
 }
 
 export function chunkAddresses(addrs: string[], size = MAX_BATCH): string[][] {
@@ -82,6 +94,9 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
       priceUsd: p.priceUsd,
       liquidityUsd: liq,
       volume24hUsd: p.volume?.h24 ?? 0,
+      volume1hUsd: p.volume?.h1 ?? 0,
+      // 市值可能真的没有（新币未定供应量），缺就是 null，不拿 0 冒充
+      marketCapUsd: typeof p.marketCap === 'number' ? p.marketCap : null,
       symbol: p.baseToken?.symbol ?? null,
     });
   }

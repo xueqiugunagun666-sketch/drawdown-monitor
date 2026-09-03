@@ -281,6 +281,42 @@ test('被挡掉的币 30 分钟内不重复判', () => {
   assert.ok(wr.tokenIdsDueForEval(1000 + wr.REJECTED_RECHECK_SECONDS).includes(id), '满 30 分钟要重判');
 });
 
+test('流动性够、只差成交量的币走 3 分钟快车道', () => {
+  const u = wr.createUser(`warm${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xwarm${seq}`, null)!;
+  const id = `bsc:0xwarm${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, false, '24h 成交 $3,000 < $10,000', null);
+  wr.markTokenEvaluated(id, 1000, 32457);          // FLETCH 的真实流动性
+  assert.ok(!wr.tokenIdsDueForEval(1000 + 60).includes(id), '3 分钟没到不该重判');
+  assert.ok(wr.tokenIdsDueForEval(1000 + wr.WARM_RECHECK_SECONDS).includes(id),
+    '满 3 分钟就要重判，不必等 30 分钟');
+});
+
+test('流动性不够的币仍然走 30 分钟慢车道', () => {
+  const u = wr.createUser(`cold${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xcold${seq}`, null)!;
+  const id = `bsc:0xcold${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, false, '流动性 $12 < $5,000', null);
+  wr.markTokenEvaluated(id, 1000, 12);
+  assert.ok(!wr.tokenIdsDueForEval(1000 + wr.WARM_RECHECK_SECONDS).includes(id),
+    '流动性不够的不该进快车道');
+  assert.ok(wr.tokenIdsDueForEval(1000 + wr.REJECTED_RECHECK_SECONDS).includes(id));
+});
+
+test('报价缺失时保留上次的流动性 —— 一次接口抖动不该把币踢出快车道', () => {
+  const u = wr.createUser(`keepliq${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xkl${seq}`, null)!;
+  const id = `bsc:0xkl${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, false, '24h 成交不足', null);
+  wr.markTokenEvaluated(id, 1000, 32457);
+  wr.markTokenEvaluated(id, 1100);                 // 这一轮没报价
+  assert.ok(wr.tokenIdsDueForEval(1100 + wr.WARM_RECHECK_SECONDS).includes(id),
+    '流动性被抹成 NULL 的话这里就会掉到慢车道');
+});
+
 test('从未判定过的币一定要判 —— 否则新扫到的币永远进不来', () => {
   const u = wr.createUser(`due3${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xdue3${seq}`, null)!;

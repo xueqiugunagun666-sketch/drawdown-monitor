@@ -154,9 +154,11 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
 
   for (const tokenId of tokenIds) {
     try {
-      await evaluateToken(tokenId, quotes.get(tokenId) ?? null, now,
+      const q = quotes.get(tokenId) ?? null;
+      await evaluateToken(tokenId, q, now,
         deps.backfill ?? realBackfillDeps, deps.fetchTokenInfo);
-      wr.markTokenEvaluated(tokenId, now);
+      // 流动性一起记下 —— 下一轮靠它决定这个币走快车道还是慢车道
+      wr.markTokenEvaluated(tokenId, now, q?.liquidityUsd);
     } catch (err) {
       log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
     }
@@ -179,6 +181,7 @@ async function evaluateToken(
   const quoteIn = {
     liquidityUsd: quote?.liquidityUsd ?? null,
     volume24hUsd: quote?.volume24hUsd ?? null,
+    volume1hUsd: quote?.volume1hUsd ?? null,
   };
 
   /**

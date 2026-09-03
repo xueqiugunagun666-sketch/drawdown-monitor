@@ -152,3 +152,45 @@ test('持有人判定优先于报价缺失 —— 性质不对就不用等报价
   const r = evaluateFilter(armed, { liquidityUsd: null, volume24hUsd: null, holderCount: 705786 }, 100, th);
   assert.equal(r.monitored, true, '报价缺失时保持原状态，持有人判定要等有报价再说');
 });
+
+/* ---------- 1 小时成交量的快通道（FLETCH 那个坑） ---------- */
+
+test('流动性够、24h 量不够，但 1h 量够 —— 放进来', () => {
+  // FLETCH 9-03 17:20 的真实数字：池子 $32,457 一直没动，
+  // 24h 量还没爬回来，但那五分钟已经成交 $3,705
+  const r = evaluateFilter(idle, {
+    liquidityUsd: 32457, volume24hUsd: 3000, volume1hUsd: 3705,
+  }, 100, th);
+  assert.equal(r.monitored, true);
+  assert.equal(r.reason, null);
+});
+
+test('1h 量不够就还是挡着 —— 快通道不是后门', () => {
+  const r = evaluateFilter(idle, {
+    liquidityUsd: 32457, volume24hUsd: 3000, volume1hUsd: 199,
+  }, 100, th);
+  assert.equal(r.monitored, false);
+  assert.match(r.reason ?? '', /24h 成交/);
+});
+
+test('1h 量再大，流动性不够也进不来', () => {
+  const r = evaluateFilter(idle, {
+    liquidityUsd: 100, volume24hUsd: 0, volume1hUsd: 999999,
+  }, 100, th);
+  assert.equal(r.monitored, false);
+  assert.match(r.reason ?? '', /流动性/);
+});
+
+test('不传 1h 量时行为与改动前一致 —— 老调用方不受影响', () => {
+  assert.equal(evaluateFilter(idle, { liquidityUsd: 50000, volume24hUsd: 500 }, 100, th).monitored, false);
+  assert.equal(evaluateFilter(idle, { liquidityUsd: 50000, volume24hUsd: 10000 }, 100, th).monitored, true);
+});
+
+test('退出判定不看 1h 量 —— 一阵脉冲成交不能让币在监控集里进进出出', () => {
+  const t0 = 1_000_000;
+  // 24h 量跌破退出线，但 1h 量很大；仍然要开始计时退出
+  const s1 = evaluateFilter(armed, { liquidityUsd: 50000, volume24hUsd: 100, volume1hUsd: 999999 }, t0, th);
+  assert.equal(s1.belowSinceTs, t0);
+  const s2 = evaluateFilter(s1, { liquidityUsd: 50000, volume24hUsd: 100, volume1hUsd: 999999 }, t0 + 1800, th);
+  assert.equal(s2.monitored, false);
+});

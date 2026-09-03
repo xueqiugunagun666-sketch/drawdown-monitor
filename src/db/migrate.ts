@@ -185,6 +185,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['tokens', 'visibility', "TEXT NOT NULL DEFAULT 'public'"],
   ['holdings', 'symbol', 'TEXT'],
   ['token_meta', 'last_eval_at', 'INTEGER'],
+  ['token_meta', 'last_liquidity_usd', 'REAL'],
   ['tokens', 'owner_id', 'TEXT'],
   ['events', 'owner_id', 'TEXT'],
 ];

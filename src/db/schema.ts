@@ -302,6 +302,14 @@ export const tokenMeta = sqliteTable('token_meta', {
   fetchedAt: integer('fetched_at').notNull(),
   /** 上次跑过判定的时刻。已被挡掉的币不必每轮重查报价 */
   lastEvalAt: integer('last_eval_at'),
+  /**
+   * 上次看到的流动性。用来把「被挡掉的币」分成两拨：
+   * 流动性够、只差成交量的走快车道（3 分钟复查），其余走慢车道（30 分钟）。
+   *
+   * 存在 token_meta 而不是 holdings，因为流动性是代币的全局事实，
+   * 不因谁持有而不同 —— 两个人持有同一个币不该有两个答案。
+   */
+  lastLiquidityUsd: real('last_liquidity_usd'),
 });
 
 /**

@@ -13,6 +13,20 @@ export interface FilterThresholds {
   minLiquidityUsd: number;
   minVolume24hUsd: number;
   /**
+   * 重新进入监控的快通道：1 小时成交量到这个数就够，不必等 24h 量爬回来。
+   *
+   * 为什么必须有这条：24h 成交量是**滞后 24 小时**的指标，而「从没人交易
+   * 到暴涨」正是它该抓的那件事本身 —— 拿一天的均值守五分钟的行情。
+   * FLETCH 9-03 就栽在这里：03:15 因 24h 量不足被降级，14 小时不采价，
+   * 17:15 行情起来时 24h 量还差得远，靠它根本回不来。
+   *
+   * $2,000 的定法：进入线 $10,000 的 1/5。一个币一小时做到两千刀成交，
+   * 已经不是"没人要"了；而真正的粉尘币一小时连两百刀都做不到，挡得住。
+   * 注意这只放宽**进入**，退出仍然只看 24h 量 —— 不然一阵脉冲成交
+   * 就能让币在监控集里进进出出，把状态机反复重置。
+   */
+  minVolume1hUsd: number;
+  /**
    * 持有人数上限。超过就不监控 —— 几十万持有人的币基本都是空投盘，
    * 那种"从 2e-09 涨到 1.6e-06"的曲线是开盘假量，不是行情。
    *
@@ -33,6 +47,7 @@ export interface FilterThresholds {
 export const DEFAULT_THRESHOLDS: FilterThresholds = {
   minLiquidityUsd: 5000,
   minVolume24hUsd: 10000,
+  minVolume1hUsd: 2000,
   maxHolderCount: 100_000,
   exitRatio: 0.6,
   exitSustainSeconds: 1800,
@@ -41,6 +56,8 @@ export const DEFAULT_THRESHOLDS: FilterThresholds = {
 export interface FilterInput {
   liquidityUsd: number | null;
   volume24hUsd: number | null;
+  /** 1 小时成交量。null = 数据源没给，按 0 当作"没有帮助"，绝不因此踢币 */
+  volume1hUsd?: number | null;
   /** null = 还没查到。查不到不等于合格，但也不该因此踢掉已在监控的币 */
   holderCount?: number | null;
 }
@@ -83,7 +100,9 @@ export function evaluateFilter(
 
   if (!prev.monitored) {
     const liqOk = liq >= th.minLiquidityUsd;
-    const volOk = vol >= th.minVolume24hUsd;
+    // 24h 量够，或者刚醒过来的 1h 量够 —— 满足一个就放进来
+    const vol1h = q.volume1hUsd ?? 0;
+    const volOk = vol >= th.minVolume24hUsd || vol1h >= th.minVolume1hUsd;
     if (liqOk && volOk) return { monitored: true, belowSinceTs: null, reason: null };
     const missing: string[] = [];
     if (!liqOk) missing.push(`流动性 ${usd(liq)} < ${usd(th.minLiquidityUsd)}`);

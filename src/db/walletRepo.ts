@@ -314,15 +314,34 @@ export function isTokenMetaStale(tokenId: string, now: number): boolean {
   return m === null || now - m.fetchedAt >= META_TTL_SECONDS;
 }
 
-/** 已被挡掉的币多久重查一次。流动性不会分分钟变化，30 分钟够了 */
+/** 慢车道：连流动性都不够的币多久重查一次。这类币不会突然变成正经币，30 分钟够了 */
 export const REJECTED_RECHECK_SECONDS = 1800;
+
+/**
+ * 快车道：**流动性够、只差成交量**的币多久重查一次。
+ *
+ * 这一拨是被挡掉的币里唯一会突然暴涨的：池子里有几万刀，只是当下没人交易。
+ * 线上 1,176 个。FLETCH 9-03 就是其中之一 —— 流动性 $32,457 从头到尾没动过，
+ * 只因 24h 成交量跌破退出线被降级，然后 14 小时不采价；行情 17:15 启动，
+ * 30 分钟的复查恰好落在 17:2x，等看见时已经 2.53 倍。
+ *
+ * 3 分钟的定法是**请求预算**倒推的：1,176 个币按每请求 30 个地址、
+ * 每轮摊 1/3 分钟，每轮多约 13 个请求；批量接口自带 2 req/s 的节流，
+ * 折合每轮多约 6 秒。而线上实测的轮次周期是 60/60/71/60/60 秒 ——
+ * 余量只有十几秒，全量每轮跑（多 40 个请求 ≈ 20 秒）会把轮次顶穿。
+ */
+export const WARM_RECHECK_SECONDS = 180;
+
+/** 快车道的流动性门槛。与 holdingsFilter 的进入线一致 */
+const WARM_MIN_LIQUIDITY_USD = 5000;
 
 /**
  * 本轮该判定哪些币。
  *
- * 监控中的每轮都判；已被挡掉的每 30 分钟重查一次 ——
- * 线上 1206 个去重代币里一千一百多个是早被流动性挡掉的粉尘，
- * 每轮都给它们拉报价光请求就占掉 20 秒，而流动性不会分分钟变化。
+ * 三档：监控中的每轮都判；流动性够但成交量不够的 3 分钟一次；
+ * 其余（流动性不够、或压根没有报价的粉尘）30 分钟一次 ——
+ * 线上 8,188 个去重代币里六千多个是 DexScreener 根本查不到的空投垃圾，
+ * 每轮都给它们拉报价光请求就要几分钟，而它们的状态不会分分钟变化。
  *
  * 从未判定过的（last_eval_at 为空）一律要判，否则新扫到的币进不来。
  */
@@ -336,15 +355,29 @@ export function tokenIdsDueForEval(now: number): string[] {
         h.monitored = 1
         OR m.last_eval_at IS NULL
         OR m.last_eval_at <= ${now - REJECTED_RECHECK_SECONDS}
+        OR (
+          m.last_liquidity_usd >= ${WARM_MIN_LIQUIDITY_USD}
+          AND m.last_eval_at <= ${now - WARM_RECHECK_SECONDS}
+        )
       )
   `);
   return rows.map((r) => r.token_id);
 }
 
-export function markTokenEvaluated(tokenId: string, now: number): void {
+/**
+ * 记下这个币判过了，顺带记下流动性 —— 下一轮靠它决定走快车道还是慢车道。
+ *
+ * liquidityUsd 为 undefined 表示这一轮没拿到报价（接口抖动 / 币查不到）。
+ * 这种情况**保留上一次的值**而不是写 NULL：一次抖动不该把一个正经币
+ * 从快车道踢到慢车道，那正是它最需要被盯着的时候。
+ */
+export function markTokenEvaluated(tokenId: string, now: number, liquidityUsd?: number): void {
+  const liq = liquidityUsd ?? null;
   getDb().run(sql`
-    INSERT INTO token_meta (token_id, holder_count, symbol, fetched_at, last_eval_at)
-    VALUES (${tokenId}, NULL, NULL, ${now}, ${now})
-    ON CONFLICT(token_id) DO UPDATE SET last_eval_at = ${now}
+    INSERT INTO token_meta (token_id, holder_count, symbol, fetched_at, last_eval_at, last_liquidity_usd)
+    VALUES (${tokenId}, NULL, NULL, ${now}, ${now}, ${liq})
+    ON CONFLICT(token_id) DO UPDATE SET
+      last_eval_at = ${now},
+      last_liquidity_usd = COALESCE(${liq}, last_liquidity_usd)
   `);
 }
