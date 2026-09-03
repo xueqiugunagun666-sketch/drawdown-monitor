@@ -73,9 +73,9 @@ export function deleteToken(id: string, audit: { actorId: string | null; actorNa
   });
 }
 
-export function updateTokenMeta(id: string, patch: Partial<TokenRow>): void {
-  getDb().update(tokens).set(patch).where(eq(tokens.id, id)).run();
-}
+// 原来的 updateTokenMeta（不写审计的裸更新）已删除。
+// 留着它就是给人一条绕过审计日志的近路 —— 改备注是覆盖式的，
+// 不记旧值原文就永久丢了。要改元数据一律走 updateTokenMetaAudited。
 
 /**
  * 带审计的元数据更新。备注是覆盖式的，旧内容不记下来就永久丢了。
