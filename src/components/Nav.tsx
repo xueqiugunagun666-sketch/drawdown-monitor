@@ -8,6 +8,7 @@ const LINKS: Array<[href: string, label: string]> = [
   ['/calendar', '日历'],
   ['/alerts', '报警'],
   ['/wallet', '钱包'],
+  ['/trash', '群聊淘金'],
   ['/settings', '设置'],
 ];
 
@@ -24,7 +25,11 @@ export default async function Nav({ current, showBadge = true }: { current: stri
       {LINKS.map(([href, label]) => (
         <Link key={href} href={href}
           className={`px-3 py-1.5 rounded whitespace-nowrap shrink-0 ${
-            href === current ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:text-neutral-300'
+            // 烫金只用在这一处：整站唯一的金色，才有"特别"的意思。
+            // 到处都金就等于没有重点，页面正文一律保持常规配色
+            href === '/trash' ? `foil ${href === current ? 'bg-neutral-800' : 'hover:brightness-110'}`
+            : href === current ? 'bg-neutral-800 text-neutral-100'
+            : 'text-neutral-500 hover:text-neutral-300'
           }`}>
           {label}
         </Link>

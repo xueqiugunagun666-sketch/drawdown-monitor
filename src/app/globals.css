@@ -37,6 +37,31 @@ body { @apply bg-neutral-950 text-neutral-200 pb-14; }
   .badge-warn  { @apply badge border-[#fab219]/30 bg-[#fab219]/10 text-[#fab219]; }
 }
 
+/**
+ * 烫金。
+ *
+ * 单一金色（#d4af37）在深底上是"黄字"，读不出金属感 —— 真正让它像烫金的
+ * 是**高光的那一道**：暗金 → 亮金 → 近白 → 再回暗金，模拟光打在压印上的反射。
+ * 用 background-clip:text 把渐变裁进字形里。
+ *
+ * 兜底很重要：background-clip:text 不支持时 -webkit-text-fill-color 不生效，
+ * 字会变成透明的 —— 那一栏在导航里直接消失。所以 color 先给一个实心金色打底，
+ * 不支持的浏览器退化成纯金色字，而不是白板。
+ *
+ * **整站只用在导航里「群聊淘金」那四个字上。** 到处都金就等于没有重点，
+ * 页面正文一律保持常规配色。
+ */
+.foil {
+  color: #d4af37;
+  background-image: linear-gradient(100deg,
+    #8a6a1f 0%, #d4af37 28%, #fff4c2 46%, #f0d67a 56%, #d4af37 72%, #9b7726 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .foil { -webkit-text-fill-color: transparent; }
+}
+
 /* 隐藏横向滚动条但保留滚动能力 */
 .scrollbar-none { scrollbar-width: none; -ms-overflow-style: none; }
 .scrollbar-none::-webkit-scrollbar { display: none; }
