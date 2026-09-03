@@ -7,6 +7,7 @@ import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
 import AlertFeed, { LatestAlertBanner, alertName, type AlertRow } from './AlertFeed.tsx';
 import ValueFilter from './ValueFilter.tsx';
 import HealthWatch from './HealthWatch.tsx';
+import AlarmTest from './AlarmTest.tsx';
 import { playPumpSound, notifyPump } from '../../lib/pumpSound.ts';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 
@@ -194,7 +195,11 @@ export default function WalletClient() {
       <HealthWatch streamConnected={!offline} />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <SoundToggle />
-        <ValueFilter value={minValue ?? 0} onSave={saveMinValue} />
+        <div className="flex items-center gap-4 flex-wrap">
+          {/* 告警自己也要能被验证 —— 没验证过的告警不算告警 */}
+          <AlarmTest />
+          <ValueFilter value={minValue ?? 0} onSave={saveMinValue} />
+        </div>
       </div>
       {/* 连不上就必须说出来 —— 否则"没有报警"和"收不到报警"长得一模一样 */}
       {offline && (

@@ -5,6 +5,7 @@ import {
   step, activeIssues, initialWatchState, describeIssue,
   type HealthIssue, type WatchState,
 } from '../../lib/alertHealth.ts';
+import { popup } from '../../lib/healthAlert.ts';
 import { setTabAlarm } from '../../lib/tabAlarm.ts';
 import { soundStatus, watchSoundStatus } from '../../lib/pumpSound.ts';
 
@@ -40,7 +41,7 @@ export default function HealthWatch({ streamConnected }: { streamConnected: bool
 
       for (const issue of r.notify) {
         const d = describeIssue(issue);
-        popup(d.title, d.body);
+        popup(d.title, d.body, `health-${issue}`);
       }
 
       // 标签页告警跟着"当前确实有问题"走，不跟着弹窗走 ——
@@ -60,18 +61,3 @@ export default function HealthWatch({ streamConnected }: { streamConnected: bool
   return null;
 }
 
-/**
- * 系统通知。
- *
- * requireInteraction 让它留在通知中心不自动消失 —— 这条消息的意义就是
- * "你现在收不到报警了"，一闪而过等于没发。
- *
- * 点一下把标签页调到前台，省得用户自己去一堆标签里翻。
- */
-function popup(title: string, body: string): void {
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-  try {
-    const n = new Notification(title, { body, tag: `health-${title}`, requireInteraction: true });
-    n.onclick = () => { window.focus(); n.close(); };
-  } catch { /* 某些浏览器在非 https 下会抛 */ }
-}

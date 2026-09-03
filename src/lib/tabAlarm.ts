@@ -27,12 +27,23 @@ const ALARM_ICON =
   );
 
 /**
+ * 占用期。测试告警在这段时间里独占标签页，看门狗的常规刷新不许覆盖。
+ *
+ * 加这个是因为测试按钮当场暴露的问题：看门狗每秒 tick 一次、无条件把标题
+ * 写成当前健康状态，于是测试刚设上的告警不到一秒就被刷掉了 ——
+ * 按钮报告"标签页告警 ✓"，标签栏上其实什么都没发生。
+ * 两处在无协调地写同一个东西，必须有个仲裁。
+ */
+let holdUntil = 0;
+
+/**
  * 打开/关闭告警。message 为 null 表示恢复正常。
  *
  * 标题前缀用「⚠️」而不是纯文字：标签页很窄，多数时候只看得见头几个字符。
  */
 export function setTabAlarm(message: string | null): void {
   if (typeof document === 'undefined') return;
+  if (Date.now() < holdUntil) return;              // 测试占用中，让位
 
   document.title = message ? `⚠️ ${message} — ${BASE_TITLE}` : BASE_TITLE;
 
@@ -49,4 +60,28 @@ export function setTabAlarm(message: string | null): void {
   link.type = 'image/svg+xml';
   link.href = ALARM_ICON;
   document.head.appendChild(link);
+}
+
+/**
+ * 测试用：设一条告警并独占标签页 ms 毫秒。
+ *
+ * 占用期一过，看门狗下一次 tick（1 秒内）会按真实健康状态把它刷掉，
+ * 不需要谁去清理 —— 少一处"忘了清"的可能。
+ */
+export function holdTabAlarm(message: string, ms: number): void {
+  holdUntil = 0;                                   // 先解除，好让这次写得进去
+  setTabAlarm(message);
+  holdUntil = Date.now() + ms;
+}
+
+/** 立刻结束占用并恢复正常标题。组件卸载时用 */
+export function releaseTabAlarm(): void {
+  holdUntil = 0;
+  setTabAlarm(null);
+}
+
+/** 标签页此刻是否真的处于告警状态。测试要读回真实状态，不能写死打勾 */
+export function tabAlarmActive(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.title.startsWith('⚠️') && document.getElementById(ICON_ID) !== null;
 }
