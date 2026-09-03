@@ -20,8 +20,10 @@ export default async function Nav({ current, showBadge = true }: { current: stri
   const actor = await currentActor();
   return (
     <nav className="flex items-center gap-1 mb-5 text-sm">
-      {/* 窄屏横向滚动，不折行 —— 折行会把「加币」拆成上下两个字 */}
-      <div className="flex items-center gap-1 overflow-x-auto scrollbar-none -mx-1 px-1">
+      {/* 窄屏横向滚动，不折行 —— 折行会把「加币」拆成上下两个字。
+          右边留出间距：不留的话滚动区正好顶着用户名，被截断的那一项
+          会和用户名糊在一起，看着像渲染坏了 */}
+      <div className="flex items-center gap-1 overflow-x-auto scrollbar-none -mx-1 px-1 pr-3">
       {LINKS.map(([href, label]) => (
         <Link key={href} href={href}
           className={`px-3 py-1.5 rounded whitespace-nowrap shrink-0 ${
@@ -36,7 +38,7 @@ export default async function Nav({ current, showBadge = true }: { current: stri
       ))}
       </div>
       {showBadge && (
-        <div className="ml-auto shrink-0">
+        <div className="ml-auto shrink-0 pl-2">
           <UserBadge name={actor?.name ?? null} isAdmin={actor?.isAdmin ?? false} />
         </div>
       )}

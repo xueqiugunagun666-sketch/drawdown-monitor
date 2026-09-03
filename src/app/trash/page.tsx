@@ -6,7 +6,7 @@ import TrashList, { type SignalRow } from './TrashList.tsx';
 export const dynamic = 'force-dynamic';
 
 export default function TrashPage() {
-  const rows = listSignals(200) as unknown as SignalRow[];
+  const rows = listSignals(2000) as unknown as SignalRow[];
   return (
     <main className="p-4 md:p-8 max-w-[1400px] mx-auto">
       <Nav current="/trash" />

@@ -14,5 +14,5 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: Request) {
   const u = currentUser(req);
   if (!u) return NextResponse.json({ error: '需要登录' }, { status: 401 });
-  return NextResponse.json({ signals: listSignals(200) });
+  return NextResponse.json({ signals: listSignals(2000) });
 }
