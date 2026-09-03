@@ -216,6 +216,17 @@ export const users = sqliteTable('users', {
   name: text('name').notNull().unique(),
   passwordHash: text('password_hash').notNull(),     // scrypt$N$r$p$salt$hash
   createdAt: integer('created_at').notNull(),
+  /**
+   * 持仓价值低于这个数就当作粉尘：不报警，持仓列表里也默认折叠起来。
+   *
+   * **必须是每人一个值**，不能做成全局门槛：同一个币，你只有几毛钱、
+   * 别人有几千块，该不该吵醒你们的答案不一样。这也是为什么它不能去动
+   * holdings.monitored —— 那是跨用户共享的一行，改了会影响别人。
+   *
+   * NULL = 没设过，用 pumpEngine 的默认值。用 REAL 与 alert_rules 里
+   * 那些门槛列一致；它只做比较不参与价格运算，不违反"价格一律 Decimal"。
+   */
+  minAlertValueUsd: real('min_alert_value_usd'),
 });
 
 /** 会话。库里只存 token 的哈希：数据库泄露时拿不到可用的凭证。 */

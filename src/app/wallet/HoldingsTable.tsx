@@ -161,11 +161,26 @@ function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
   );
 }
 
+/**
+ * 低于阈值的算粉尘。
+ *
+ * 价值算不出来的（还没拿到报价）**不算粉尘**，照常显示 ——
+ * 与报警那边同一条原则：算不出来说明数据有问题，
+ * 不能因为算不出而静静藏起来。
+ */
+export function isDust(h: HoldingRow, floor: number): boolean {
+  if (floor <= 0) return false;
+  if (h.valueUsd === null) return false;
+  return new Decimal(h.valueUsd).lt(floor);
+}
+
 export default function HoldingsTable(
-  { holdings, alertedTokenIds = [] }: { holdings: HoldingRow[]; alertedTokenIds?: string[] },
+  { holdings, alertedTokenIds = [], minValue = 0 }:
+  { holdings: HoldingRow[]; alertedTokenIds?: string[]; minValue?: number },
 ) {
   const alerted = new Set(alertedTokenIds);
   const [showAll, setShowAll] = useState(false);
+  const [showDust, setShowDust] = useState(false);
   const [query, setQuery] = useState('');
   const searching = query.trim().length > 0;
 
@@ -175,11 +190,18 @@ export default function HoldingsTable(
     Number(b.best?.multiple ?? 0) - Number(a.best?.multiple ?? 0);
 
   const hit = holdings.filter((h) => matchesQuery(h, query));
-  // 刚报过警的排最前，其次按当前倍数
-  const monitored = hit.filter((h) => h.monitored).sort((a, b) => {
+  const byAlertThenMultiple = (a: HoldingRow, b: HoldingRow) => {
     const d = Number(alerted.has(b.tokenId)) - Number(alerted.has(a.tokenId));
     return d !== 0 ? d : byMultiple(a, b);
-  });
+  };
+  // 刚报过警的排最前，其次按当前倍数
+  const inMonitor = hit.filter((h) => h.monitored);
+  /**
+   * 粉尘单独一组而不是直接扔掉：它们仍然在监控、涨幅照常算，
+   * 只是不值得占据视线。用户随时能展开看见 —— 币不能静静消失。
+   */
+  const monitored = inMonitor.filter((h) => !isDust(h, minValue)).sort(byAlertThenMultiple);
+  const dust = inMonitor.filter((h) => isDust(h, minValue)).sort(byAlertThenMultiple);
   const filtered = hit.filter((h) => !h.monitored);
 
   // 合计始终按全部监控中的算，不随搜索变 ——
@@ -195,7 +217,9 @@ export default function HoldingsTable(
           <p className="text-xs text-neutral-600 mt-0.5">
             {searching
               ? `搜索结果 ${hit.length}`
-              : `监控中 ${monitored.length}${filtered.length > 0 ? ` · 已过滤 ${filtered.length}` : ''}`}
+              : `监控中 ${monitored.length}`
+                + (dust.length > 0 ? ` · 小额 ${dust.length}` : '')
+                + (filtered.length > 0 ? ` · 已过滤 ${filtered.length}` : '')}
           </p>
         </div>
         {/* 合计是这一页最重要的数字，原本是最小号字挤在右边缘 */}
@@ -245,18 +269,30 @@ export default function HoldingsTable(
             {monitored.map((h) => (
               <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={alerted.has(h.tokenId)} />
             ))}
-            {/* 搜索时被过滤的也直接展开，不用再点一次 */}
+            {/* 搜索时小额与被过滤的都直接展开 ——
+                最常见的问题恰恰是"我这个币怎么不见了" */}
+            {(showDust || searching) && dust.map((h) => (
+              <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={alerted.has(h.tokenId)} />
+            ))}
             {(showAll || searching) && filtered.map((h) => (
               <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={false} />
             ))}
           </ul>
 
-          {!searching && filtered.length > 0 && (
-            <button type="button" onClick={() => setShowAll(!showAll)}
-              className="mt-2 text-xs text-neutral-600 hover:text-neutral-400">
-              {showAll ? '收起被过滤的' : `显示被过滤的 ${filtered.length} 个（流动性或成交量不足）`}
-            </button>
-          )}
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+            {!searching && dust.length > 0 && (
+              <button type="button" onClick={() => setShowDust(!showDust)}
+                className="text-xs text-neutral-600 hover:text-neutral-400">
+                {showDust ? '收起小额的' : `显示小额的 ${dust.length} 个（低于 $${minValue}）`}
+              </button>
+            )}
+            {!searching && filtered.length > 0 && (
+              <button type="button" onClick={() => setShowAll(!showAll)}
+                className="text-xs text-neutral-600 hover:text-neutral-400">
+                {showAll ? '收起被过滤的' : `显示被过滤的 ${filtered.length} 个（流动性或成交量不足）`}
+              </button>
+            )}
+          </div>
         </>
       )}
     </section>

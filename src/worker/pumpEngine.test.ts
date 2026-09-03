@@ -435,9 +435,44 @@ test('同一个币，仓位大的收到、仓位小的不收到', async () => {
   assert.equal(wr.listPumpAlerts(poor.id, 0).length, 0, '仓位 $0.000004，不该收到');
 });
 
-test('门槛是 1 美元', async () => {
+test('没设过阈值的人用默认的 1 美元', async () => {
   const { MIN_ALERT_VALUE_USD } = await import('./pumpEngine.ts');
   assert.equal(MIN_ALERT_VALUE_USD, 1);
+});
+
+test('每人的阈值各判各的 —— 同一条上涨，有人收到有人不收到', async () => {
+  const id = 'bsc:0xperuser';
+  const picky = wr.createUser(`picky${++seq}`, 'h')!;
+  const loose = wr.createUser(`loose${++seq}`, 'h')!;
+  const w1 = wr.addWallet(picky.id, 'bsc', `0xpk${seq}`, null)!;
+  const w2 = wr.addWallet(loose.id, 'bsc', `0xls${seq}`, null)!;
+  // 两人余额一样：$50 的仓位
+  for (const w of [w1, w2]) {
+    wr.upsertHolding(w.id, id, '50000000000000000000', 18, 100);
+    wr.setHoldingMonitored(w.id, id, true, null, null);
+  }
+  wr.setMinAlertValue(picky.id, 500);      // 只想被 $500 以上的吵醒
+  history(id, '0.25');
+
+  await runPumpTick(NOW, deps({ '0xperuser': { priceUsd: '0.25' } }));
+  await runPumpTick(NOW + 60, deps({ '0xperuser': { priceUsd: '1' } }));
+
+  assert.equal(wr.listPumpAlerts(loose.id, 0).length, 1, '没设阈值，$50 该收到');
+  assert.equal(wr.listPumpAlerts(picky.id, 0).length, 0, '阈值 $500，$50 不该收到');
+});
+
+test('阈值设成 0 就什么都不过滤 —— 连尘埃也报', async () => {
+  const id = 'bsc:0xzerofloor';
+  const u = wr.createUser(`zero${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xzf${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000', 18, 100);   // 0.000001 个
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  wr.setMinAlertValue(u.id, 0);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xzerofloor': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xzerofloor': { priceUsd: '4' } }));
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 1, '阈值 0，$0.000004 也该收到');
 });
 
 /* ---------- FLETCH 那个坑的回归测试 ---------- */

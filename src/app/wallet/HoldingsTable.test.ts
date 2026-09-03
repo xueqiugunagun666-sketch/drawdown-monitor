@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { usd, matchesQuery, type HoldingRow } from './HoldingsTable.tsx';
+import { usd, matchesQuery, isDust, type HoldingRow } from './HoldingsTable.tsx';
 
 test('大额加千位分隔符', () => {
   // 合计是这一页最该一眼读懂的数字，$116097.28 要数位数才知道量级
@@ -88,4 +88,35 @@ test('没有币名时不影响地址搜索', () => {
 
 test('查询自带空格也能匹配 —— 从别处复制常带空格', () => {
   assert.equal(matchesQuery(h(), '  0xabcdef0123456789abcdef0123456789abcdef01  '), true);
+});
+
+/* ---------- 小额阈值 ---------- */
+
+const row = (valueUsd: string | null): HoldingRow => ({
+  tokenId: 'bsc:0x1', chain: 'bsc', address: '0x1', symbol: 'T', wallet: 'w',
+  amount: '1', priceUsd: '1', valueUsd, monitored: true, filterReason: null,
+  lastQuoteAt: null, decimalsKnown: true, best: null,
+});
+
+test('低于阈值算小额', () => {
+  assert.equal(isDust(row('0.5'), 1), true);
+  assert.equal(isDust(row('49.99'), 50), true);
+});
+
+test('正好等于阈值不算小额', () => {
+  assert.equal(isDust(row('50'), 50), false);
+});
+
+test('阈值 0 时什么都不算小额', () => {
+  assert.equal(isDust(row('0.000001'), 0), false);
+  assert.equal(isDust(row('0'), 0), false);
+});
+
+test('价值算不出来的不算小额 —— 算不出说明数据有问题，不能静静藏起来', () => {
+  // 与报警那边同一条原则：宁可多显示一行，也不要因为算不出而消失
+  assert.equal(isDust(row(null), 1000), false);
+});
+
+test('极小金额也照判 —— Decimal 比较，不走 JS number', () => {
+  assert.equal(isDust(row('0.000000000000000001'), 1), true);
 });

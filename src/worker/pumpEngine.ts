@@ -56,12 +56,16 @@ const log = makeLogger('pump-engine');
 export const TICK_INTERVAL_SECONDS = 60;
 
 /**
- * 持仓价值低于这个数就不推送。
+ * 持仓价值低于这个数就不推送 —— **每人可以自己改**，这里只是没设过时的默认值。
  *
  * 只值几毛钱的币涨十倍也还是几块钱，为它响一次的代价大于收益。
- * 注意这不是过滤层的门槛：币仍然被监控、页面上照常显示涨幅，
+ * 注意这不是过滤层的门槛：币仍然被监控、涨幅照常算，
  * 只是不吵醒你。过滤层管的是"这个币值不值得看"，
  * 这里管的是"这次上涨值不值得打断你"。
+ *
+ * 之所以是每人一个值而不是全局常量：同一个币，你只有几毛钱、
+ * 别人有几千块，该不该吵醒你们的答案不一样。9-03 的数字：同一天
+ * 同一套报警，pananiu 72 条里 52 条超过 $50，nori 114 条里只有 28 条。
  */
 export const MIN_ALERT_VALUE_USD = 1;
 
@@ -287,12 +291,14 @@ async function evaluateToken(
     /**
      * 仓位太小的不推。判定放在扇出这一步而不是过滤层，因为持仓价值
      * 是**每个人各不相同**的 —— 同一个币，你只有几毛钱、别人有几千块，
-     * 该不该吵醒你们的答案不一样。
+     * 该不该吵醒你们的答案不一样。这也是为什么阈值不能去动
+     * holdings.monitored：那是跨用户共享的一行。
      *
      * 价值算不出来时照常推送：那说明数据有问题，宁可多响一次也不要
      * 因为算不出而静默吞掉。
      */
-    if (value && value.lt(MIN_ALERT_VALUE_USD)) {
+    const floor = h.minAlertValueUsd ?? MIN_ALERT_VALUE_USD;
+    if (value && value.lt(floor)) {
       skipped++;
       continue;
     }
@@ -320,7 +326,7 @@ async function evaluateToken(
     log.info(
       `${tokenId} 暴涨 ${winner.multiple.toFixed(2)}x ` +
       `(${winner.timeframe}/${winner.basis}, ${winner.level}x 档)，通知 ${notified} 人` +
-      (skipped > 0 ? `（${skipped} 人仓位不足 $${MIN_ALERT_VALUE_USD} 已跳过）` : ''),
+      (skipped > 0 ? `（${skipped} 人仓位低于各自的阈值，已跳过）` : ''),
     );
   }
 }

@@ -5,6 +5,7 @@ import SoundToggle from '../../components/SoundToggle.tsx';
 import WalletList, { type WalletRow } from './WalletList.tsx';
 import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
 import AlertFeed, { LatestAlertBanner, alertName, type AlertRow } from './AlertFeed.tsx';
+import ValueFilter from './ValueFilter.tsx';
 import { playPumpSound, notifyPump } from '../../lib/pumpSound.ts';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 
@@ -16,6 +17,8 @@ export default function WalletClient() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
+  /** 小额阈值。null = 还没读到，读到之前不过滤 —— 宁可多显示也不要凭空少几行 */
+  const [minValue, setMinValue] = useState<number | null>(null);
   const seen = useRef(new Set<string>());
   /**
    * seen 只在**第一次**加载时灌历史。
@@ -31,19 +34,22 @@ export default function WalletClient() {
 
   const load = useCallback(async () => {
     try {
-      const [w, h, a] = await Promise.all([
+      const [w, h, a, st] = await Promise.all([
         fetch('/api/wallet/wallets').then((r) => r.json()),
         fetch('/api/wallet/holdings').then((r) => r.json()),
         fetch('/api/wallet/alerts').then((r) => r.json()),
+        fetch('/api/wallet/settings').then((r) => r.json()),
       ]) as [
         { wallets?: WalletRow[]; chains?: string[]; error?: string },
         { holdings?: HoldingRow[] },
         { alerts?: AlertRow[] },
+        { minAlertValueUsd?: number | null; defaultValue?: number },
       ];
       if (w.error) { setErr(w.error); return; }
       setWallets(w.wallets ?? []);
       setChains(w.chains ?? []);
       setHoldings(h.holdings ?? []);
+      setMinValue(st.minAlertValueUsd ?? st.defaultValue ?? 0);
       const list = a.alerts ?? [];
       if (!seeded.current) {
         for (const x of list) seen.current.add(x.id);
@@ -141,6 +147,23 @@ export default function WalletClient() {
     };
   }, [load]);
 
+  /** 返回错误文案；null 表示成功。UI 要能把服务端的拒绝理由原样说出来 */
+  const saveMinValue = async (v: number): Promise<string | null> => {
+    try {
+      const r = await fetch('/api/wallet/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ minAlertValueUsd: v }),
+      });
+      const j = await r.json() as { minAlertValueUsd?: number | null; error?: string };
+      if (!r.ok) return j.error ?? '保存失败';
+      setMinValue(j.minAlertValueUsd ?? 0);
+      return null;
+    } catch {
+      return '保存失败，检查网络';
+    }
+  };
+
   if (loading) return <p className="text-sm text-neutral-600">加载中…</p>;
   if (err) return <p className="text-sm text-[#d03b3b]">{err}</p>;
 
@@ -154,7 +177,10 @@ export default function WalletClient() {
 
   return (
     <div className="space-y-6">
-      <SoundToggle />
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <SoundToggle />
+        <ValueFilter value={minValue ?? 0} onSave={saveMinValue} />
+      </div>
       {/* 连不上就必须说出来 —— 否则"没有报警"和"收不到报警"长得一模一样 */}
       {offline && (
         <p className="rounded border border-[#fab219] bg-[#fab219]/10 px-3 py-2 text-sm text-[#8a6100]">
@@ -164,7 +190,7 @@ export default function WalletClient() {
       {/* 横幅放最顶上：用户是听到播报才打开页面的，第一眼必须看到是哪个币 */}
       <LatestAlertBanner alerts={alerts} onFocus={focusToken} />
       <WalletList wallets={wallets} chains={chains} onChange={load} />
-      <HoldingsTable holdings={holdings} alertedTokenIds={alertedTokenIds} />
+      <HoldingsTable holdings={holdings} alertedTokenIds={alertedTokenIds} minValue={minValue ?? 0} />
       <AlertFeed alerts={alerts} />
     </div>
   );

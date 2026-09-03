@@ -152,17 +152,45 @@ export function setHoldingMonitored(
 }
 
 /** 报警扇出用：谁持有这个币 */
+/**
+ * 持有这个币的人。带上各自的粉尘阈值 —— 扇出时要按人判，
+ * 在这里一次 join 拿到，省得每个持有者再查一次 users
+ */
 export function usersHoldingToken(tokenId: string): Array<{
   userId: string; walletId: string; balance: string; decimals: number | null;
+  minAlertValueUsd: number | null;
 }> {
   return getDb().select({
     userId: wallets.userId, walletId: holdings.walletId,
     balance: holdings.balance, decimals: holdings.decimals,
+    minAlertValueUsd: users.minAlertValueUsd,
   })
     .from(holdings)
     .innerJoin(wallets, eq(wallets.id, holdings.walletId))
+    .innerJoin(users, eq(users.id, wallets.userId))
     .where(eq(holdings.tokenId, tokenId))
     .all();
+}
+
+/**
+ * 每人的粉尘阈值。NULL = 没设过，调用方用默认值。
+ *
+ * 上限 100 万：手滑多打几个零就等于把报警整个关掉，而关掉是**静默**的 ——
+ * 页面一切正常，只是再也不响。宁可拒绝一个荒唐的输入。
+ */
+export const MAX_MIN_ALERT_VALUE_USD = 1_000_000;
+
+export function getMinAlertValue(userId: string): number | null {
+  const r = getDb().select({ v: users.minAlertValueUsd })
+    .from(users).where(eq(users.id, userId)).get();
+  return r?.v ?? null;
+}
+
+/** 返回 false 表示值不合法，没有写入 */
+export function setMinAlertValue(userId: string, v: number | null): boolean {
+  if (v !== null && (!Number.isFinite(v) || v < 0 || v > MAX_MIN_ALERT_VALUE_USD)) return false;
+  getDb().update(users).set({ minAlertValueUsd: v }).where(eq(users.id, userId)).run();
+  return true;
 }
 
 /** 跨用户去重 —— 两人持有同一个币，价格只需要轮询一次 */

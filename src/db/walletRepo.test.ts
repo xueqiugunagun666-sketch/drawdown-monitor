@@ -374,3 +374,53 @@ test('跳变守卫用的是上一根收盘，不是同格内的值', () => {
   // 同一格内再写一次正常值
   assert.equal(wr.upsertWalletCandle(id, '1.5', 1000, slot + 100), true);
 });
+
+/* ---------- 每人自己的粉尘阈值 ---------- */
+
+test('没设过时是 null —— 调用方用默认值，不在库里写死', () => {
+  const u = wr.createUser(`mav${++seq}`, 'h')!;
+  assert.equal(wr.getMinAlertValue(u.id), null);
+});
+
+test('设了之后读得回来，也能清回默认', () => {
+  const u = wr.createUser(`mav2${++seq}`, 'h')!;
+  assert.equal(wr.setMinAlertValue(u.id, 50), true);
+  assert.equal(wr.getMinAlertValue(u.id), 50);
+  assert.equal(wr.setMinAlertValue(u.id, null), true);
+  assert.equal(wr.getMinAlertValue(u.id), null);
+});
+
+test('$0 合法 —— 就是"什么都别过滤"', () => {
+  const u = wr.createUser(`mav3${++seq}`, 'h')!;
+  assert.equal(wr.setMinAlertValue(u.id, 0), true);
+  assert.equal(wr.getMinAlertValue(u.id), 0);
+});
+
+test('荒唐的值一律拒绝且不写入 —— 手滑多打几个零等于静默关掉报警', () => {
+  const u = wr.createUser(`mav4${++seq}`, 'h')!;
+  wr.setMinAlertValue(u.id, 50);
+  for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, wr.MAX_MIN_ALERT_VALUE_USD + 1]) {
+    assert.equal(wr.setMinAlertValue(u.id, bad), false, String(bad));
+    assert.equal(wr.getMinAlertValue(u.id), 50, `${bad} 不该改动已有值`);
+  }
+});
+
+test('改自己的阈值改不到别人', () => {
+  const a = wr.createUser(`mava${++seq}`, 'h')!, b = wr.createUser(`mavb${++seq}`, 'h')!;
+  wr.setMinAlertValue(a.id, 200);
+  assert.equal(wr.getMinAlertValue(b.id), null);
+});
+
+test('usersHoldingToken 带出各自的阈值 —— 扇出要按人判', () => {
+  const a = wr.createUser(`uht${++seq}`, 'h')!, b = wr.createUser(`uht2${++seq}`, 'h')!;
+  const wa = wr.addWallet(a.id, 'bsc', `0xuht${seq}a`, null)!;
+  const wb = wr.addWallet(b.id, 'bsc', `0xuht${seq}b`, null)!;
+  const id = `bsc:0xshared${seq}`;
+  wr.upsertHolding(wa.id, id, '1', 18, 100);
+  wr.upsertHolding(wb.id, id, '1', 18, 100);
+  wr.setMinAlertValue(a.id, 500);
+  const rows = wr.usersHoldingToken(id);
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((r) => r.userId === a.id)?.minAlertValueUsd, 500);
+  assert.equal(rows.find((r) => r.userId === b.id)?.minAlertValueUsd, null);
+});
