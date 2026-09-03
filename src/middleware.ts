@@ -45,6 +45,12 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // 静态资源与图标不拦
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  /**
+   * 静态资源与图标不拦。
+   *
+   * icon.svg 是 Next 的 app/icon.svg 约定生成的路径，必须一起放行 ——
+   * 漏了它的后果是登录页没有图标：浏览器拿 307 重定向当不到图片，
+   * 标签栏上就是个空白方块，而登录页恰恰是新人看到的第一个页面。
+   */
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.svg|apple-icon.svg).*)'],
 };
