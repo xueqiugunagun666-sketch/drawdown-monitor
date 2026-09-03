@@ -71,7 +71,7 @@ export default function AccountForm() {
 
   return (
     <div className="mt-6">
-      <h1 className="text-lg text-neutral-200 mb-1">回撤监控</h1>
+      <h1 className="text-lg text-neutral-200 mb-1">Show Tools</h1>
       <p className="text-sm text-neutral-500 mb-5 leading-relaxed">
         看板、日历、钱包都需要登录。加币和加日程记在你名下，
         <span className="text-neutral-400">只有你自己和管理员能删改</span>；

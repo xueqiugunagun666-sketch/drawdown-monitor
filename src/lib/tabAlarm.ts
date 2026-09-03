@@ -9,7 +9,7 @@
  * 人正是因为没听见声音才没在看这个页面。
  */
 
-const BASE_TITLE = '回撤监控';
+const BASE_TITLE = 'Show Tools';
 const ICON_ID = 'health-alarm-icon';
 
 /**

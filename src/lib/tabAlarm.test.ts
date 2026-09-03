@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 const els = new Map<string, { id: string; remove: () => void }>();
 before(() => {
   (globalThis as unknown as { document: unknown }).document = {
-    title: '回撤监控',
+    title: 'Show Tools',
     getElementById: (id: string) => els.get(id) ?? null,
     createElement: () => {
       const el = { id: '', rel: '', type: '', href: '', remove: () => els.delete(el.id) };
@@ -23,18 +23,18 @@ const { setTabAlarm, holdTabAlarm, releaseTabAlarm, tabAlarmActive } =
 
 const doc = () => (globalThis as unknown as { document: { title: string } }).document;
 
-beforeEach(() => { releaseTabAlarm(); els.clear(); doc().title = '回撤监控'; });
+beforeEach(() => { releaseTabAlarm(); els.clear(); doc().title = 'Show Tools'; });
 
 test('设告警会改标题并插红图标', () => {
   setTabAlarm('提示音已失效');
-  assert.equal(doc().title, '⚠️ 提示音已失效 — 回撤监控');
+  assert.equal(doc().title, '⚠️ 提示音已失效 — Show Tools');
   assert.equal(tabAlarmActive(), true);
 });
 
 test('清告警会还原标题并撤掉图标', () => {
   setTabAlarm('提示音已失效');
   setTabAlarm(null);
-  assert.equal(doc().title, '回撤监控');
+  assert.equal(doc().title, 'Show Tools');
   assert.equal(tabAlarmActive(), false);
 });
 
@@ -43,20 +43,20 @@ test('占用期内看门狗的常规刷新覆盖不掉测试告警', () => {
   // 测试刚设上的告警不到一秒就被刷掉，而按钮还报告"✓"
   holdTabAlarm('这是一条测试告警', 5000);
   for (let i = 0; i < 10; i++) setTabAlarm(null);          // 模拟看门狗的 tick
-  assert.equal(doc().title, '⚠️ 这是一条测试告警 — 回撤监控');
+  assert.equal(doc().title, '⚠️ 这是一条测试告警 — Show Tools');
   assert.equal(tabAlarmActive(), true);
 });
 
 test('占用期一过，看门狗就能把它刷掉', () => {
   holdTabAlarm('这是一条测试告警', 0);
   setTabAlarm(null);
-  assert.equal(doc().title, '回撤监控');
+  assert.equal(doc().title, 'Show Tools');
 });
 
 test('release 立刻结束占用 —— 组件卸载时不能把标题留在告警状态', () => {
   holdTabAlarm('这是一条测试告警', 60_000);
   releaseTabAlarm();
-  assert.equal(doc().title, '回撤监控');
+  assert.equal(doc().title, 'Show Tools');
   assert.equal(tabAlarmActive(), false);
 });
 

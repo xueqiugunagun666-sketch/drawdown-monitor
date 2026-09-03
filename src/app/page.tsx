@@ -115,7 +115,7 @@ export default async function Home({
 
       <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4 mb-5">
         <div>
-          <h1 className="text-[26px] font-semibold tracking-tight leading-none">回撤监控</h1>
+          <h1 className="text-[26px] font-semibold tracking-tight leading-none">Show Tools</h1>
           <p className="text-xs text-neutral-600 mt-2">
             {MODE_LABEL[activeMode]} · {cfg.defaultRule.quoteMode.toUpperCase()} 计价 ·
             档位 {levels.join(' / ')}% · k={cfg.defaultRule.athSustainCandles}

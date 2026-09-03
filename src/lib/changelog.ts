@@ -20,6 +20,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: 'v3.3',
+    date: '2026-09-04',
+    headline: '改名 Show Tools，有图标了',
+    changes: [
+      {
+        kind: 'change',
+        title: '网站改名叫 Show Tools',
+        detail: '原来叫「回撤监控」，但它早就不只是看回撤了 —— 钱包持仓、暴涨提醒、日历都在里面。功能和地址都没变，只是名字换了。',
+      },
+      {
+        kind: 'change',
+        title: '加了图标',
+        detail: '之前标签页上是浏览器给的空白方块，一排标签里根本认不出哪个是它。现在是深底加一条暴涨曲线——平着走然后突然拉直，就是这个工具在找的那种形状。顺带说一句：提示音失效或者推送断开时，这个图标会变成红色感叹号，标题也会带上警告，切到别的标签页也看得见。',
+      },
+    ],
+  },
+  {
     version: 'v3.2',
     date: '2026-09-04',
     headline: '该响的时候真的会响',

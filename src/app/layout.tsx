@@ -3,8 +3,8 @@ import './globals.css';
 import ChangelogButton from '../components/ChangelogButton.tsx';
 
 export const metadata: Metadata = {
-  title: '回撤监控',
-  description: '多链代币回撤监控与抄底报警',
+  title: 'Show Tools',
+  description: '多链代币监控 —— 回撤抄底与暴涨提醒',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
