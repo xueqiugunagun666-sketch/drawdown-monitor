@@ -25,7 +25,8 @@
     "check:rpc": "tsx --env-file-if-exists=.env scripts/check-evm-rpc.ts",
     "bench:pump": "tsx --env-file-if-exists=.env scripts/bench-pump.ts",
     "purge:backfill": "tsx --env-file-if-exists=.env scripts/purge-bad-backfill.ts",
-    "backfill:owner": "tsx --env-file-if-exists=.env scripts/backfill-owner.ts"
+    "backfill:owner": "tsx --env-file-if-exists=.env scripts/backfill-owner.ts",
+    "audit": "tsx --env-file-if-exists=.env scripts/audit.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
