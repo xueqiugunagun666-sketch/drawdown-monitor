@@ -489,3 +489,44 @@ test('返回顺序是写入顺序（升序），不是 fired_at 顺序', () => {
   const got = wr.pumpAlertsAfterSeq(u.id, start);
   assert.deepEqual(got.map((r) => r.tokenId), ['bsc:0xlater', 'bsc:0xearlier']);
 });
+
+/* ---------- 单个持仓的主键查找 ---------- */
+
+test('getHolding 只取指定的那一行', () => {
+  const u = wr.createUser(`gh${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xgh${seq}`, null)!;
+  wr.upsertHolding(w.id, 'bsc:0xone', '111', 18, 100);
+  wr.upsertHolding(w.id, 'bsc:0xtwo', '222', 6, 100);
+  assert.equal(wr.getHolding(w.id, 'bsc:0xtwo')?.balance, '222');
+  assert.equal(wr.getHolding(w.id, 'bsc:0xone')?.decimals, 18);
+});
+
+test('getHolding 拿不到别的钱包的同一个币', () => {
+  const a = wr.createUser(`gha${++seq}`, 'h')!, b = wr.createUser(`ghb${++seq}`, 'h')!;
+  const wa = wr.addWallet(a.id, 'bsc', `0xgha${seq}`, null)!;
+  const wb = wr.addWallet(b.id, 'bsc', `0xghb${seq}`, null)!;
+  wr.upsertHolding(wa.id, 'bsc:0xshared', '999', 18, 100);
+  assert.equal(wr.getHolding(wa.id, 'bsc:0xshared')?.balance, '999');
+  assert.equal(wr.getHolding(wb.id, 'bsc:0xshared'), undefined);
+});
+
+test('没有这一行时返回 undefined，不是抛错', () => {
+  const u = wr.createUser(`ghn${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xghn${seq}`, null)!;
+  assert.equal(wr.getHolding(w.id, 'bsc:0xnothere'), undefined);
+});
+
+test('结果与 listHoldingsByWallet().find() 完全一致', () => {
+  // 这次替换的正确性判据就是这一条
+  const u = wr.createUser(`ghsame${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xghs${seq}`, null)!;
+  for (const t of ['bsc:0xa', 'bsc:0xb', 'bsc:0xc']) wr.upsertHolding(w.id, t, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, 'bsc:0xb', true, null, 555);
+  for (const t of ['bsc:0xa', 'bsc:0xb', 'bsc:0xc', 'bsc:0xmissing']) {
+    assert.deepEqual(
+      wr.getHolding(w.id, t),
+      wr.listHoldingsByWallet(w.id).find((x) => x.tokenId === t),
+      t,
+    );
+  }
+});

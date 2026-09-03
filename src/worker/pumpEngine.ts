@@ -179,7 +179,7 @@ async function evaluateToken(
   // ---- 过滤：每个持有者各自维护滞回状态（below_since_ts 在 holdings 上）----
   const holders = wr.usersHoldingToken(tokenId);
   const rows = holders.map((h) => ({
-    h, row: wr.listHoldingsByWallet(h.walletId).find((x) => x.tokenId === tokenId),
+    h, row: wr.getHolding(h.walletId, tokenId),
   })).filter((x) => x.row !== undefined);
 
   const quoteIn = {
@@ -283,7 +283,7 @@ async function evaluateToken(
   const base = windows.find((w) => w.timeframe === winner.timeframe && w.basis === winner.basis)?.base ?? null;
   let notified = 0, skipped = 0;
   for (const h of holders) {
-    const row = wr.listHoldingsByWallet(h.walletId).find((x) => x.tokenId === tokenId);
+    const row = wr.getHolding(h.walletId, tokenId);
     if (!row || row.monitored !== 1) continue;
     const amount = toHumanAmount(h.balance, h.decimals);
     const value = amount ? amount.mul(price) : null;

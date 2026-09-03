@@ -142,6 +142,20 @@ export function listHoldingsByWallet(walletId: string): HoldingRow[] {
   return getDb().select().from(holdings).where(eq(holdings.walletId, walletId)).all();
 }
 
+/**
+ * 取单个持仓。走主键 (wallet_id, token_id)，不是把整个钱包捞出来再挑。
+ *
+ * 引擎里原本写的是 `listHoldingsByWallet(walletId).find(x => x.tokenId === id)`，
+ * 每个币每个持有人调两次。线上最大的钱包有 1,677 行持仓，一轮要过一千多个币 ——
+ * 等于每轮在内存里翻上百万行。快车道把每轮的币数从五百多提到一千多之后，
+ * 这笔开销直接把轮次周期顶到 97 秒（预算是 60 秒）。
+ */
+export function getHolding(walletId: string, tokenId: string): HoldingRow | undefined {
+  return getDb().select().from(holdings)
+    .where(and(eq(holdings.walletId, walletId), eq(holdings.tokenId, tokenId)))
+    .get();
+}
+
 export function setHoldingMonitored(
   walletId: string, tokenId: string, monitored: boolean,
   reason: string | null, belowSinceTs: number | null,
