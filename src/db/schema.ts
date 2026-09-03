@@ -372,3 +372,29 @@ export const inviteCodes = sqliteTable('invite_codes', {
   createdAt: integer('created_at').notNull(),
   lastUsedAt: integer('last_used_at'),
 });
+
+/**
+ * 群聊淘金：喊单回撤信号。
+ *
+ * 主键直接用上游的 id —— 它是自增游标，天然去重，重复拉同一页不会写重。
+ *
+ * **故意不存 caller_wxid 与 group_id**：那是微信的个人与群标识，在页面上
+ * 没有任何展示价值，存进来只是把别人的身份信息搬到一个多人共享的看板里。
+ * 不收就不会泄。展示需要的是"谁在哪个群喊的"，名字够了。
+ */
+export const trashSignals = sqliteTable('trash_signals', {
+  id: integer('id').primaryKey(),                    // 上游 id
+  chain: text('chain').notNull(),
+  address: text('address').notNull(),
+  symbol: text('symbol'),
+  name: text('name'),
+  peakMarketCap: real('peak_market_cap'),
+  currentMarketCap: real('current_market_cap'),
+  drawdownPercent: real('drawdown_percent'),
+  firstCallTime: integer('first_call_time'),
+  latestCallTime: integer('latest_call_time'),
+  triggeredAt: integer('triggered_at'),
+  /** JSON: [{callerName, groupName, firstCallTime}]，同一个币可能好几个群都喊过 */
+  sources: text('sources'),
+  fetchedAt: integer('fetched_at').notNull(),
+});

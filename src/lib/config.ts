@@ -45,6 +45,9 @@ export interface Secrets {
   gmgnApiKey: string | undefined;
   evmRpcBase: string | undefined;
   adminAccount: string | undefined;
+  /** 群聊淘金：喊单回撤信号接口 */
+  trashApiBase: string | undefined;
+  trashApiToken: string | undefined;
 }
 
 let _secrets: Secrets | null = null;
@@ -58,6 +61,8 @@ export function getSecrets(): Secrets {
     gmgnApiKey: process.env.GMGN_API_KEY || undefined,
     evmRpcBase: process.env.EVM_RPC_BASE || undefined,
     adminAccount: process.env.ADMIN_ACCOUNT || undefined,
+    trashApiBase: process.env.TRASH_API_BASE || undefined,
+    trashApiToken: process.env.TRASH_API_TOKEN || undefined,
   };
   // 注册后，任何日志/报错里出现这些值都会被自动掩码
   registerSecret(s.telegramBotToken);
@@ -66,6 +71,7 @@ export function getSecrets(): Secrets {
   // RPC 端点是用户的私有基础设施，按密钥处理：
   // 不注册的话，eth_getLogs 超时的报错会把完整 URL 打进日志
   registerSecret(s.evmRpcBase);
+  registerSecret(s.trashApiToken);
   _secrets = s;
   return s;
 }

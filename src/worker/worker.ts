@@ -15,6 +15,7 @@ import { backfillNativePrices } from '../sources/nativeHistory.ts';
 import * as repo from '../db/repo.ts';
 import { scanAllWallets, SCAN_INTERVAL_SECONDS } from './walletScanner.ts';
 import { runPumpTick, TICK_INTERVAL_SECONDS } from './pumpEngine.ts';
+import { startTrashLoop } from './trashPoller.ts';
 import { nowSec } from '../lib/time.ts';
 
 const log = makeLogger('worker');
@@ -149,6 +150,9 @@ async function main(): Promise<void> {
     }
   };
   void pumpLoop();
+
+  // 群聊淘金：独立循环，拉不到不影响价格轮询与暴涨判定
+  startTrashLoop(() => stopping);
 
   const progressTimer = setInterval(() => {
     const p = backfillProgress();

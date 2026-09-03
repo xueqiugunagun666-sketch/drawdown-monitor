@@ -135,6 +135,17 @@ CREATE TABLE IF NOT EXISTS pump_alerts (
   acked_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pump_alerts_user ON pump_alerts(user_id, fired_at);
+CREATE TABLE IF NOT EXISTS trash_signals (
+  id INTEGER PRIMARY KEY,
+  chain TEXT NOT NULL,
+  address TEXT NOT NULL,
+  symbol TEXT, name TEXT,
+  peak_market_cap REAL, current_market_cap REAL, drawdown_percent REAL,
+  first_call_time INTEGER, latest_call_time INTEGER, triggered_at INTEGER,
+  sources TEXT,
+  fetched_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trash_triggered ON trash_signals(triggered_at DESC);
 CREATE TABLE IF NOT EXISTS token_meta (
   token_id TEXT PRIMARY KEY, holder_count INTEGER, symbol TEXT, fetched_at INTEGER NOT NULL
 );
