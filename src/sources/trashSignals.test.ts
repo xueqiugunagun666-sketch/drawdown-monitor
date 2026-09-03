@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTrashPage, parseUpstreamTime, PAGE_LIMIT } from './trashSignals.ts';
+import { parseTrashPage, parseUpstreamTime, normalizeAddress, PAGE_LIMIT } from './trashSignals.ts';
 
 /* ---------- 时间戳：猜错时区就整体错 8 小时 ---------- */
 
@@ -59,7 +59,7 @@ test('解析线上真实响应', () => {
   assert.equal(s.id, 1);
   assert.equal(s.symbol, 'QI');
   assert.equal(s.drawdownPercent, 80.28);
-  assert.equal(s.address, '0x518abf0972da8e13b25d1dda06e8092c25577c01', '地址要归一成小写');
+  assert.equal(s.address, '0x518abf0972da8e13b25d1dda06e8092c25577c01', 'EVM 地址归一成小写');
   assert.equal(s.sources[0]?.groupName, 'DBZ主群');
   assert.equal(p.rule?.drawdown_percent_gte, 80.0);
 });
@@ -125,4 +125,32 @@ test('响应不是 JSON 或 signals 不是数组时抛错，不当成空页', ()
 
 test('一页的条数上限是 100', () => {
   assert.equal(PAGE_LIMIT, 100);
+});
+
+/* ---------- 地址归一：EVM 小写，base58 一个字都不能动 ---------- */
+
+test('EVM 地址转小写', () => {
+  assert.equal(normalizeAddress('0x518ABF0972DA8E13B25D1DDA06E8092C25577C01'),
+    '0x518abf0972da8e13b25d1dda06e8092c25577c01');
+});
+
+test('Solana 的 base58 地址原样保留 —— 转小写等于把地址毁掉', () => {
+  // 线上真实例子：CgypxZcmmZ… 被存成全小写，拼出来的行情站链接必然 404，
+  // 而"点进去打不开"没人会去查是我们存坏了
+  const sol = 'CgypxZcmmZMVQMERA6D59hkh8maPEnj31pYRKM9cpump';
+  assert.equal(normalizeAddress(sol), sol);
+});
+
+test('长度不对的十六进制串也不动 —— 只认标准的 20 字节 EVM 地址', () => {
+  assert.equal(normalizeAddress('0xABC'), '0xABC');
+  const poolId = '0x57DA0A704B467B6A962D247E25408044FD0A39F2E66558E1EFEE6DDD1B98B4E7';
+  assert.equal(normalizeAddress(poolId), poolId, 'bytes32 的 pool id 不是地址');
+});
+
+test('解析时对 Solana 地址不做小写', () => {
+  const body = JSON.stringify({ signals: [{
+    id: 1, chain: 'sol', address: 'CgypxZcmmZMVQMERA6D59hkh8maPEnj31pYRKM9cpump',
+  }] });
+  assert.equal(parseTrashPage(body, 0).signals[0]!.address,
+    'CgypxZcmmZMVQMERA6D59hkh8maPEnj31pYRKM9cpump');
 });

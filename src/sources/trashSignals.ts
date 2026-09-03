@@ -73,6 +73,17 @@ export function parseUpstreamTime(raw: unknown): number | null {
   return Math.floor(utc / 1000) - UPSTREAM_TZ_OFFSET;
 }
 
+/**
+ * 地址归一。**只对 EVM 的十六进制地址转小写。**
+ *
+ * base58（Solana）是大小写敏感的，无差别 toLowerCase 会把地址直接毁掉：
+ * 线上真实例子 CgypxZcmmZMVQMERA6D59hkh8maPEnj31pYRKM9cpump 被存成了全小写，
+ * 拼出来的行情站链接必然 404 —— 而"点进去打不开"没人会去查是我们存坏了。
+ */
+export function normalizeAddress(addr: string): string {
+  return /^0x[0-9a-fA-F]{40}$/.test(addr) ? addr.toLowerCase() : addr;
+}
+
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
 
@@ -118,7 +129,7 @@ export function parseTrashPage(body: string, requestedAfterId: number): TrashPag
     signals.push({
       id,
       chain,
-      address: address.toLowerCase(),
+      address: normalizeAddress(address),
       symbol: str(raw.symbol),
       name: str(raw.name),
       peakMarketCap: num(raw.peak_market_cap),

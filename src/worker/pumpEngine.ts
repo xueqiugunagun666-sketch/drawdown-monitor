@@ -248,6 +248,8 @@ async function evaluateToken(
 
   // 报价里带着符号，第一次拿到就存下来 —— 否则页面上永远只有合约地址
   if (quote.symbol) wr.setHoldingSymbol(tokenId, quote.symbol);
+  // 官网 / 推特 / 电报也是这个响应白送的，存下来给页面上的跳转按钮用
+  wr.setTokenLinks(tokenId, now, quote);
 
   // ---- 倍数 ----
   const price = new Decimal(quote.priceUsd);

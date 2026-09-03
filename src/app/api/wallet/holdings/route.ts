@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { currentUser } from '../../../../lib/accountAuth.ts';
-import { listHoldings, listWallets } from '../../../../db/walletRepo.ts';
+import { listHoldings, listWallets, listTokenLinks } from '../../../../db/walletRepo.ts';
 import { getRawDb } from '../../../../db/index.ts';
 import { Decimal } from '../../../../lib/decimal.ts';
 import { toHumanAmount } from '../../../../sources/erc20.ts';
@@ -14,6 +14,8 @@ export async function GET(req: Request) {
 
   const holdings = listHoldings(u.id);
   const walletLabel = new Map(listWallets(u.id).map((w) => [w.id, w.label ?? w.address]));
+  // 一次取全部外链，按 tokenId 查 —— 别在 map 里一行一次查库
+  const links = listTokenLinks();
   const db = getRawDb();
   const now = Math.floor(Date.now() / 1000);
 
@@ -59,6 +61,9 @@ export async function GET(req: Request) {
       lastQuoteAt: last?.ts ?? null,
       decimalsKnown: h.decimals !== null,
       best,
+      websiteUrl: links.get(h.tokenId)?.websiteUrl ?? null,
+      twitterUrl: links.get(h.tokenId)?.twitterUrl ?? null,
+      telegramUrl: links.get(h.tokenId)?.telegramUrl ?? null,
     };
   });
   return NextResponse.json({ holdings: rows });

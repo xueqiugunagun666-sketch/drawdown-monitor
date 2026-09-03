@@ -10,7 +10,10 @@
  * 几百条，一轮只拉一页就要等好多轮才追平。
  */
 import { fetchTrashSignals, isConfigured, PAGE_LIMIT } from '../sources/trashSignals.ts';
+import { fetchBatchQuotes } from '../sources/dexscreenerBatch.ts';
+import { normalizeChain } from '../lib/chainLinks.ts';
 import * as repo from '../db/trashRepo.ts';
+import { setTokenLinks } from '../db/walletRepo.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
 
@@ -30,9 +33,48 @@ const MAX_PAGES_PER_TICK = 20;
 
 export interface TrashDeps {
   fetchPage: typeof fetchTrashSignals;
+  /** 取项目方绑定的官网/推特。可选 —— 不传就跳过，判定本身不依赖它 */
+  fetchQuotes?: typeof fetchBatchQuotes;
 }
 
-export const realTrashDeps: TrashDeps = { fetchPage: fetchTrashSignals };
+export const realTrashDeps: TrashDeps = {
+  fetchPage: fetchTrashSignals,
+  fetchQuotes: fetchBatchQuotes,
+};
+
+/**
+ * 给新收的信号补上官网/推特/电报。
+ *
+ * 必须单独做一次：setTokenLinks 平时是在**钱包币**的判定里顺带写的，
+ * 而群聊淘金的币多半不在任何人钱包里 —— 不补的话线上那一栏一个社交
+ * 按钮都不会有，而"没有按钮"和"这个币没绑社交"长得一模一样，
+ * 不会有人发现。
+ *
+ * 成本：一天新增十几条，按 30 个地址一个请求，一天几次而已。
+ * 失败不影响主流程 —— 外链是锦上添花，信号本身才是关键。
+ */
+async function fillLinks(
+  signals: Array<{ chain: string; address: string }>, now: number,
+  fetchQuotes: typeof fetchBatchQuotes,
+): Promise<void> {
+  const byChain = new Map<string, string[]>();
+  for (const s of signals) {
+    const chain = normalizeChain(s.chain);
+    (byChain.get(chain) ?? byChain.set(chain, []).get(chain)!).push(s.address);
+  }
+  for (const [chain, addrs] of byChain) {
+    try {
+      for (const [addr, q] of await fetchQuotes(chain, addrs)) {
+        // 键用**原始链名**：库里的 trash_signals.chain 存的是上游给的那个，
+        // 页面按 `${r.chain}:${r.address}` 查，两边必须一致
+        const orig = signals.find((s) => s.address.toLowerCase() === addr.toLowerCase())?.chain ?? chain;
+        setTokenLinks(`${orig}:${addr}`, now, q);
+      }
+    } catch (err) {
+      log.debug(`${chain} 取外链失败（不影响信号本身）: ${safeErrorMessage(err)}`);
+    }
+  }
+}
 
 export async function runTrashTick(now: number, deps: TrashDeps = realTrashDeps): Promise<number> {
   let cursor = repo.maxSignalId();
@@ -42,7 +84,11 @@ export async function runTrashTick(now: number, deps: TrashDeps = realTrashDeps)
     const res = await deps.fetchPage(cursor);
     if (res.signals.length === 0) break;
 
+    const before = added;
     added += repo.insertSignals(res.signals, now);
+    if (added > before && deps.fetchQuotes) {
+      await fillLinks(res.signals, now, deps.fetchQuotes);
+    }
 
     // 游标必须真的前进，否则就是上游给了个不动的 next_after_id，
     // 再翻下去就是同一页拉到天荒地老

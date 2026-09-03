@@ -5,11 +5,13 @@ import { Decimal, formatPrice } from '../../lib/decimal.ts';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 import { copyText } from '../../lib/copy.ts';
 import ValueFilter from './ValueFilter.tsx';
+import TokenLinks from '../../components/TokenLinks.tsx';
 
 export interface HoldingRow {
   tokenId: string; chain: string; address: string; symbol: string | null; wallet: string;
   amount: string | null; priceUsd: string | null; valueUsd: string | null;
   monitored: boolean; filterReason: string | null; lastQuoteAt: number | null; decimalsKnown: boolean;
+  websiteUrl?: string | null; twitterUrl?: string | null; telegramUrl?: string | null;
   /** 四个窗口里最高的当前倍数 */
   best: { multiple: string; timeframe: string; basis: string } | null;
 }
@@ -142,6 +144,8 @@ function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
         {/* 合约地址，点一下复制 —— 同名假币很多，最终认的是 CA。
             钱包名不显示：跨四条链就是同一个地址，写出来只是噪音 */}
         <CopyAddress address={h.address} tokenId={h.tokenId} />
+        <TokenLinks chain={h.chain} address={h.address}
+          websiteUrl={h.websiteUrl} twitterUrl={h.twitterUrl} telegramUrl={h.telegramUrl} />
         <Multiple best={h.best} />
         <span className={`ml-auto tabular-nums shrink-0 text-[15px] ${
           h.monitored ? 'text-neutral-200' : 'text-neutral-500'

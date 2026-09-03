@@ -90,3 +90,77 @@ test('非 JSON 响应抛错且带上原文片段', () => {
 test('null 响应体不崩', () => {
   assert.throws(() => parseBatchQuotes('null', ['0xa']), /未返回数组/);
 });
+
+/* ---------- 项目方绑定的官网与社交（付费的增强信息） ---------- */
+
+const WITH_INFO = JSON.stringify([{
+  baseToken: { address: '0x3450598e419abb5609f60e4b2fda127ff0897777', symbol: 'FLETCH' },
+  priceUsd: '0.0004695',
+  liquidity: { usd: 94968.58 },
+  volume: { h24: 568067.35, h1: 13001.61 },
+  marketCap: 469501,
+  info: {
+    imageUrl: 'https://cdn.dexscreener.com/cms/images/lDOXV0eh0mUriPet',
+    websites: [{ url: 'https://www.fletch.finance/', label: 'Website' }],
+    socials: [
+      { url: 'https://x.com/FletchFinance', type: 'twitter' },
+      { url: 'https://t.me/FletchFinance', type: 'telegram' },
+    ],
+  },
+}]);
+
+test('解析出官网、推特、电报与头像', () => {
+  const q = parseBatchQuotes(WITH_INFO, ['0x3450598e419abb5609f60e4b2fda127ff0897777'])
+    .get('0x3450598e419abb5609f60e4b2fda127ff0897777')!;
+  assert.equal(q.websiteUrl, 'https://www.fletch.finance/');
+  assert.equal(q.twitterUrl, 'https://x.com/FletchFinance');
+  assert.equal(q.telegramUrl, 'https://t.me/FletchFinance');
+  assert.match(q.imageUrl ?? '', /^https:\/\/cdn\.dexscreener\.com\//);
+});
+
+test('没买增强信息的币，这几项是 null 而不是崩', () => {
+  const body = JSON.stringify([{
+    baseToken: { address: '0xabc', symbol: 'X' }, priceUsd: '1', liquidity: { usd: 1 },
+  }]);
+  const q = parseBatchQuotes(body, ['0xabc']).get('0xabc')!;
+  assert.equal(q.websiteUrl, null);
+  assert.equal(q.twitterUrl, null);
+  assert.equal(q.telegramUrl, null);
+  assert.equal(q.imageUrl, null);
+});
+
+test('只认 http/https —— 这些 URL 是项目方自己填的，会原样变成页面上可点的链接', () => {
+  // 不校验就等于让第三方往我们页面里塞任意 href
+  const body = JSON.stringify([{
+    baseToken: { address: '0xevil', symbol: 'E' }, priceUsd: '1', liquidity: { usd: 1 },
+    info: {
+      imageUrl: 'javascript:alert(1)',
+      websites: [{ url: 'javascript:alert(2)' }, { url: 'https://ok.example/' }],
+      socials: [{ url: 'data:text/html,<script>', type: 'twitter' }],
+    },
+  }]);
+  const q = parseBatchQuotes(body, ['0xevil']).get('0xevil')!;
+  assert.equal(q.imageUrl, null);
+  assert.equal(q.websiteUrl, 'https://ok.example/', '跳过不安全的，取下一个能用的');
+  assert.equal(q.twitterUrl, null);
+});
+
+test('socials 里没有 twitter 时不会误取别的类型', () => {
+  const body = JSON.stringify([{
+    baseToken: { address: '0xd', symbol: 'D' }, priceUsd: '1', liquidity: { usd: 1 },
+    info: { socials: [{ url: 'https://discord.gg/x', type: 'discord' }] },
+  }]);
+  const q = parseBatchQuotes(body, ['0xd']).get('0xd')!;
+  assert.equal(q.twitterUrl, null);
+  assert.equal(q.telegramUrl, null);
+});
+
+test('info 结构不对时不崩', () => {
+  for (const info of ['乱写', 123, { websites: 'nope', socials: {} }, null]) {
+    const body = JSON.stringify([{
+      baseToken: { address: '0xz', symbol: 'Z' }, priceUsd: '1', liquidity: { usd: 1 }, info,
+    }]);
+    const q = parseBatchQuotes(body, ['0xz']).get('0xz')!;
+    assert.equal(q.websiteUrl, null, JSON.stringify(info));
+  }
+});

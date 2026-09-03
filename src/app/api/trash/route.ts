@@ -8,11 +8,16 @@
 import { NextResponse } from 'next/server';
 import { currentUser } from '../../../lib/accountAuth.ts';
 import { listSignals } from '../../../db/trashRepo.ts';
+import { listTokenLinks } from '../../../db/walletRepo.ts';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   const u = currentUser(req);
   if (!u) return NextResponse.json({ error: '需要登录' }, { status: 401 });
-  return NextResponse.json({ signals: listSignals(2000) });
+  const links = listTokenLinks();
+  const signals = listSignals(2000).map((r) => ({
+    ...r, ...(links.get(`${r.chain}:${r.address}`) ?? {}),
+  }));
+  return NextResponse.json({ signals });
 }

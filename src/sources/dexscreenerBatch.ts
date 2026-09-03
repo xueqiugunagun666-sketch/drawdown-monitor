@@ -6,7 +6,8 @@
  * 走 /tokens/v1/{chain}/{addr1,addr2,...}，一次最多 30 个地址。
  *
  * 实测（BSC，三个地址）：返回数组，每项含 baseToken.address、priceUsd、
- * liquidity.usd、volume.h24、volume.h1、marketCap，每个代币回一个池。
+ * liquidity.usd、volume.h24、volume.h1、marketCap，以及项目方付费绑定的
+ * info（头像 / 官网 / 推特 / 电报）。每个代币回一个池。
  *
  * **响应可能不覆盖全部请求地址** —— 这是 errors.ts 里已经记录过的坑：
  * DexScreener 会在结果超限时静默丢弃多余代币。缺失的地址必须显式标出，
@@ -46,6 +47,15 @@ export interface BatchQuote {
   /** 市值。用户是按市值思考的（「从 50K 涨到 100K」），报警里要能说人话 */
   marketCapUsd: number | null;
   symbol: string | null;
+  /**
+   * 项目方在 DexScreener 付费绑定的官网与社交账号，以及代币头像。
+   * 同一个响应里本来就有（info 字段），白拿 —— 零额外请求。
+   * 没买增强信息的币就没有 info，这几项都是 null/空数组。
+   */
+  imageUrl: string | null;
+  websiteUrl: string | null;
+  twitterUrl: string | null;
+  telegramUrl: string | null;
 }
 
 interface RawPair {
@@ -54,6 +64,49 @@ interface RawPair {
   liquidity?: { usd?: number };
   volume?: { h24?: number; h1?: number };
   marketCap?: number;
+  info?: {
+    imageUrl?: unknown;
+    websites?: unknown;
+    socials?: unknown;
+  };
+}
+
+/**
+ * 只认 https 的绝对地址。
+ *
+ * 这些 URL 来自项目方自己填的内容，会原样变成页面上可点的链接 ——
+ * 不校验就等于让第三方往我们页面里塞任意 href（javascript: 之类）。
+ */
+function safeUrl(v: unknown): string | null {
+  if (typeof v !== 'string' || v.length === 0) return null;
+  try {
+    const u = new URL(v);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+interface RawLink { url?: unknown; label?: unknown; type?: unknown }
+
+function pickSocial(socials: unknown, type: string): string | null {
+  if (!Array.isArray(socials)) return null;
+  for (const s of socials as RawLink[]) {
+    if (typeof s?.type === 'string' && s.type.toLowerCase() === type) {
+      const u = safeUrl(s.url);
+      if (u) return u;
+    }
+  }
+  return null;
+}
+
+function pickWebsite(websites: unknown): string | null {
+  if (!Array.isArray(websites)) return null;
+  for (const w of websites as RawLink[]) {
+    const u = safeUrl(w?.url);
+    if (u) return u;
+  }
+  return null;
 }
 
 export function chunkAddresses(addrs: string[], size = MAX_BATCH): string[][] {
@@ -98,6 +151,10 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
       // 市值可能真的没有（新币未定供应量），缺就是 null，不拿 0 冒充
       marketCapUsd: typeof p.marketCap === 'number' ? p.marketCap : null,
       symbol: p.baseToken?.symbol ?? null,
+      imageUrl: safeUrl(p.info?.imageUrl),
+      websiteUrl: pickWebsite(p.info?.websites),
+      twitterUrl: pickSocial(p.info?.socials, 'twitter'),
+      telegramUrl: pickSocial(p.info?.socials, 'telegram'),
     });
   }
   return out;

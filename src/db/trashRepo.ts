@@ -25,7 +25,13 @@ export function maxSignalId(): number {
   return r?.n ?? 0;
 }
 
-/** 批量写入。返回**新增**的条数（已存在的不算） */
+/**
+ * 批量写入。返回**新增**的条数（已存在的不算）。
+ *
+ * 冲突时刷新**全部**上游字段，不只是会变的那几个 —— 这样一次重同步就能
+ * 修好存错的数据。踩过：Solana 地址被无差别转小写存坏了，而当时的
+ * ON CONFLICT 不更新 address，重拉也修不回来。
+ */
 export function insertSignals(rows: TrashSignal[], now: number): number {
   if (rows.length === 0) return 0;
   const db = getRawDb();
@@ -35,9 +41,16 @@ export function insertSignals(rows: TrashSignal[], now: number): number {
         drawdown_percent, first_call_time, latest_call_time, triggered_at, sources, fetched_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+       chain              = excluded.chain,
+       address            = excluded.address,
+       symbol             = excluded.symbol,
+       name               = excluded.name,
+       peak_market_cap    = excluded.peak_market_cap,
        current_market_cap = excluded.current_market_cap,
        drawdown_percent   = excluded.drawdown_percent,
+       first_call_time    = excluded.first_call_time,
        latest_call_time   = excluded.latest_call_time,
+       triggered_at       = excluded.triggered_at,
        sources            = excluded.sources,
        fetched_at         = excluded.fetched_at`,
   );

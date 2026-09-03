@@ -1,12 +1,17 @@
 import Nav from '../../components/Nav.tsx';
 import { listSignals } from '../../db/trashRepo.ts';
+import { listTokenLinks } from '../../db/walletRepo.ts';
 import { isConfigured } from '../../sources/trashSignals.ts';
 import TrashList, { type SignalRow } from './TrashList.tsx';
 
 export const dynamic = 'force-dynamic';
 
 export default function TrashPage() {
-  const rows = listSignals(2000) as unknown as SignalRow[];
+  /** 外链一次性取全，按 chain:address 拼键 —— 与 token_meta 的主键格式一致 */
+  const links = listTokenLinks();
+  const rows = listSignals(2000).map((r) => ({
+    ...r, ...(links.get(`${r.chain}:${r.address}`) ?? {}),
+  })) as unknown as SignalRow[];
   return (
     <main className="p-4 md:p-8 max-w-[1400px] mx-auto">
       <Nav current="/trash" />

@@ -46,7 +46,8 @@ const deps = (quotes: Record<string, Partial<BatchQuote>>): PumpDeps => ({
     for (const a of addrs) {
       const q = quotes[a];
       if (q) m.set(a, { priceUsd: '1', liquidityUsd: 50000, volume24hUsd: 99999,
-                   volume1hUsd: 9999, marketCapUsd: null, symbol: 'T', ...q });
+                   volume1hUsd: 9999, marketCapUsd: null, symbol: 'T',
+                   imageUrl: null, websiteUrl: null, twitterUrl: null, telegramUrl: null, ...q });
     }
     return m;
   },

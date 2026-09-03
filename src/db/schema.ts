@@ -330,6 +330,12 @@ export const tokenMeta = sqliteTable('token_meta', {
    * 请求（限速 80/分钟），占掉判定轮次一半以上的时间。
    */
   lastBackfillAt: integer('last_backfill_at'),
+  /** 项目方在 DexScreener 付费绑定的官网 / 推特 / 电报，以及代币头像。
+   *  跟报价一起白拿的，存下来给页面上的跳转按钮用 */
+  imageUrl: text('image_url'),
+  websiteUrl: text('website_url'),
+  twitterUrl: text('twitter_url'),
+  telegramUrl: text('telegram_url'),
 });
 
 /**

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { copyText } from '../../lib/copy.ts';
+import TokenLinks from '../../components/TokenLinks.tsx';
 import { humanAgo } from '../../lib/time.ts';
 import {
   matchesFilter, isDefault, loadFilter, saveFilter, DEFAULT_FILTER,
@@ -26,6 +27,9 @@ export interface SignalRow {
   firstCallTime: number | null;
   triggeredAt: number | null;
   sources: string | null;      // JSON
+  websiteUrl?: string | null;
+  twitterUrl?: string | null;
+  telegramUrl?: string | null;
 }
 
 /**
@@ -97,6 +101,8 @@ function Row({ r }: { r: SignalRow }) {
           {copied === 'ok' && <span className="ml-1">已复制</span>}
           {copied === 'selected' && <span className="ml-1">已选中</span>}
         </button>
+        <TokenLinks chain={r.chain} address={r.address}
+          websiteUrl={r.websiteUrl} twitterUrl={r.twitterUrl} telegramUrl={r.telegramUrl} />
         <span className="ml-auto shrink-0 tabular-nums text-[15px] text-[#d03b3b]">
           {drawdownText(r.drawdownPercent)}
         </span>

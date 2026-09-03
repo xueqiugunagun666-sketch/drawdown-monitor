@@ -473,6 +473,54 @@ export function markBackfillAttempted(tokenId: string, now: number): void {
  * 这种情况**保留上一次的值**而不是写 NULL：一次抖动不该把一个正经币
  * 从快车道踢到慢车道，那正是它最需要被盯着的时候。
  */
+/**
+ * 记下项目方绑定的链接。
+ *
+ * 只在**拿到非空值**时覆盖：DexScreener 偶尔会回一个不带 info 的池
+ * （同一个币多个池，选中的那个没有增强信息），全量覆盖会让已经拿到的
+ * 链接反复被清空又填回来，页面上的按钮一闪一闪。
+ */
+export function setTokenLinks(
+  tokenId: string, now: number,
+  links: { imageUrl: string | null; websiteUrl: string | null;
+           twitterUrl: string | null; telegramUrl: string | null },
+): void {
+  if (!links.imageUrl && !links.websiteUrl && !links.twitterUrl && !links.telegramUrl) return;
+  getDb().run(sql`
+    INSERT INTO token_meta (token_id, holder_count, symbol, fetched_at,
+                            image_url, website_url, twitter_url, telegram_url)
+    VALUES (${tokenId}, NULL, NULL, ${now},
+            ${links.imageUrl}, ${links.websiteUrl}, ${links.twitterUrl}, ${links.telegramUrl})
+    ON CONFLICT(token_id) DO UPDATE SET
+      image_url    = COALESCE(${links.imageUrl},    image_url),
+      website_url  = COALESCE(${links.websiteUrl},  website_url),
+      twitter_url  = COALESCE(${links.twitterUrl},  twitter_url),
+      telegram_url = COALESCE(${links.telegramUrl}, telegram_url)
+  `);
+}
+
+export interface TokenLinks {
+  tokenId: string;
+  imageUrl: string | null;
+  websiteUrl: string | null;
+  twitterUrl: string | null;
+  telegramUrl: string | null;
+}
+
+/** 一次取一批，页面渲染时按 tokenId 查 —— 别在列表里一行一次查库 */
+export function listTokenLinks(): Map<string, TokenLinks> {
+  const rows = getDb().select({
+    tokenId: tokenMeta.tokenId, imageUrl: tokenMeta.imageUrl,
+    websiteUrl: tokenMeta.websiteUrl, twitterUrl: tokenMeta.twitterUrl,
+    telegramUrl: tokenMeta.telegramUrl,
+  }).from(tokenMeta).all();
+  const m = new Map<string, TokenLinks>();
+  for (const r of rows) {
+    if (r.imageUrl || r.websiteUrl || r.twitterUrl || r.telegramUrl) m.set(r.tokenId, r);
+  }
+  return m;
+}
+
 export function markTokenEvaluated(tokenId: string, now: number, liquidityUsd?: number): void {
   const liq = liquidityUsd ?? null;
   getDb().run(sql`
