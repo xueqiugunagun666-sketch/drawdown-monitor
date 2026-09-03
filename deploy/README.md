@@ -48,17 +48,75 @@ journalctl -u drawdown-web -f
 # 重启
 systemctl restart drawdown-worker drawdown-web
 
-# 更新代码
-cd /opt/drawdown-monitor && git pull \
-  && sudo -u drawdown npm ci && sudo -u drawdown npm run build \
-  && systemctl restart drawdown-worker drawdown-web
-
 # 立即备份一次
 systemctl start drawdown-backup
 
 # 查看备份（每天一次，保留 7 天，gzip 压缩）
 ls -lh /opt/drawdown-monitor/backups
 ```
+
+## 更新代码
+
+`/opt/drawdown-monitor` **不是 git 仓库**（`install.sh` 是从 /tmp 的克隆拷过去的），
+所以这里 `git pull` 不管用。实际流程是从本机 rsync 到 `~/deploy-stage` 再进 `/opt`：
+
+```bash
+# 本机：先干跑，确认只有预期的文件会变
+rsync -avn --delete \
+  --exclude '.git' --exclude 'node_modules' --exclude '.next' --exclude 'data' \
+  --exclude 'backups' --exclude 'backups-remote' --exclude '.env' \
+  --exclude 'tsconfig.tsbuildinfo' --exclude '.DS_Store' \
+  ./ drawdown:deploy-stage/
+# 去掉 -n 实跑
+```
+
+```bash
+# 服务器：备份 -> 同步 -> 迁移 -> 构建 -> 重启
+sudo systemctl start drawdown-backup
+sudo rsync -a --delete --exclude '.git' --exclude 'node_modules' --exclude '.next' \
+  --exclude 'data' --exclude 'backups' --exclude 'backups-remote' --exclude '.env' \
+  --exclude 'tsconfig.tsbuildinfo' ~/deploy-stage/ /opt/drawdown-monitor/
+sudo chown -R drawdown:drawdown /opt/drawdown-monitor/src /opt/drawdown-monitor/scripts
+cd /opt/drawdown-monitor
+sudo -u drawdown npm run db:migrate      # 见下方说明，这一步不能省
+sudo -u drawdown npm run build
+sudo systemctl restart drawdown-web drawdown-worker
+```
+
+**为什么要单独跑 `db:migrate`**：`next start` 不执行迁移，只有 worker 启动时会跑
+（`src/worker/worker.ts`）。两个服务重启谁先谁后没有保证，web 先起来就会 500 报
+`no such column`。迁移是幂等的，多跑无害。
+
+**只改了前端时**可以只重启 `drawdown-web`，省得中断轮询；但凡碰了 `src/db/` 或
+`src/worker/` 就两个都要重启。
+
+## 权限
+
+删除、改备注、停用/冻结、改报警档位需要**管理员**。管理员由 `.env` 里的
+`ADMIN_ACCOUNT` 指定，值是**账号名**（`users.name`），不是 uuid：
+
+```
+ADMIN_ACCOUNT=pananiu
+```
+
+**不设或设错 = 没有人是管理员**，所有删除都会被拒（fail closed）。这是有意的 ——
+反过来默认人人可删的话，配置一丢就等于把删除权限敞开给所有人。
+
+改完要重启网页服务：
+
+```bash
+sudo systemctl restart drawdown-web
+```
+
+查看谁删过什么、改过什么备注：
+
+```bash
+cd /opt/drawdown-monitor && sudo -u drawdown npm run audit        # 默认最近 30 条
+cd /opt/drawdown-monitor && sudo -u drawdown npm run audit -- 100
+```
+
+审计记录与被审计的操作在**同一个事务**里写入 —— 日志写不进去，操作也会回滚。
+删除还会额外推一条 Telegram，那条是尽力而为的，推失败不影响删除本身。
 
 ## 恢复备份
 
