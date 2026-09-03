@@ -5,7 +5,6 @@ import SoundToggle from '../../components/SoundToggle.tsx';
 import WalletList, { type WalletRow } from './WalletList.tsx';
 import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
 import AlertFeed, { LatestAlertBanner, alertName, type AlertRow } from './AlertFeed.tsx';
-import ValueFilter from './ValueFilter.tsx';
 import HealthWatch from './HealthWatch.tsx';
 import AlarmTest from './AlarmTest.tsx';
 import { playPumpSound, notifyPump } from '../../lib/pumpSound.ts';
@@ -195,11 +194,8 @@ export default function WalletClient() {
       <HealthWatch streamConnected={!offline} />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <SoundToggle />
-        <div className="flex items-center gap-4 flex-wrap">
-          {/* 告警自己也要能被验证 —— 没验证过的告警不算告警 */}
-          <AlarmTest />
-          <ValueFilter value={minValue ?? 0} onSave={saveMinValue} />
-        </div>
+        {/* 告警自己也要能被验证 —— 没验证过的告警不算告警 */}
+        <AlarmTest />
       </div>
       {/* 连不上就必须说出来 —— 否则"没有报警"和"收不到报警"长得一模一样 */}
       {offline && (
@@ -210,7 +206,10 @@ export default function WalletClient() {
       {/* 横幅放最顶上：用户是听到播报才打开页面的，第一眼必须看到是哪个币 */}
       <LatestAlertBanner alerts={alerts} onFocus={focusToken} />
       <WalletList wallets={wallets} chains={chains} onChange={load} />
-      <HoldingsTable holdings={holdings} alertedTokenIds={alertedTokenIds} minValue={minValue ?? 0} />
+      {/* 小额阈值放在持仓表头里，不放页面右上角：它影响的就是下面这个列表，
+          放在效果发生的地方才看得见 —— 右上角那种位置等于没有 */}
+      <HoldingsTable holdings={holdings} alertedTokenIds={alertedTokenIds}
+        minValue={minValue ?? 0} onSaveMinValue={saveMinValue} />
       <AlertFeed alerts={alerts} />
     </div>
   );

@@ -38,8 +38,10 @@ export default function ValueFilter(
   };
 
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="meta-label">小额阈值 $</span>
+    // 手机上放不下一整行：按钮不许折字（"保存"被挤成两字一行很难看），
+    // 说明文字整段掉到下一行
+    <div className="flex items-center gap-x-2 gap-y-1 flex-wrap">
+      <span className="meta-label whitespace-nowrap">小额阈值 $</span>
       <input
         autoFocus value={draft} inputMode="decimal"
         onChange={(e) => { setDraft(e.target.value); setErr(null); }}
@@ -52,15 +54,17 @@ export default function ValueFilter(
                    text-xs text-neutral-200 tabular-nums outline-none focus:border-neutral-600"
       />
       <button type="button" onClick={() => void save()} disabled={saving}
-        className="text-xs text-[#3fbf7f] hover:text-[#7ef2b4] disabled:opacity-50">
+        className="text-xs text-[#3fbf7f] hover:text-[#7ef2b4] disabled:opacity-50 whitespace-nowrap">
         {saving ? '…' : '保存'}
       </button>
       <button type="button" onClick={() => setEditing(false)}
-        className="text-xs text-neutral-600 hover:text-neutral-400">取消</button>
+        className="text-xs text-neutral-600 hover:text-neutral-400 whitespace-nowrap">取消</button>
       {/* 低于这个数的币不报警也不显示 —— 必须说清楚，否则用户会以为币丢了 */}
       {err
-        ? <span className="text-xs text-[#d03b3b]">{err}</span>
-        : <span className="text-xs text-neutral-600">低于此值的不报警，列表里折叠起来</span>}
+        ? <span className="text-xs text-[#d03b3b] basis-full sm:basis-auto">{err}</span>
+        : <span className="text-xs text-neutral-600 basis-full sm:basis-auto">
+            低于此值的不报警，列表里折叠起来
+          </span>}
     </div>
   );
 }

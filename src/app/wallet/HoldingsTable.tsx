@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Decimal, formatPrice } from '../../lib/decimal.ts';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 import { copyText } from '../../lib/copy.ts';
+import ValueFilter from './ValueFilter.tsx';
 
 export interface HoldingRow {
   tokenId: string; chain: string; address: string; symbol: string | null; wallet: string;
@@ -175,8 +176,12 @@ export function isDust(h: HoldingRow, floor: number): boolean {
 }
 
 export default function HoldingsTable(
-  { holdings, alertedTokenIds = [], minValue = 0 }:
-  { holdings: HoldingRow[]; alertedTokenIds?: string[]; minValue?: number },
+  { holdings, alertedTokenIds = [], minValue = 0, onSaveMinValue }:
+  {
+    holdings: HoldingRow[]; alertedTokenIds?: string[]; minValue?: number;
+    /** 返回错误文案，null 表示保存成功。不传就不显示阈值入口 */
+    onSaveMinValue?: (v: number) => Promise<string | null>;
+  },
 ) {
   const alerted = new Set(alertedTokenIds);
   const [showAll, setShowAll] = useState(false);
@@ -221,6 +226,12 @@ export default function HoldingsTable(
                 + (dust.length > 0 ? ` · 小额 ${dust.length}` : '')
                 + (filtered.length > 0 ? ` · 已过滤 ${filtered.length}` : '')}
           </p>
+          {/* 阈值放在它影响的那个数字旁边：改完，上面那行的「小额 N」当场就变 */}
+          {onSaveMinValue && (
+            <div className="mt-1.5">
+              <ValueFilter value={minValue} onSave={onSaveMinValue} />
+            </div>
+          )}
         </div>
         {/* 合计是这一页最重要的数字，原本是最小号字挤在右边缘 */}
         <div className="text-right">
