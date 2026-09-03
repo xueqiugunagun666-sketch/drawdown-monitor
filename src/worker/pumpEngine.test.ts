@@ -525,3 +525,69 @@ test('判定后把流动性记进 token_meta —— 快车道靠它分流', asyn
     .get(id) as { liq: number | null } | undefined;
   assert.equal(meta?.liq, 77777);
 });
+
+/* ---------- PICKLES 那次的回归测试 ---------- */
+
+test('2 倍档报过之后，30 分钟内穿 5 倍、10 倍照样要报', async () => {
+  /**
+   * 2026-09-04 线上真实序列（robinhood:0x82effee…，基准 0.00003056）：
+   *   04:34 报 2 倍档（2.24x）
+   *   04:48 穿 5 倍 —— 落在压制窗口里，没发
+   *   05:03 穿 10 倍 —— 同样没发
+   * 而状态机把这两档都置成了 FIRED，于是永久消耗掉，再也不会报。
+   */
+  const id = 'bsc:0xpickles';
+  const u = wr.createUser(`pk${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xpk${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');                                   // 基准 1
+
+  await runPumpTick(NOW, deps({ '0xpickles': { priceUsd: '1' } }));           // seed
+  await runPumpTick(NOW + 60, deps({ '0xpickles': { priceUsd: '2.24' } }));   // 2 倍档
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 1, '先报 2 倍档');
+
+  // 14 分钟后穿 5 倍 —— 还在 30 分钟压制窗口内
+  await runPumpTick(NOW + 900, deps({ '0xpickles': { priceUsd: '6' } }));
+  const afterFive = wr.listPumpAlerts(u.id, 0);
+  assert.equal(afterFive.length, 2, '5 倍档比 2 倍高，压制窗口不该挡它');
+  assert.equal(afterFive[0]!.level, 5);
+
+  // 再过几分钟穿 10 倍 —— 仍在窗口内
+  await runPumpTick(NOW + 1740, deps({ '0xpickles': { priceUsd: '13.5' } }));
+  const afterTen = wr.listPumpAlerts(u.id, 0);
+  assert.equal(afterTen.length, 3, '10 倍档同理');
+  assert.equal(afterTen[0]!.level, 10);
+});
+
+test('同一档位在窗口内反复穿越仍然只报一次', async () => {
+  // 去重窗口的本意不能丢：一个在 2.0 附近震荡的币不该每次穿越都响
+  const id = 'bsc:0xwobble';
+  const u = wr.createUser(`wb${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xwb${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xwobble': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xwobble': { priceUsd: '2.1' } }));    // 报 2 倍
+  await runPumpTick(NOW + 120, deps({ '0xwobble': { priceUsd: '1.5' } }));   // 跌回，重新武装
+  await runPumpTick(NOW + 180, deps({ '0xwobble': { priceUsd: '2.2' } }));   // 又穿 2 倍
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 1, '同档反复穿越只报一次');
+});
+
+test('窗口内报过 10 倍后，跌回来再穿 5 倍不重复吵', async () => {
+  const id = 'bsc:0xdown';
+  const u = wr.createUser(`dn${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xdn${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xdown': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xdown': { priceUsd: '11' } }));       // 直接报 10 倍
+  assert.equal(wr.listPumpAlerts(u.id, 0)[0]!.level, 10);
+  await runPumpTick(NOW + 120, deps({ '0xdown': { priceUsd: '3' } }));       // 跌回，5 倍档重新武装
+  await runPumpTick(NOW + 180, deps({ '0xdown': { priceUsd: '6' } }));       // 又穿 5 倍
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 1, '已经报过 10 倍，5 倍不算新消息');
+});

@@ -20,7 +20,8 @@ import { fetchBatchQuotes, type BatchQuote } from '../sources/dexscreenerBatch.t
 import { computeMultiples } from './pumpWindows.ts';
 import {
   LEVELS, seedPumpState, evaluatePump, pickWinner, suppressedByRecent,
-  type PumpSnapshot, type PendingFire,
+  DEDUP_WINDOW_SECONDS,
+  type PumpSnapshot, type PendingFire, type RecentAlert,
 } from './pumpState.ts';
 import { evaluateFilter, DEFAULT_THRESHOLDS, type FilterState } from './holdingsFilter.ts';
 import { toHumanAmount } from '../sources/erc20.ts';
@@ -107,11 +108,19 @@ function saveState(k: StateKey, s: PumpSnapshot): void {
 }
 
 /** 该币最近一次发出报警的时间，用于 30 分钟去重 */
-function lastAlertAt(tokenId: string): number | null {
+/**
+ * 去重窗口内这个币报过的最后时刻与**最高档位**。
+ *
+ * 只取窗口内的行来算最高档：拿全表的 MAX(level) 会让一个月前报过 10 倍的币
+ * 从此再也报不出 10 倍以下的任何东西。
+ */
+function recentAlert(tokenId: string, now: number): RecentAlert | null {
   const r = getRawDb().prepare(
-    `SELECT MAX(fired_at) AS t FROM pump_alerts WHERE token_id = ?`,
-  ).get(tokenId) as { t: number | null } | undefined;
-  return r?.t ?? null;
+    `SELECT MAX(fired_at) AS at, MAX(level) AS level FROM pump_alerts
+     WHERE token_id = ? AND fired_at >= ?`,
+  ).get(tokenId, now - DEDUP_WINDOW_SECONDS) as { at: number | null; level: number | null } | undefined;
+  if (!r || r.at === null || r.level === null) return null;
+  return { at: r.at, level: r.level };
 }
 
 /** 该币是否已在共享看板的监控列表里（那边的 candle 写入优先） */
@@ -299,8 +308,8 @@ async function evaluateToken(
 
   const winner = pickWinner(fires);
   if (!winner) return;
-  if (suppressedByRecent(lastAlertAt(tokenId), now)) {
-    log.debug(`${tokenId} 30 分钟内已报过，压制`);
+  if (suppressedByRecent(recentAlert(tokenId, now), now, winner.level)) {
+    log.debug(`${tokenId} 30 分钟内已报过同档或更高（${winner.level}x 档），压制`);
     return;
   }
 

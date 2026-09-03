@@ -135,9 +135,59 @@ test('极小倍数差也能正确比较，不因浮点退化', () => {
   assert.equal(w.timeframe, '1h', '第二条更大，即使只差 1e-13');
 });
 
-test('30 分钟内已报过就压制', () => {
+const recent = (at: number, level: number) => ({ at, level });
+
+test('30 分钟内同档已报过就压制', () => {
   assert.equal(DEDUP_WINDOW_SECONDS, 1800);
-  assert.equal(suppressedByRecent(1000, 1000 + 1799), true);
-  assert.equal(suppressedByRecent(1000, 1000 + 1800), false, '满 30 分钟应放行');
-  assert.equal(suppressedByRecent(null, 999999), false, '从没报过不压制');
+  assert.equal(suppressedByRecent(recent(1000, 2), 1000 + 1799, 2), true);
+  assert.equal(suppressedByRecent(recent(1000, 2), 1000 + 1800, 2), false, '满 30 分钟应放行');
+  assert.equal(suppressedByRecent(null, 999999, 2), false, '从没报过不压制');
+});
+
+test('更高的档位不受去重窗口限制 —— PICKLES 那次就是这么丢的', () => {
+  // 2026-09-04：04:34 报了 2 倍档，04:48 穿 5 倍、05:03 穿 10 倍，
+  // 两条都落在压制窗口里一条没发；而状态机已经把这两档置成 FIRED，
+  // 于是永久消耗掉 —— 不是延迟，是再也不会报了
+  const twoX = recent(1000, 2);
+  assert.equal(suppressedByRecent(twoX, 1000 + 840, 5), false, '5 倍档比 2 倍高，要放行');
+  assert.equal(suppressedByRecent(twoX, 1000 + 1740, 10), false, '10 倍档更要放行');
+});
+
+test('同档或更低的仍然压制 —— 那才是"同一件事反复说"', () => {
+  const tenX = recent(1000, 10);
+  assert.equal(suppressedByRecent(tenX, 1000 + 60, 10), true, '同档重复');
+  assert.equal(suppressedByRecent(tenX, 1000 + 60, 5), true, '已经报过 10 倍了，5 倍不算新消息');
+  assert.equal(suppressedByRecent(tenX, 1000 + 60, 2), true);
+});
+
+test('窗口过后连更低的档位也放行', () => {
+  const tenX = recent(1000, 10);
+  assert.equal(suppressedByRecent(tenX, 1000 + 1800, 2), false);
+});
+
+test('倍数并列时选更高的档位 —— 冲到 11 倍不该被标成「2x 档」', () => {
+  // 同一个窗口的 2/5/10 三档算出来的 multiple 完全一样（倍数是窗口的属性，
+  // 不是档位的），原先只比倍数就三档并列，随便挑一个
+  const w = pickWinner([
+    { tokenId: 't', timeframe: '6h', basis: 'low', level: 2,  multiple: new Decimal('11'), at: 0 },
+    { tokenId: 't', timeframe: '6h', basis: 'low', level: 10, multiple: new Decimal('11'), at: 0 },
+    { tokenId: 't', timeframe: '6h', basis: 'low', level: 5,  multiple: new Decimal('11'), at: 0 },
+  ])!;
+  assert.equal(w.level, 10);
+});
+
+test('倍数更大的仍然优先于档位更高的', () => {
+  const w = pickWinner([
+    { tokenId: 't', timeframe: '6h', basis: 'low', level: 10, multiple: new Decimal('10'), at: 0 },
+    { tokenId: 't', timeframe: '5m', basis: 'low', level: 2,  multiple: new Decimal('50'), at: 0 },
+  ])!;
+  assert.equal(w.multiple.toString(), '50');
+});
+
+test('倍数与档位都并列时，窗口短的优先', () => {
+  const w = pickWinner([
+    { tokenId: 't', timeframe: '24h', basis: 'low', level: 2, multiple: new Decimal('3'), at: 0 },
+    { tokenId: 't', timeframe: '5m',  basis: 'low', level: 2, multiple: new Decimal('3'), at: 0 },
+  ])!;
+  assert.equal(w.timeframe, '5m', '5 分钟涨 3 倍比 24 小时涨 3 倍更值得说');
 });

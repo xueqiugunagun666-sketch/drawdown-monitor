@@ -18,7 +18,7 @@ export const LEVELS = [2, 5, 10] as const;
  */
 export const REARM_RATIO = 0.8;
 
-/** 同一个币在这个时长内只发一条报警 */
+/** 同一个币在这个时长内，**同档或更低**的只发一条报警。更高的档位不受限，见 suppressedByRecent */
 export const DEDUP_WINDOW_SECONDS = 1800;
 
 export interface PumpSnapshot {
@@ -73,8 +73,16 @@ export interface PendingFire {
 }
 
 /**
- * 同一个币的一波行情会让多个窗口先后达标。只发一条：
- * 倍数最高的优先；倍数相同时窗口更短的优先。
+ * 同一个币的一波行情会让多个窗口、多个档位同时达标。只发一条，排序是：
+ *   1. 倍数最高
+ *   2. 倍数相同时**档位最高**
+ *   3. 再相同时窗口最短（5 分钟涨 2 倍比 24 小时涨 2 倍更值得说）
+ *
+ * 第 2 条是补上的：同一个窗口的 2/5/10 三档算出来的 multiple 完全一样
+ * （倍数是窗口的属性，不是档位的），所以原先只比倍数时三档并列，
+ * 由第 3 条随便挑一个 —— 一个直接冲到 11 倍的币会被标成「2x 档」。
+ * 标签本身误导，而且去重是按档位判的，记成 2 档会让随后真正的 5 档
+ * 又响一次，等于为同一波行情吵两遍。
  *
  * 注意：没被选中的那些，状态机照样要置 FIRED，只是不产生通知。
  * 不置的话，去重窗口一过就会全部重放。
@@ -83,12 +91,36 @@ export function pickWinner(fires: PendingFire[]): PendingFire | null {
   if (fires.length === 0) return null;
   return fires.reduce((best, f) => {
     const c = f.multiple.comparedTo(best.multiple);
-    if (c > 0) return f;
-    if (c < 0) return best;
+    if (c !== 0) return c > 0 ? f : best;
+    if (f.level !== best.level) return f.level > best.level ? f : best;
     return WINDOW_SECONDS[f.timeframe] < WINDOW_SECONDS[best.timeframe] ? f : best;
   });
 }
 
-export function suppressedByRecent(lastAlertAt: number | null, now: number): boolean {
-  return lastAlertAt !== null && now - lastAlertAt < DEDUP_WINDOW_SECONDS;
+export interface RecentAlert {
+  /** 窗口内最后一条报警的时刻 */
+  at: number;
+  /** 窗口内报过的**最高档位**。判压制看的是它，不是时间 */
+  level: number;
+}
+
+/**
+ * 该不该压制这一条。
+ *
+ * **档位必须参与判断。** 早先的版本只问"最近 30 分钟报过没"，结果 2026-09-04
+ * 的 PICKLES 是这样丢的：04:34 报了 2 倍档，之后 04:48 穿 5 倍、05:03 穿 10 倍，
+ * 两条都落在压制窗口里，一条都没发。更糟的是状态机不管有没有发出去都把档位
+ * 置成 FIRED（不置的话窗口一过会全部重放），于是这两档被**永久消耗** ——
+ * 不是延迟，是再也不会报了。
+ *
+ * 去重窗口的本意是"别拿同一件事反复烦我"，而 2 倍 → 5 倍 → 10 倍是三件不同的
+ * 事，一件比一件重要。所以：**比窗口内报过的最高档更高，就立刻放行**；
+ * 同档或更低的才压制（那才是重复）。
+ */
+export function suppressedByRecent(
+  recent: RecentAlert | null, now: number, level: number,
+): boolean {
+  if (recent === null) return false;
+  if (now - recent.at >= DEDUP_WINDOW_SECONDS) return false;
+  return level <= recent.level;
 }
