@@ -141,8 +141,9 @@ async function main(): Promise<void> {
       } catch (err) {
         log.exception('暴涨判定轮次异常', err);
       }
-      // 补足到周期而不是固定 sleep —— 固定 sleep 会让实际周期
-      // 变成"tick 耗时 + 120 秒"，实测被拖到 165 秒
+      // 补足到周期而不是固定 sleep —— 固定 sleep 会让实际周期变成
+      // "tick 耗时 + 间隔"。当年间隔还是 120 秒时实测被拖到过 165 秒。
+      // wait 为负说明这一轮超了周期，直接背靠背跑下一轮
       const wait = TICK_INTERVAL_SECONDS * 1000 - (Date.now() - t0);
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     }
