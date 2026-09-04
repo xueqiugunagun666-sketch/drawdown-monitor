@@ -297,6 +297,12 @@ export const pumpAlerts = sqliteTable('pump_alerts', {
   balance: text('balance'),
   valueUsd: text('value_usd'),
   ackedAt: integer('acked_at'),
+  /**
+   * 'level' = 穿过一个新档位；'advance' = 没升档但又涨了一截。
+   * 分开是因为读起来意思不同：「暴涨 5x」是里程碑，「又涨 4.4x」是"还在涨"。
+   * 旧行是 NULL，一律按 'level' 读 —— 它们本来就都是穿档产生的。
+   */
+  kind: text('kind'),
 });
 
 /**

@@ -134,7 +134,7 @@ test('报警按用户隔离', () => {
   wr.insertPumpAlert({
     id: 'al1', userId: a.id, tokenId: 'bsc:0xz', firedAt: 500, timeframe: '1h',
     basis: 'low', level: 2, multiple: '2.4', priceUsd: '1', basePriceUsd: '0.4',
-    balance: '100', valueUsd: '100',
+    balance: '100', valueUsd: '100', kind: 'level',
   });
   assert.equal(wr.listPumpAlerts(a.id, 0).length, 1);
   assert.equal(wr.listPumpAlerts(b.id, 0).length, 0, 'B 不该看到 A 的报警');

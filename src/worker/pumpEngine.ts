@@ -17,10 +17,12 @@ import { Decimal } from '../lib/decimal.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
 import { fetchBatchQuotes, type BatchQuote } from '../sources/dexscreenerBatch.ts';
-import { computeMultiples } from './pumpWindows.ts';
+import {
+  computeMultiples, WINDOW_SECONDS, type PumpTimeframe, type PumpBasis,
+} from './pumpWindows.ts';
 import {
   LEVELS, seedPumpState, evaluatePump, pickWinner, suppressedByRecent,
-  DEDUP_WINDOW_SECONDS,
+  shouldFireOnAdvance, DEDUP_WINDOW_SECONDS, ADVANCE_RATIO,
   type PumpSnapshot, type PendingFire, type RecentAlert,
 } from './pumpState.ts';
 import { evaluateFilter, DEFAULT_THRESHOLDS, type FilterState } from './holdingsFilter.ts';
@@ -114,13 +116,52 @@ function saveState(k: StateKey, s: PumpSnapshot): void {
  * 只取窗口内的行来算最高档：拿全表的 MAX(level) 会让一个月前报过 10 倍的币
  * 从此再也报不出 10 倍以下的任何东西。
  */
+/**
+ * 窗口内已经报过什么。
+ *
+ * 价格**不能用 SQL 的 MAX()**：price_usd 存的是十进制字符串，MAX 会按
+ * 字典序比 —— '0.009' 会被判成大于 '0.01'。取回来用 Decimal 比。
+ * 窗口只有 30 分钟、单个币，行数很少，多取几行不值一提。
+ */
+/**
+ * 补报时用哪个窗口来描述这次上涨。规则与 pickWinner 一致：
+ * 倍数最高，相同则窗口最短（5 分钟涨 2 倍比 24 小时涨 2 倍更值得说）。
+ */
+function pickBestWindow(
+  windows: Array<{ timeframe: PumpTimeframe; basis: PumpBasis; multiple: Decimal }>,
+  now: number,
+): PendingFire | null {
+  let best: typeof windows[number] | null = null;
+  for (const w of windows) {
+    if (!best) { best = w; continue; }
+    const c = w.multiple.comparedTo(best.multiple);
+    if (c > 0 || (c === 0 && WINDOW_SECONDS[w.timeframe] < WINDOW_SECONDS[best.timeframe])) best = w;
+  }
+  if (!best) return null;
+  return {
+    tokenId: '', timeframe: best.timeframe, basis: best.basis,
+    level: 0, multiple: best.multiple, at: now,
+  };
+}
+
 function recentAlert(tokenId: string, now: number): RecentAlert | null {
-  const r = getRawDb().prepare(
-    `SELECT MAX(fired_at) AS at, MAX(level) AS level FROM pump_alerts
+  const rows = getRawDb().prepare(
+    `SELECT fired_at, level, price_usd FROM pump_alerts
      WHERE token_id = ? AND fired_at >= ?`,
-  ).get(tokenId, now - DEDUP_WINDOW_SECONDS) as { at: number | null; level: number | null } | undefined;
-  if (!r || r.at === null || r.level === null) return null;
-  return { at: r.at, level: r.level };
+  ).all(tokenId, now - DEDUP_WINDOW_SECONDS) as
+    Array<{ fired_at: number; level: number; price_usd: string | null }>;
+  if (rows.length === 0) return null;
+
+  let at = 0, level = 0, maxPrice = new Decimal(0);
+  for (const r of rows) {
+    if (r.fired_at > at) at = r.fired_at;
+    if (r.level > level) level = r.level;
+    if (r.price_usd) {
+      const p = new Decimal(r.price_usd);
+      if (p.gt(maxPrice)) maxPrice = p;
+    }
+  }
+  return { at, level, maxPrice };
 }
 
 /** 该币是否已在共享看板的监控列表里（那边的 candle 写入优先） */
@@ -308,12 +349,39 @@ async function evaluateToken(
     }
   }
 
-  const winner = pickWinner(fires);
-  if (!winner) return;
-  if (suppressedByRecent(recentAlert(tokenId, now), now, winner.level)) {
-    log.debug(`${tokenId} 30 分钟内已报过同档或更高（${winner.level}x 档），压制`);
-    return;
+  const recent = recentAlert(tokenId, now);
+  const crossed = pickWinner(fires);
+
+  /**
+   * 两条触发路径：
+   *   1. 穿过一个新档位（且没被同档压制）
+   *   2. 没升档，但价格比"已经告诉过你的最高价"又涨了 ADVANCE_RATIO 倍
+   *
+   * 第 2 条**必须独立判断**，不能只写成"放松第 1 条的压制"：所有档都已
+   * FIRED 时根本产生不出 pendingFire，连 pickWinner 都是空的。哈夫币那波
+   * 能靠别的窗口各自穿档蹭出机会纯属侥幸（各窗口基准不同，碰巧错开了）。
+   */
+  let winner: PendingFire | null = null;
+  let kind: 'level' | 'advance' = 'level';
+
+  if (crossed && !suppressedByRecent(recent, now, crossed.level)) {
+    winner = crossed;
+  } else if (shouldFireOnAdvance(recent, now, price)) {
+    /**
+     * 补报用倍数最高的那个窗口来描述，档位**沿用窗口内已报过的最高档**
+     * —— 不能记成更高的档，否则随后真正穿那一档时会被压制掉，等于把
+     * 那一档吃掉了（PICKLES 就是这么丢的，不能再犯）。
+     */
+    const best = pickBestWindow(windows, now);
+    if (best) {
+      winner = { ...best, level: recent!.level };
+      kind = 'advance';
+      log.debug(`${tokenId} 未升档，但比上次报警价又涨 ${ADVANCE_RATIO} 倍，补报`);
+    }
+  } else if (crossed) {
+    log.debug(`${tokenId} 30 分钟内已报过同档或更高（${crossed.level}x 档），压制`);
   }
+  if (!winner) return;
 
   // ---- 扇出：每个持有者一行，带各自的余额与持仓价值 ----
   const base = windows.find((w) => w.timeframe === winner.timeframe && w.basis === winner.basis)?.base ?? null;
@@ -353,6 +421,7 @@ async function evaluateToken(
       balance: h.balance,
       valueUsd: value ? value.toString() : null,
       ackedAt: null,
+      kind,
     });
     notified++;
   }

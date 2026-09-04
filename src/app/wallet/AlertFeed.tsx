@@ -14,6 +14,8 @@ export interface AlertRow {
   symbol: string | null; address: string | null; chain: string | null;
   /** 投递序号。只有 SSE 推来的带，/api/wallet/alerts 的历史列表没有 */
   seq?: number;
+  /** 'level' 穿档 | 'advance' 未升档但又涨了一截。旧行是 null，按穿档读 */
+  kind?: string | null;
 }
 
 /** 币名优先，没有才退回地址 —— 显示一串十六进制等于没说 */

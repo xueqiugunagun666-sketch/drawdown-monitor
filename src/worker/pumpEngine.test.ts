@@ -592,3 +592,64 @@ test('窗口内报过 10 倍后，跌回来再穿 5 倍不重复吵', async () =
   await runPumpTick(NOW + 180, deps({ '0xdown': { priceUsd: '6' } }));       // 又穿 5 倍
   assert.equal(wr.listPumpAlerts(u.id, 0).length, 1, '已经报过 10 倍，5 倍不算新消息');
 });
+
+test('哈夫币那波：2 倍之后一路涨到 4.4 倍，中间要补报', async () => {
+  /**
+   * 2026-09-05 线上真实序列（robinhood:0x64aafe…，基准 0.0005851）：
+   *   03:21:55 报 2 倍档（2.10x，价 0.001228）
+   *   03:25    涨到 3.86x（0.002259）—— 比报警价又涨 84%，没有任何提示
+   *   03:30    涨到 4.24x（0.002479）—— 又涨 102%，仍然没有
+   *   03:36:55 穿 5 倍才报第二条（5.15x）
+   * 中间十五分钟价格翻了一倍多，而 2 倍和 5 倍之间当时没有任何档位。
+   */
+  const id = 'bsc:0xhaf';
+  const u = wr.createUser(`haf${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xhaf${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '0.0005851');
+
+  await runPumpTick(NOW, deps({ '0xhaf': { priceUsd: '0.0005851' } }));       // seed
+  await runPumpTick(NOW + 60, deps({ '0xhaf': { priceUsd: '0.001228' } }));   // 2.10x
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 1, '先报 2 倍档');
+
+  // 3 倍档：0.0005851 * 3 = 0.0017553
+  await runPumpTick(NOW + 200, deps({ '0xhaf': { priceUsd: '0.001800' } }));
+  const afterThree = wr.listPumpAlerts(u.id, 0);
+  assert.equal(afterThree.length, 2, '新增的 3 倍档该报');
+  assert.equal(afterThree[0]!.level, 3);
+
+  // 4.24x —— 没到 5 倍档，但比 3 倍档那条报警价（0.0018）又涨了 38%，不该发
+  await runPumpTick(NOW + 500, deps({ '0xhaf': { priceUsd: '0.002479' } }));
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 2, '只涨 38%，不到补报线');
+
+  // 再涨到比 0.0018 高 50% 以上（0.0027），仍没到 5 倍档 —— 该补报
+  await runPumpTick(NOW + 560, deps({ '0xhaf': { priceUsd: '0.002750' } }));
+  const afterAdvance = wr.listPumpAlerts(u.id, 0);
+  assert.equal(afterAdvance.length, 3, '未升档但又涨 50%，该补一条');
+  assert.equal(afterAdvance[0]!.level, 3, '补报沿用已报过的最高档，不能吃掉 5 倍档');
+
+  // 真正穿 5 倍：补报没有把这一档消耗掉
+  await runPumpTick(NOW + 900, deps({ '0xhaf': { priceUsd: '0.003015' } }));
+  const afterFive = wr.listPumpAlerts(u.id, 0);
+  assert.equal(afterFive.length, 4, '5 倍档照样要报');
+  assert.equal(afterFive[0]!.level, 5);
+});
+
+test('补报不会在行情回落又涨回原位时触发', async () => {
+  const id = 'bsc:0xnoretrigger';
+  const u = wr.createUser(`nr${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xnr${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xnoretrigger': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xnoretrigger': { priceUsd: '3' } }));  // 报 3 倍档
+  const n = wr.listPumpAlerts(u.id, 0).length;
+
+  // 跌到 1.8 再涨回 2.7：比"最后一条"是涨了 50%，但没超过已报过的最高价
+  await runPumpTick(NOW + 300, deps({ '0xnoretrigger': { priceUsd: '1.8' } }));
+  await runPumpTick(NOW + 360, deps({ '0xnoretrigger': { priceUsd: '2.7' } }));
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, n, '只是回到原位，不是新消息');
+});

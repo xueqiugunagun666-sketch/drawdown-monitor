@@ -216,8 +216,13 @@ export function monitoredTokenIds(): string[] {
 
 /* ---------------- 报警 ---------------- */
 
-export function insertPumpAlert(row: Omit<PumpAlertRow, 'ackedAt'> & { ackedAt?: number | null }): void {
-  getDb().insert(pumpAlerts).values({ ...row, ackedAt: row.ackedAt ?? null }).run();
+export function insertPumpAlert(
+  row: Omit<PumpAlertRow, 'ackedAt' | 'kind'>
+     & { ackedAt?: number | null; kind?: 'level' | 'advance' | null },
+): void {
+  // kind 默认 'level'：调用方不关心时就是穿档，旧行也全是这么来的
+  getDb().insert(pumpAlerts)
+    .values({ ...row, ackedAt: row.ackedAt ?? null, kind: row.kind ?? 'level' }).run();
 }
 
 export function listPumpAlerts(userId: string, sinceTs: number): PumpAlertRow[] {

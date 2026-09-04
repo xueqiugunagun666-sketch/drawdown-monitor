@@ -134,14 +134,20 @@ export default function WalletClient() {
          */
         const name = alertName(top);
         const nameless = !top.symbol;
+        /**
+         * 「暴涨」是穿过一个新档位（里程碑），「又涨」是没升档但还在往上走。
+         * 分开说是因为两者对读的人意思不同：看到「又涨 4.4x」你知道这是
+         * 同一波还在继续，而不是一件新事。旧行没有 kind，按穿档读。
+         */
+        const verb = top.kind === 'advance' ? '又涨' : '暴涨';
+        const detail = top.kind === 'advance'
+          ? `${describeBasis(top.timeframe, top.basis)} · 比上次报警又涨了一截`
+          : `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`;
         notifyPump(
           nameless
-            ? `${top.chain ?? '未知链'} 上有币暴涨 ${Number(top.multiple).toFixed(1)}x`
-            : `${name} 暴涨 ${Number(top.multiple).toFixed(1)}x`,
-          [
-            `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`,
-            nameless ? top.address ?? top.tokenId : null,
-          ].filter(Boolean).join('\n'),
+            ? `${top.chain ?? '未知链'} 上有币${verb} ${Number(top.multiple).toFixed(1)}x`
+            : `${name} ${verb} ${Number(top.multiple).toFixed(1)}x`,
+          [detail, nameless ? top.address ?? top.tokenId : null].filter(Boolean).join('\n'),
         );
         void load();     // 顺带刷新持仓价值
       });

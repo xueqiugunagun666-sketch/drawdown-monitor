@@ -2,15 +2,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Decimal } from '../lib/decimal.ts';
 import {
-  LEVELS, REARM_RATIO, DEDUP_WINDOW_SECONDS,
+  LEVELS, REARM_RATIO, DEDUP_WINDOW_SECONDS, ADVANCE_RATIO,
   initialPumpState, seedPumpState, evaluatePump, pickWinner, suppressedByRecent,
-  type PendingFire,
+  shouldFireOnAdvance, type PendingFire,
 } from './pumpState.ts';
 
 const d = (s: string | number) => new Decimal(s);
 
-test('档位就是 2 / 5 / 10', () => {
-  assert.deepEqual([...LEVELS], [2, 5, 10]);
+test('档位是 2 / 3 / 5 / 10', () => {
+  // 3 倍档是补上的：原先 2→5 之间价格可以翻一倍多而一条提示都没有，
+  // 2026-09-05 的哈夫币就卡在这里（03:21 报 2 倍，一路到 4.41 倍才在 03:36 报 5 倍）
+  assert.deepEqual([...LEVELS], [2, 3, 5, 10]);
 });
 
 test('ARMED 状态下达到档位就触发', () => {
@@ -96,13 +98,15 @@ test('回归：已经在 6 倍的币加入后，一次 tick 不产生任何报�
     const s = seedPumpState(d(6), level);
     return evaluatePump(s, { multiple: d(6), level, now: 100 }).fire;
   });
-  assert.deepEqual(fires, [false, false, false]);
+  assert.deepEqual(fires, LEVELS.map(() => false));
 });
 
 test('seed 后价格继续涨，只有更高的档位会报', () => {
   const states = LEVELS.map((level) => ({ level, s: seedPumpState(d(6), level) }));
   const fires = states.map(({ level, s }) => evaluatePump(s, { multiple: d(12), level, now: 200 }).fire);
-  assert.deepEqual(fires, [false, false, true], '只有 10x 档该报');
+  // 进来时是 6 倍：2/3/5 都直接 seed 成 FIRED（不补报"进来之前就涨过"），
+  // 只有 10 倍档还 ARMED，涨到 12 倍时它才该响
+  assert.deepEqual(fires, LEVELS.map((l) => l === 10), '只有 10x 档该报');
 });
 
 // ---- 去重择优 ----
@@ -135,7 +139,8 @@ test('极小倍数差也能正确比较，不因浮点退化', () => {
   assert.equal(w.timeframe, '1h', '第二条更大，即使只差 1e-13');
 });
 
-const recent = (at: number, level: number) => ({ at, level });
+const recent = (at: number, level: number, maxPrice = '1') =>
+  ({ at, level, maxPrice: new Decimal(maxPrice) });
 
 test('30 分钟内同档已报过就压制', () => {
   assert.equal(DEDUP_WINDOW_SECONDS, 1800);
@@ -190,4 +195,50 @@ test('倍数与档位都并列时，窗口短的优先', () => {
     { tokenId: 't', timeframe: '5m',  basis: 'low', level: 2, multiple: new Decimal('3'), at: 0 },
   ])!;
   assert.equal(w.timeframe, '5m', '5 分钟涨 3 倍比 24 小时涨 3 倍更值得说');
+});
+
+// ---- 未升档时的补报 ----
+
+const rec = (at: number, level: number, maxPrice: string) =>
+  ({ at, level, maxPrice: new Decimal(maxPrice) });
+
+test('ADVANCE_RATIO 就是 1.5', () => {
+  assert.equal(ADVANCE_RATIO, 1.5);
+});
+
+test('比上次报警的最高价又涨 50% 就补一条', () => {
+  const r = rec(1000, 2, '0.001228');            // 哈夫币 03:21 的 2 倍档报警价
+  assert.equal(shouldFireOnAdvance(r, 1100, d('0.001841')), false, '差一点点不发');
+  assert.equal(shouldFireOnAdvance(r, 1100, d('0.001842')), true, '正好 1.5 倍就发');
+  assert.equal(shouldFireOnAdvance(r, 1100, d('0.002259')), true);
+});
+
+test('哈夫币那波：2 倍报警之后到 5 倍之前，本该补一条', () => {
+  // 实测数据：03:21:55 报 2 倍档（价 0.001228），03:36:55 才报 5 倍档（价 0.003015）。
+  // 中间 03:25 收 0.002259、03:30 收 0.002479 —— 比报警价又涨了 84% 和 102%，
+  // 一条提示都没有
+  const r = rec(1000, 2, '0.001228');
+  assert.equal(shouldFireOnAdvance(r, 1000 + 240, d('0.002259')), true, '03:25 该补');
+  assert.equal(shouldFireOnAdvance(r, 1000 + 540, d('0.002479')), true, '03:30 该补');
+});
+
+test('跟窗口内的最高价比，不是跟最后一条比 —— 否则回落再涨会反复触发', () => {
+  // 报过 0.003（最高），随后回落到 0.0015 又涨回 0.00225：
+  // 跟最后一条比是"又涨 50%"，跟最高价比才知道这只是回到原位
+  const r = rec(1000, 5, '0.003');
+  assert.equal(shouldFireOnAdvance(r, 1100, d('0.00225')), false);
+  assert.equal(shouldFireOnAdvance(r, 1100, d('0.0045')), true, '真的创新高才发');
+});
+
+test('超出去重窗口就不归它管了 —— 那时档位规则本来就会放行', () => {
+  const r = rec(1000, 2, '0.001');
+  assert.equal(shouldFireOnAdvance(r, 1000 + DEDUP_WINDOW_SECONDS, d('99')), false);
+});
+
+test('从没报过就不补报 —— 补报是"比告诉过你的更好"，没有基准就无从谈起', () => {
+  assert.equal(shouldFireOnAdvance(null, 1000, d('99')), false);
+});
+
+test('基准价是 0 时不补报，别做除零式的判断', () => {
+  assert.equal(shouldFireOnAdvance(rec(1000, 2, '0'), 1100, d('1')), false);
 });

@@ -10,7 +10,19 @@
 import { Decimal } from '../lib/decimal.ts';
 import { WINDOW_SECONDS, type PumpTimeframe, type PumpBasis } from './pumpWindows.ts';
 
-export const LEVELS = [2, 5, 10] as const;
+export const LEVELS = [2, 3, 5, 10] as const;
+
+/**
+ * 没有升档、但比上次报警价又涨了这个比例，也补一条。
+ *
+ * 加它是因为档位间距是**乘性**的：2→3 要 +50%，3→5 要 +67%，5→10 要 +100%。
+ * 固定档位在高倍区反而更迟钝，而那恰恰是涨得最猛的一段。2026-09-05 的
+ * 哈夫币就卡在这里：03:21 报 2 倍，随后一路到 4.41 倍 —— 比报警时的价格
+ * 又高了 110% —— 中间一条提示都没有，直到 03:36 穿 5 倍才响第二条。
+ *
+ * 这条规则让灵敏度在哪一段都一样：只要比"上次告诉你的价"再涨一半就说一声。
+ */
+export const ADVANCE_RATIO = 1.5;
 
 /**
  * 回落到档位的这个比例以下才重新武装。
@@ -102,6 +114,12 @@ export interface RecentAlert {
   at: number;
   /** 窗口内报过的**最高档位**。判压制看的是它，不是时间 */
   level: number;
+  /**
+   * 窗口内报过的**最高价格**。补报是跟它比的 ——
+   * 用最后一条的价格会让行情回落时反复触发（跌下去再涨回来又算"又涨 50%"），
+   * 用最高价才是"比我告诉过你的最好情况还要好"。
+   */
+  maxPrice: Decimal;
 }
 
 /**
@@ -123,4 +141,21 @@ export function suppressedByRecent(
   if (recent === null) return false;
   if (now - recent.at >= DEDUP_WINDOW_SECONDS) return false;
   return level <= recent.level;
+}
+
+/**
+ * 没升档时，够不够格补一条。
+ *
+ * **必须是独立判断，不能只做成"放松压制"。** 压制那道门开在"有档位穿越"
+ * 之后：所有档都已 FIRED 时根本产生不出 pendingFire，走都走不到那里。
+ * 哈夫币那波能靠别的窗口各自穿档蹭出机会纯属侥幸 —— 窗口基准不同，
+ * 碰巧错开了。不能指望这个。
+ */
+export function shouldFireOnAdvance(
+  recent: RecentAlert | null, now: number, price: Decimal,
+): boolean {
+  if (recent === null) return false;
+  if (now - recent.at >= DEDUP_WINDOW_SECONDS) return false;
+  if (recent.maxPrice.lte(0)) return false;
+  return price.gte(recent.maxPrice.mul(ADVANCE_RATIO));
 }
