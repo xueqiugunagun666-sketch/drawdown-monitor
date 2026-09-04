@@ -228,10 +228,33 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   }
 }
 
+/**
+ * 暴涨通知在屏幕上停留多久。
+ *
+ * **Notification API 没有"显示时长"这个参数** —— 默认约 5 秒是系统定的，
+ * 传什么都改不了。能做的是 requireInteraction 让它不自动滑走，再自己
+ * 定时关掉，等效于指定时长。
+ *
+ * 不设 requireInteraction 的后果是实测过的：Windows 上弹五秒就滑进通知
+ * 中心，人没盯着屏幕就完全错过 —— 用户那边攒了 18 条没看见的。
+ */
+const NOTIFY_HOLD_MS = 10_000;
+
 export function notifyPump(title: string, body: string): void {
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   try {
-    // tag 让同一个币的连续通知互相替换，不堆成一列
-    new Notification(title, { body, tag: title, silent: true });
+    const n = new Notification(title, {
+      body,
+      // tag 让同一个币的连续通知互相替换，不堆成一列。
+      // renotify 是配套的：光换 tag 内容、不重新提醒的话，
+      // 替换掉的那条就悄无声息了
+      tag: title,
+      renotify: true,
+      requireInteraction: true,
+      silent: true,             // 声音由页面自己的语音播报负责，别响两次
+    } as NotificationOptions);
+    // 点一下把页面调到前台，省得在一堆标签里翻
+    n.onclick = () => { window.focus(); n.close(); };
+    setTimeout(() => { try { n.close(); } catch { /* 已经关了 */ } }, NOTIFY_HOLD_MS);
   } catch { /* 某些浏览器在非 https 下会抛 */ }
 }

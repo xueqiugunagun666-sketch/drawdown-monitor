@@ -5,7 +5,7 @@ import {
   step, activeIssues, initialWatchState, describeIssue,
   type HealthIssue, type WatchState,
 } from '../../lib/alertHealth.ts';
-import { popup } from '../../lib/healthAlert.ts';
+import { popup, clearAlert } from '../../lib/healthAlert.ts';
 import { setTabAlarm } from '../../lib/tabAlarm.ts';
 import { soundStatus, watchSoundStatus } from '../../lib/pumpSound.ts';
 
@@ -54,7 +54,10 @@ export default function HealthWatch({ streamConnected }: { streamConnected: bool
     const t = setInterval(tick, 1000);
     return () => {
       clearInterval(t);
-      setTabAlarm(null);        // 离开页面别把标题留在告警状态
+      // 用 clearAlert 而不是 setTabAlarm(null)：后者在「测试告警」的占用期内
+      // 会被挡住，图标就留在告警状态了 —— 而这一栏只有钱包页挂着看门狗，
+      // 切到别的页面之后没人再来清它
+      clearAlert();
     };
   }, []);
 
