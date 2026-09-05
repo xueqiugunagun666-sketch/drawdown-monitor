@@ -26,6 +26,7 @@ import { currentUser } from '../../../../lib/accountAuth.ts';
 import { pumpAlertsAfterSeq, maxPumpAlertSeq } from '../../../../db/walletRepo.ts';
 import { enrichAlerts } from '../../../../db/alertEnrich.ts';
 import { resolveCursor } from '../../../../lib/sseCursor.ts';
+import { CURRENT_VERSION } from '../../../../lib/changelog.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -60,9 +61,17 @@ export async function GET(req: Request) {
         }
       };
 
-      // ready 带 id：这一条就是"我已经把 cursor 之前的都交代过了"的书面凭据，
-      // 之后就算一条报警都没发就断了，重连也有得接
-      send('ready', { cursor }, cursor);
+      /**
+       * ready 带 id：这一条就是"我已经把 cursor 之前的都交代过了"的书面凭据，
+       * 之后就算一条报警都没发就断了，重连也有得接。
+       *
+       * 还带上服务端的版本号。**服务端这个是新鲜的，而客户端手里那个是
+       * 打包时烙进去的** —— 两者不一致就说明这个页面在跑旧代码。
+       * 一直开着的页面会静默地继续用旧 JS：部署了新文案，用户看到的还是
+       * 老的，而且完全没有迹象。2026-09-05 就这么骗过一次 —— ATH 报警
+       * 明明改成了「破历史新高」，用户收到的仍是「暴涨 1.1x · 0x 档」。
+       */
+      send('ready', { cursor, version: CURRENT_VERSION }, cursor);
 
       const tick = setInterval(() => {
         if (closed) return;

@@ -11,6 +11,8 @@ import {
   playPumpSound, notifyPump, PUMP_PHRASE, ATH_PHRASE,
 } from '../../lib/pumpSound.ts';
 import { humanAgo } from '../../lib/time.ts';
+import { CURRENT_VERSION } from '../../lib/changelog.ts';
+import { shouldPromptReload } from '../../lib/staleClient.ts';
 import { usd } from './HoldingsTable.tsx';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 
@@ -22,6 +24,8 @@ export default function WalletClient() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
+  /** 服务端已经是新版本，而这个页面还在跑旧 JS */
+  const [staleVersion, setStaleVersion] = useState<string | null>(null);
   /** 小额阈值。null = 还没读到，读到之前不过滤 —— 宁可多显示也不要凭空少几行 */
   const [minValue, setMinValue] = useState<number | null>(null);
   const seen = useRef(new Set<string>());
@@ -95,8 +99,15 @@ export default function WalletClient() {
         setOffline(false);
         // 服务端在这里告诉我们它从哪个序号开始盯 —— 主动重建时要从这里接着要
         try {
-          const d = JSON.parse((e as MessageEvent<string>).data) as { cursor?: number };
+          const d = JSON.parse((e as MessageEvent<string>).data) as
+            { cursor?: number; version?: string };
           if (typeof d.cursor === 'number') cursor.current = d.cursor;
+          /**
+           * 服务端的版本号是新鲜的，我们手里这个是打包时烙进去的。
+           * 不一致就说明这个页面在跑旧代码 —— 一直开着的页面在部署之后
+           * 会静默地继续用旧 JS，用户以为在用新版本，其实不是。
+           */
+          if (shouldPromptReload(d.version, CURRENT_VERSION)) setStaleVersion(d.version!);
         } catch { /* 拿不到就退回不带 since，等于从最新开始，不会重播 */ }
       });
 
@@ -248,6 +259,29 @@ export default function WalletClient() {
       {offline && (
         <p className="rounded border border-[#fab219] bg-[#fab219]/10 px-3 py-2 text-sm text-[#8a6100]">
           实时推送已断开，正在重连 —— 这段时间的暴涨不会播报。重连后会自动补上。
+        </p>
+      )}
+      {/**
+        * 页面在跑旧代码时必须说出来。
+        *
+        * 这是个静默故障：SSE 连着不断、报警照收，只是渲染用的还是旧 JS ——
+        * 部署了新文案，用户看到的仍是老的，而且毫无迹象。2026-09-05 就这么
+        * 骗过一次：ATH 报警明明改成了「破历史新高」，用户收到的还是
+        * 「暴涨 1.1x · 0x 档」，我差点当成代码 bug 去查。
+        *
+        * 不自动刷新：用户可能正在输入或看着某个币，替他决定刷新是越权的。
+        */}
+      {staleVersion && (
+        <p className="rounded border border-[#4a8fd6] bg-[#4a8fd6]/10 px-3 py-2 text-sm
+                      text-[#2a5f96] flex items-center justify-between gap-3 flex-wrap">
+          <span>
+            已有新版本 <b>{staleVersion}</b>（这个页面还是 {CURRENT_VERSION}）——
+            报警照收，但显示用的是旧代码。
+          </span>
+          <button type="button" onClick={() => window.location.reload()}
+            className="shrink-0 rounded bg-[#4a8fd6] px-3 py-1 text-white hover:bg-[#5fa3e8]">
+            刷新
+          </button>
         </p>
       )}
       {/* 横幅放最顶上：用户是听到播报才打开页面的，第一眼必须看到是哪个币 */}
