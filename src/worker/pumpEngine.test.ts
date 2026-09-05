@@ -16,7 +16,7 @@ let seq = 0;
 function holder(tokenId: string, balance = '1000000000000000000') {
   const u = wr.createUser(`pe${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xw${seq}`, null)!;
-  wr.upsertHolding(w.id, tokenId, balance, 18, 100);
+  wr.upsertHolding(w.id, tokenId, balance, 18, NOW);
   wr.setHoldingMonitored(w.id, tokenId, true, null, null);
   return { userId: u.id, walletId: w.id };
 }
@@ -257,7 +257,7 @@ test('回归：新扫到的币（monitored=0）能被过滤层提升为监控中
   const id = 'bsc:0xpromote';
   const u = wr.createUser(`promo${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xpw${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);   // 默认 monitored=0
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, NOW);   // 默认 monitored=0
   assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 0, '前提：新持仓默认不监控');
 
   await runPumpTick(NOW, deps({ '0xpromote': { priceUsd: '1', liquidityUsd: 50000, volume24hUsd: 99999 } }));
@@ -268,7 +268,7 @@ test('回归：不达标的新币被明确标注原因，而不是静默留在 0
   const id = 'bsc:0xdust';
   const u = wr.createUser(`dust${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xdw${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.upsertHolding(w.id, id, '1', 18, NOW);
 
   await runPumpTick(NOW, deps({ '0xdust': { priceUsd: '1', liquidityUsd: 10, volume24hUsd: 5 } }));
   const h = wr.listHoldingsByWallet(w.id)[0]!;
@@ -279,7 +279,7 @@ test('回归：不达标的新币被明确标注原因，而不是静默留在 0
 test('回归：报价缺失的新币保持未监控，且写明原因', async () => {
   const u = wr.createUser(`noq${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xnq${seq}`, null)!;
-  wr.upsertHolding(w.id, 'bsc:0xnoquote', '1000', 18, 100);
+  wr.upsertHolding(w.id, 'bsc:0xnoquote', '1000', 18, NOW);
   await runPumpTick(NOW, deps({}));
   const h = wr.listHoldingsByWallet(w.id)[0]!;
   assert.equal(h.monitored, 0);
@@ -289,7 +289,7 @@ test('回归：报价缺失的新币保持未监控，且写明原因', async ()
 test('decimals 未知的币不参与判定 —— 无法换算数量', async () => {
   const u = wr.createUser(`nod${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xnd${seq}`, null)!;
-  wr.upsertHolding(w.id, 'bsc:0xnodecimals', '1000', null, 100);
+  wr.upsertHolding(w.id, 'bsc:0xnodecimals', '1000', null, NOW);
   await runPumpTick(NOW, deps({ '0xnodecimals': { priceUsd: '1' } }));
   assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 0);
 });
@@ -298,7 +298,7 @@ test('持有人数超标的币被踢出监控，且写明原因', async () => {
   const id = 'bsc:0xairdrop';
   const u = wr.createUser(`air${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xaw${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, NOW);
 
   await runPumpTick(NOW, {
     ...deps({ '0xairdrop': { priceUsd: '1', liquidityUsd: 99189, volume24hUsd: 260271 } }),
@@ -313,7 +313,7 @@ test('持有人数缓存住，同一天不重复查', async () => {
   const id = 'bsc:0xcached';
   const u = wr.createUser(`cache${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xcw${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, NOW);
   history(id, '1');
 
   const asked: string[] = [];
@@ -332,7 +332,7 @@ test('查不到持有人数也写缓存，不会每轮重试', async () => {
   const id = 'bsc:0xunknown';
   const u = wr.createUser(`unk${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xuw${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, NOW);
   history(id, '1');
 
   const asked: string[] = [];
@@ -350,7 +350,7 @@ test('取持有人数失败不影响本轮判定', async () => {
   const id = 'bsc:0xinfofail';
   const u = wr.createUser(`fail${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xfw${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, NOW);
   history(id, '1');
 
   await runPumpTick(NOW, {
@@ -366,7 +366,7 @@ test('被流动性挡掉的币不查持有人数 —— 省掉绝大部分 GMGN 
   const id = 'bsc:0xdustnoinfo';
   const u = wr.createUser(`dni${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xdn${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000', 18, NOW);
 
   // 只统计问到这个币的次数 —— runPumpTick 会遍历本文件之前测试留下的全部币
   const asked: string[] = [];
@@ -382,7 +382,7 @@ test('通过流动性的币才查持有人数', async () => {
   const id = 'bsc:0xworthchecking';
   const u = wr.createUser(`wc${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xwc${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, NOW);
   history(id, '1');
 
   const asked: string[] = [];
@@ -399,7 +399,7 @@ test('仓位不足 $1 的不推送，但币仍在监控', async () => {
   const id = 'bsc:0xtinybag';
   const u = wr.createUser(`tiny${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xtw${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '100000000000000', 18, 100);   // 0.0001 个
+  wr.upsertHolding(w.id, id, '100000000000000', 18, NOW);   // 0.0001 个
   history(id, '1');
 
   await runPumpTick(NOW, deps({ '0xtinybag': { priceUsd: '1' } }));       // 价值 $0.0001
@@ -412,7 +412,7 @@ test('仓位够 $1 的照常推送', async () => {
   const id = 'bsc:0xbigenough';
   const u = wr.createUser(`big${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xbw${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '10000000000000000000', 18, 100);   // 10 个
+  wr.upsertHolding(w.id, id, '10000000000000000000', 18, NOW);   // 10 个
   history(id, '1');
 
   await runPumpTick(NOW, deps({ '0xbigenough': { priceUsd: '1' } }));
@@ -427,8 +427,8 @@ test('同一个币，仓位大的收到、仓位小的不收到', async () => {
   const poor = wr.createUser(`poor${++seq}`, 'h')!;
   const wr1 = wr.addWallet(rich.id, 'bsc', `0xrw${seq}`, null)!;
   const wr2 = wr.addWallet(poor.id, 'bsc', `0xpw${seq}`, null)!;
-  wr.upsertHolding(wr1.id, id, '50000000000000000000', 18, 100);  // 50 个
-  wr.upsertHolding(wr2.id, id, '1000000000000', 18, 100);         // 0.000001 个
+  wr.upsertHolding(wr1.id, id, '50000000000000000000', 18, NOW);  // 50 个
+  wr.upsertHolding(wr2.id, id, '1000000000000', 18, NOW);         // 0.000001 个
   history(id, '1');
 
   await runPumpTick(NOW, deps({ '0xmixedbags': { priceUsd: '1' } }));
@@ -450,7 +450,7 @@ test('每人的阈值各判各的 —— 同一条上涨，有人收到有人不
   const w2 = wr.addWallet(loose.id, 'bsc', `0xls${seq}`, null)!;
   // 两人余额一样：$50 的仓位
   for (const w of [w1, w2]) {
-    wr.upsertHolding(w.id, id, '50000000000000000000', 18, 100);
+    wr.upsertHolding(w.id, id, '50000000000000000000', 18, NOW);
     wr.setHoldingMonitored(w.id, id, true, null, null);
   }
   wr.setMinAlertValue(picky.id, 500);      // 只想被 $500 以上的吵醒
@@ -467,7 +467,7 @@ test('阈值设成 0 就什么都不过滤 —— 连尘埃也报', async () => 
   const id = 'bsc:0xzerofloor';
   const u = wr.createUser(`zero${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xzf${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000', 18, 100);   // 0.000001 个
+  wr.upsertHolding(w.id, id, '1000000000000', 18, NOW);   // 0.000001 个
   wr.setHoldingMonitored(w.id, id, true, null, null);
   wr.setMinAlertValue(u.id, 0);
   history(id, '1');
@@ -483,7 +483,7 @@ test('阈值设成 0 就什么都不过滤 —— 连尘埃也报', async () => 
 function coldHolder(tokenId: string, balance = '1000000000000000000') {
   const u = wr.createUser(`cold${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xcw${seq}`, null)!;
-  wr.upsertHolding(w.id, tokenId, balance, 18, 100);
+  wr.upsertHolding(w.id, tokenId, balance, 18, NOW);
   wr.setHoldingMonitored(w.id, tokenId, false, '24h 成交 $3,000 < $10,000', null);
   return { userId: u.id, walletId: w.id };
 }
@@ -541,7 +541,7 @@ test('2 倍档报过之后，30 分钟内穿 5 倍、10 倍照样要报', async 
   const id = 'bsc:0xpickles';
   const u = wr.createUser(`pk${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xpk${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');                                   // 基准 1
 
@@ -567,7 +567,7 @@ test('同一档位在窗口内反复穿越仍然只报一次', async () => {
   const id = 'bsc:0xwobble';
   const u = wr.createUser(`wb${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xwb${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
 
@@ -582,7 +582,7 @@ test('窗口内报过 10 倍后，跌回来再穿 5 倍不重复吵', async () =
   const id = 'bsc:0xdown';
   const u = wr.createUser(`dn${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xdn${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
 
@@ -606,7 +606,7 @@ test('哈夫币那波：2 倍之后一路涨到 4.4 倍，中间要补报', asyn
   const id = 'bsc:0xhaf';
   const u = wr.createUser(`haf${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xhaf${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '0.0005851');
 
@@ -641,7 +641,7 @@ test('补报不会在行情回落又涨回原位时触发', async () => {
   const id = 'bsc:0xnoretrigger';
   const u = wr.createUser(`nr${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xnr${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
 
@@ -682,7 +682,7 @@ test('按突破的最长窗口报 —— 分量不同的两件事不该说成一
   const id = 'bsc:0xathbreak';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
   withAth(id, '2');            // 400 天前有个 2 的高点，最近都很低
@@ -710,7 +710,7 @@ test('同一档窗口内继续爬升不重复报 —— 那是同一件事说七
   const id = 'bsc:0xathsame';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
   withAth(id, '99');           // 全部历史的高点很高，够不到
@@ -730,7 +730,7 @@ test('单调上涨全程只报一次 —— 不是每根 K 线一条', async () 
   const id = 'bsc:0xathgrind';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
   withAth(id, '2');
@@ -749,7 +749,7 @@ test('没有 wallet_ath 记录时不报 —— 没有可信历史就没资格说
   const id = 'bsc:0xnoath';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
 
@@ -763,7 +763,7 @@ test('冷启动已在高位的币不补报历史新高', async () => {
   const id = 'bsc:0xathseed';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
   withAth(id, '2');
@@ -777,7 +777,7 @@ test('ATH 与暴涨同轮触发时只发 ATH —— 破新高本来就蕴含着�
   const id = 'bsc:0xathboth';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
   withAth(id, '1.5');
@@ -794,7 +794,7 @@ test('ATH 报警记下前高是什么时候立的 —— 之后 ath_ts 会被覆
   const id = 'bsc:0xathbasets';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
 
@@ -826,7 +826,7 @@ test('报价与 K 线差三万倍时不判定 —— Monkey 那条 34852 倍', a
   const id = 'bsc:0xmonkey';
   const u = wr.createUser(`mk${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xmk${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '0.0000000000000000000000002');
 
@@ -842,7 +842,7 @@ test('正常波动不受影响', async () => {
   const id = 'bsc:0xnormal2';
   const u = wr.createUser(`nm${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xnm${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
 
@@ -862,7 +862,7 @@ test('看板币用看板的价判定，不用批量报价 —— Monkey 那条 3
   const id = 'bsc:0xscalemix';
   const u = wr.createUser(`sc${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xsc${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '0.0000000000000000000000002');        // 看板量级
   getRawDb().prepare(
@@ -883,7 +883,7 @@ test('只在钱包里的币，一轮内涨 11 倍照常报 —— 那正是这�
   const id = 'bsc:0xrealpump';
   const u = wr.createUser(`rp${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xrp${seq}`, null)!;
-  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
 
@@ -892,4 +892,69 @@ test('只在钱包里的币，一轮内涨 11 倍照常报 —— 那正是这�
   const a = wr.listPumpAlerts(u.id, 0);
   assert.ok(a.length > 0, '11 倍必须报');
   assert.equal(a[0]!.level, 10);
+});
+
+/* ---------------- 沉睡的币醒了 ---------------- */
+
+test('沉睡的币被重新纳入监控时，补报它已经涨了多少 —— KANSO 那条', async () => {
+  /**
+   * 2026-09-06 线上：KANSO 持仓自 8-30 就在，拉盘前 24h 成交量只有约 $154
+   * 走 30 分钟一次的慢车道；02:55 被纳入监控时价格已经 3.55 倍，
+   * 2 倍和 3 倍档被静默吃掉，一直等到 5 倍才响 —— 那时已经 8.64 倍，
+   * 市值从 5.6K 涨到 63K。
+   */
+  const id = 'bsc:0xwoke';
+  const u = wr.createUser(`wk${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xwk${seq}`, null)!;
+  // 持仓一周前就在了
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW - 7 * 86400);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  // 首次判定时价格已经 3.55 倍
+  await runPumpTick(NOW, deps({ '0xwoke': { priceUsd: '3.55' } }));
+  const a = wr.listPumpAlerts(u.id, 0);
+  assert.equal(a.length, 1, '沉睡的币醒了要补一条');
+  assert.equal(a[0]!.level, 3, '报已达到的最高档，不是最低档');
+  assert.ok(Number(a[0]!.multiple) >= 3.5);
+});
+
+test('新加钱包里早就涨过的币仍然静默 —— 不炸一串历史报警', async () => {
+  const id = 'bsc:0xfreshwallet';
+  const u = wr.createUser(`fw${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xfw${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);   // 刚扫到
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xfreshwallet': { priceUsd: '8' } }));
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 0, '刚加的钱包不补报历史');
+});
+
+test('醒来时连 2 倍都没到就不补报', async () => {
+  const id = 'bsc:0xwokelow';
+  const u = wr.createUser(`wl${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xwl${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW - 7 * 86400);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xwokelow': { priceUsd: '1.5' } }));
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, 0);
+});
+
+test('醒来补报之后，继续涨到更高档位照常报', async () => {
+  const id = 'bsc:0xwokeclimb';
+  const u = wr.createUser(`wc${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xwc${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW - 7 * 86400);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xwokeclimb': { priceUsd: '3.55' } }));
+  assert.equal(wr.listPumpAlerts(u.id, 0)[0]!.level, 3);
+  await runPumpTick(NOW + 60, deps({ '0xwokeclimb': { priceUsd: '11' } }));
+  const a = wr.listPumpAlerts(u.id, 0);
+  assert.equal(a.length, 2);
+  assert.equal(a[0]!.level, 10, '醒来那条不该把后面的档位吃掉');
 });

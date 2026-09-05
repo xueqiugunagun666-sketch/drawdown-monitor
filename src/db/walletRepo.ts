@@ -172,12 +172,14 @@ export function setHoldingMonitored(
  */
 export function usersHoldingToken(tokenId: string): Array<{
   userId: string; walletId: string; balance: string; decimals: number | null;
-  minAlertValueUsd: number | null;
+  minAlertValueUsd: number | null; firstSeenAt: number;
 }> {
   return getDb().select({
     userId: wallets.userId, walletId: holdings.walletId,
     balance: holdings.balance, decimals: holdings.decimals,
     minAlertValueUsd: users.minAlertValueUsd,
+    /** 这个持仓什么时候第一次被扫到 —— 冷启动要靠它分清"新加的钱包"与"沉睡的币醒了" */
+    firstSeenAt: holdings.firstSeenAt,
   })
     .from(holdings)
     .innerJoin(wallets, eq(wallets.id, holdings.walletId))
@@ -431,8 +433,25 @@ export const REJECTED_RECHECK_SECONDS = 1800;
  */
 export const WARM_RECHECK_SECONDS = 180;
 
-/** 快车道的流动性门槛。与 holdingsFilter 的进入线一致 */
-const WARM_MIN_LIQUIDITY_USD = 5000;
+/**
+ * 快车道的流动性门槛。
+ *
+ * 原先与 holdingsFilter 的进入线一致（$5,000），但那条线管的是"值不值得
+ * 监控"，与"要不要盯着看它会不会醒"是两件事。2026-09-06 的 KANSO 就栽在
+ * 这里：拉盘前它的成交量只有约 $154、流动性也不高，走的是 30 分钟一次的
+ * 慢车道；等复查到时价格已经 3.55 倍。
+ *
+ * 降到 $1,000 的代价是实测出来的（9,985 个持仓币的流动性分布）：
+ *   >= $5,000        2,767   现有快车道
+ *   $1,000 ~ $5,000    299   ← 新增的就是这些
+ *   < $1,000           451
+ *   拿不到报价       6,468   真正的死币，仍走慢车道
+ * 只多 299 个（+11%），摊到每轮约多 100 个币、3 个请求、不到 1 秒。
+ *
+ * 没有一路降到 0：拿不到报价的那 6,468 个是没有池子的空投垃圾，
+ * 把它们塞进快车道只会白烧请求预算，而预算就是这个系统的容量上限。
+ */
+const WARM_MIN_LIQUIDITY_USD = 1000;
 
 /**
  * 本轮该判定哪些币。

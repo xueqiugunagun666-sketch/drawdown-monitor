@@ -35,6 +35,7 @@ import {
   type PumpSnapshot, type PendingFire, type RecentAlert,
 } from './pumpState.ts';
 import { evaluateFilter, DEFAULT_THRESHOLDS, type FilterState } from './holdingsFilter.ts';
+import { isWakeUp, wakeUpLevel } from './wakeUp.ts';
 import { toHumanAmount } from '../sources/erc20.ts';
 import { needsBackfill, backfillWalletToken, realBackfillDeps, type BackfillDeps } from './walletBackfill.ts';
 import { fetchTokenInfo, type TokenInfo } from '../sources/gmgnTokenInfo.ts';
@@ -385,15 +386,42 @@ async function evaluateToken(
   const states = loadStates(tokenId);
   const fires: PendingFire[] = [];
 
+  /**
+   * 冷启动时该不该补一条"它已经涨了多少"。
+   *
+   * 一刀切地静默对**新加的钱包**是对的（里面一堆早就涨过的币，不该炸一串
+   * 历史报警），但对**沉睡的币醒了**是错的，而那正是最该报的一种：币早就
+   * 在钱包里，只是一直是粉尘没进监控，行情启动后才被纳入 —— "进入监控
+   * 之前涨的那一段"恰恰是用户最想知道的事。
+   *
+   * KANSO（2026-09-06）：持仓自 8-30 就在，02:55 被纳入时已经 3.55 倍，
+   * 2/3 倍档被静默吃掉，等到 5 倍才响 —— 那时已经 8.64 倍、市值 5.6K→63K。
+   *
+   * 区分信号：这个持仓在钱包里多久了。取最早的那个（多人持有时）。
+   */
+  const earliestSeen = holders.length > 0
+    ? Math.min(...holders.map((h) => h.firstSeenAt))
+    : null;
+  const wokeUp = isWakeUp(earliestSeen, now);
+
   for (const w of windows) {
     for (const level of LEVELS) {
       const key = `${w.timeframe}|${w.basis}|${level}`;
       const prev = states.get(key);
       if (!prev) {
-        // 首次见到这个组合：seed 而不是判定。已达标的直接置 FIRED，
-        // 不为"它进入监控之前就涨过"这件事补报
+        /**
+         * 首次见到这个组合：seed 而不是判定。
+         *
+         * 沉睡的币醒了时，把**已达到的最高档**当成一次真触发放进 fires ——
+         * 报最高档而不是最低档：一个进来就 3.55 倍的币，说它"涨了 2 倍"
+         * 是把信息说小了。低于它的档位仍然静默置 FIRED。
+         */
         saveState({ tokenId, timeframe: w.timeframe, basis: w.basis, level },
           seedPumpState(w.multiple, level));
+        if (wokeUp && wakeUpLevel(w.multiple, LEVELS) === level) {
+          fires.push({ tokenId, timeframe: w.timeframe, basis: w.basis, level,
+            multiple: w.multiple, at: now });
+        }
         continue;
       }
       const r = evaluatePump(prev, { multiple: w.multiple, level, now });
