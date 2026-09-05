@@ -8,6 +8,7 @@ import {
   pumpClass, pumpBar, describeBasis, isAthAlert, describeAthDelta, ATH_COLOR, ATH_BAR,
 } from '../../lib/pumpStyle.ts';
 import { humanAgo } from '../../lib/time.ts';
+import { money } from '../trash/TrashList.tsx';
 
 export interface AlertRow {
   id: string; tokenId: string; firedAt: number; timeframe: string; basis: string;
@@ -22,6 +23,8 @@ export interface AlertRow {
   athScope?: string | null;
   /** 突破的窗口档次（'3d'/'90d'/'all'…） */
   athWindow?: string | null;
+  /** 报警时的市值，与同一行的 priceUsd 同源 */
+  marketCapUsd?: number | null;
   /** 基准价的时刻。ATH 报警用它说「前高立于 23 天前」 */
   baseTs?: number | null;
 }
@@ -92,12 +95,27 @@ export function LatestAlertBanner(
         <span className="ml-auto text-xs text-neutral-500 shrink-0">{humanAgo(a.firedAt)}</span>
       </div>
 
-      {a.basePriceUsd && a.priceUsd && (
-        <div className="text-xs text-neutral-500 tabular-nums mt-1">
-          ${formatPrice(new Decimal(a.basePriceUsd), 6)} → ${formatPrice(new Decimal(a.priceUsd), 6)}
-          {a.chain && <span className="ml-2">{a.chain}</span>}
-        </div>
-      )}
+      {/**
+        * 市值排在价格前面、字号更大。
+        *
+        * 用户是按市值思考的（「从 5 万涨到 10 万」），而价格是一串
+        * 0.00006726 这样的东西 —— 读它要先数小数点后有几个零，对判断
+        * 「这币现在多大」几乎没有帮助。价格降成同一行的小字，仍然留着，
+        * 因为倍数是按价格算的，要能对得上。
+        */}
+      <div className="flex items-baseline gap-2 flex-wrap mt-1.5">
+        {a.marketCapUsd != null && (
+          <span className="text-[17px] font-semibold tabular-nums text-neutral-100">
+            市值 {money(a.marketCapUsd)}
+          </span>
+        )}
+        {a.basePriceUsd && a.priceUsd && (
+          <span className="text-xs text-neutral-500 tabular-nums">
+            ${formatPrice(new Decimal(a.basePriceUsd), 6)} → ${formatPrice(new Decimal(a.priceUsd), 6)}
+          </span>
+        )}
+        {a.chain && <span className="text-xs text-neutral-600">{a.chain}</span>}
+      </div>
 
       {addr && (
         <div className="flex items-center gap-2 mt-2">
@@ -160,8 +178,13 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
                   前高立于 {humanAgo(a.baseTs)}
                 </span>
               )}
+              {a.marketCapUsd != null && (
+                <span className="text-neutral-200 text-[13px] font-medium tabular-nums shrink-0">
+                  {money(a.marketCapUsd)}
+                </span>
+              )}
               {a.basePriceUsd && a.priceUsd && (
-                <span className="text-neutral-600 text-xs tabular-nums hidden sm:inline">
+                <span className="text-neutral-600 text-xs tabular-nums hidden lg:inline">
                   ${formatPrice(new Decimal(a.basePriceUsd), 6)} → ${formatPrice(new Decimal(a.priceUsd), 6)}
                 </span>
               )}

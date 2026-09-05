@@ -16,7 +16,7 @@
 import PQueue from 'p-queue';
 import { httpGet } from '../lib/http.ts';
 import { Decimal } from '../lib/decimal.ts';
-import { isMajorQuote, correctPrice } from './quotePrice.ts';
+import { isMajorQuote, correctPrice, scaleMarketCap } from './quotePrice.ts';
 import { getConfig } from '../lib/config.ts';
 import { SourceError } from '../lib/errors.ts';
 import { makeLogger } from '../lib/log.ts';
@@ -354,7 +354,14 @@ async function applyQuoteCorrections(
     if (!q.quoteAddress || isMajorQuote(q.quoteSymbol)) continue;
     const r = correctPrice(q.priceUsd, q.priceNative, real.get(q.quoteAddress) ?? null);
     if (!r.corrected) continue;
-    quotes.set(addr, { ...q, priceUsd: r.priceUsd, priceCorrected: true });
+    quotes.set(addr, {
+      ...q,
+      priceUsd: r.priceUsd,
+      // 市值必须跟着走 —— 供应量不变，只是价错了。不改的话价格 ÷120
+      // 而市值原封不动，显示出来就是个自相矛盾的数
+      marketCapUsd: scaleMarketCap(q.marketCapUsd, q.priceUsd, r.priceUsd),
+      priceCorrected: true,
+    });
     fixed++;
     log.warn(
       `${chain}:${addr} 计价代币 ${q.quoteSymbol} 的美元价偏离 `

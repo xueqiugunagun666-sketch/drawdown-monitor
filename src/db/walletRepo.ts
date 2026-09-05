@@ -224,9 +224,9 @@ export function monitoredTokenIds(): string[] {
 export type AlertKind = 'level' | 'advance' | 'ath' | 'ath-advance';
 
 export function insertPumpAlert(
-  row: Omit<PumpAlertRow, 'ackedAt' | 'kind' | 'baseTs' | 'athWindow'>
-     & { ackedAt?: number | null; kind?: AlertKind | null;
-         baseTs?: number | null; athWindow?: string | null },
+  row: Omit<PumpAlertRow, 'ackedAt' | 'kind' | 'baseTs' | 'athWindow' | 'marketCapUsd'>
+     & { ackedAt?: number | null; kind?: AlertKind | null; baseTs?: number | null;
+         athWindow?: string | null; marketCapUsd?: number | null },
 ): void {
   // kind 默认 'level'：调用方不关心时就是穿档，旧行也全是这么来的
   getDb().insert(pumpAlerts)
@@ -234,6 +234,7 @@ export function insertPumpAlert(
       ...row, ackedAt: row.ackedAt ?? null,
       kind: row.kind ?? 'level', baseTs: row.baseTs ?? null,
       athWindow: row.athWindow ?? null,
+      marketCapUsd: row.marketCapUsd ?? null,
     }).run();
 }
 

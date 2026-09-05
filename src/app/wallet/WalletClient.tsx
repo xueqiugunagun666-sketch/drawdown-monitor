@@ -11,6 +11,7 @@ import {
   playPumpSound, notifyPump, PUMP_PHRASE, ATH_PHRASE,
 } from '../../lib/pumpSound.ts';
 import { humanAgo } from '../../lib/time.ts';
+import { money } from '../trash/TrashList.tsx';
 import { CURRENT_VERSION } from '../../lib/changelog.ts';
 import { shouldPromptReload } from '../../lib/staleClient.ts';
 import { usd } from './HoldingsTable.tsx';
@@ -179,15 +180,23 @@ export default function WalletClient() {
           ? (top.kind === 'ath' ? `破${scope}` : `再创${scope}`)
           : (top.kind === 'advance' ? '又涨' : '暴涨');
 
-        const detail = isAth
-          ? [
-            top.baseTs ? `前高立于 ${humanAgo(top.baseTs)}` : null,
-            `现价高出 ${overPct}%`,
-            top.valueUsd ? `持仓 ${usd(top.valueUsd)}` : null,
-          ].filter(Boolean).join(' · ')
-          : top.kind === 'advance'
-            ? `${describeBasis(top.timeframe, top.basis)} · 比上次报警又涨了一截`
-            : `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`;
+        /**
+         * 市值排在正文最前面 —— 用户是按市值思考的（「从 5 万涨到 10 万」），
+         * 而价格是一串 0.00006726，读它要先数零，对"这币现在多大"没帮助。
+         */
+        const mc = top.marketCapUsd != null ? `市值 ${money(top.marketCapUsd)}` : null;
+        const detail = [
+          mc,
+          isAth
+            ? [
+              top.baseTs ? `前高立于 ${humanAgo(top.baseTs)}` : null,
+              `现价高出 ${overPct}%`,
+            ].filter(Boolean).join(' · ')
+            : top.kind === 'advance'
+              ? `${describeBasis(top.timeframe, top.basis)} · 比上次报警又涨了一截`
+              : `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`,
+          top.valueUsd ? `持仓 ${usd(top.valueUsd)}` : null,
+        ].filter(Boolean).join(' · ');
 
         // ATH 标题不带倍数 —— 「破历史新高」本身就是全部信息，
         // 后面缀个 1.1x 反而把重点冲淡；高出多少放正文

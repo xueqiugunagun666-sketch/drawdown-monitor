@@ -92,3 +92,35 @@ export function correctPrice(
   const fixed = new Decimal(priceNative!).mul(realQuoteUsd);
   return { priceUsd: fixed.toString(), corrected: true, deviation };
 }
+
+/**
+ * 市值必须跟着**我们实际用的那个价**走。
+ *
+ * 数据源给的 marketCap 是「该池价格 × 供应量」—— 每个池自洽，但我们一旦
+ * 换了价（校正了计价代币、或改用看板的中位价），原来那个市值就对不上了。
+ * 供应量不变，所以按价格比例缩放即可。
+ *
+ * 线上实测（Monkey，2026-09-06）：同一个币，离群的 XAUt 池报市值
+ * $50,548,989，正常池报 $1.4M —— 差 36 倍。价格取一个、市值取另一个，
+ * 显示出来的就是这种数。
+ */
+export function scaleMarketCap(
+  rawMarketCap: number | null, rawPrice: string | null, usedPrice: string | null,
+): number | null {
+  if (rawMarketCap === null || !Number.isFinite(rawMarketCap)) return null;
+  if (!rawPrice || !usedPrice) return rawMarketCap;
+  let from: Decimal, to: Decimal;
+  try {
+    from = new Decimal(rawPrice);
+    to = new Decimal(usedPrice);
+  } catch {
+    return rawMarketCap;
+  }
+  if (from.lte(0) || to.lte(0)) return rawMarketCap;
+  if (from.eq(to)) return rawMarketCap;
+  /**
+   * 市值是展示用的量级数字，这里落回 number 是可以的 —— 它不参与阈值判定，
+   * 也不做链式运算。比例本身用 Decimal 算，避免小数价格上的精度塌陷。
+   */
+  return Number(to.div(from).mul(rawMarketCap).toString());
+}

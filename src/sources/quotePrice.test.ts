@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Decimal } from '../lib/decimal.ts';
 import {
-  isMajorQuote, impliedQuoteUsd, correctPrice, DEVIATION_THRESHOLD,
+  isMajorQuote, impliedQuoteUsd, correctPrice, DEVIATION_THRESHOLD, scaleMarketCap,
 } from './quotePrice.ts';
 
 test('主流计价资产不分大小写', () => {
@@ -89,4 +89,37 @@ test('校正后的价格保持十进制字符串，不经过 Number', () => {
   const r = correctPrice('0.003683', '0.000001596', new Decimal('19.16'));
   assert.equal(typeof r.priceUsd, 'string');
   assert.doesNotMatch(r.priceUsd, /e[+-]/i, '不能退化成科学计数法');
+});
+
+/* ---------- 市值跟着实际用的价走 ---------- */
+
+test('价格被校正后市值按同比例缩放 —— 供应量不变', () => {
+  // GMEB 那批：价格 ÷120，市值也该 ÷120
+  const mc = scaleMarketCap(3_683_132, '0.003683', '0.00003057936');
+  assert.ok(mc !== null && mc > 30_000 && mc < 31_000, `实际 ${mc}`);
+});
+
+test('价格没变时市值原样返回', () => {
+  assert.equal(scaleMarketCap(1_000_000, '0.5', '0.5'), 1_000_000);
+});
+
+test('Monkey 那种池间差异：换成正常池的价，市值也要跟着换', () => {
+  // 离群 XAUt 池报 $50,548,989 / 价 7.321e-24；正常池价 2.03e-25
+  const mc = scaleMarketCap(50_548_989, '0.000000000000000000000007321',
+    '0.0000000000000000000000002030');
+  assert.ok(mc !== null && mc > 1_350_000 && mc < 1_450_000, `实际 ${mc}`);
+});
+
+test('缺值时原样返回，不编造', () => {
+  assert.equal(scaleMarketCap(null, '1', '2'), null);
+  assert.equal(scaleMarketCap(1000, null, '2'), 1000);
+  assert.equal(scaleMarketCap(1000, '1', null), 1000);
+  assert.equal(scaleMarketCap(1000, '0', '2'), 1000, '除零不做');
+  assert.equal(scaleMarketCap(1000, '乱写', '2'), 1000);
+});
+
+test('极小价格上不塌精度 —— 比例用 Decimal 算', () => {
+  const mc = scaleMarketCap(1_000_000,
+    '0.00000000000000000000000001', '0.00000000000000000000000002');
+  assert.ok(mc !== null && Math.abs(mc - 2_000_000) < 1, `实际 ${mc}`);
 });

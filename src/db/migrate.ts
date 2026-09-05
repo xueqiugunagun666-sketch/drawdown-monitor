@@ -217,6 +217,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['pump_alerts', 'kind', 'TEXT'],
   ['pump_alerts', 'base_ts', 'INTEGER'],
   ['pump_alerts', 'ath_window', 'TEXT'],
+  ['pump_alerts', 'market_cap_usd', 'REAL'],
   ['wallet_ath', 'state', "TEXT NOT NULL DEFAULT 'ARMED'"],
   ['wallet_ath', 'last_alert_price', 'TEXT'],
   ['wallet_ath', 'last_alert_at', 'INTEGER'],

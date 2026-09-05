@@ -314,6 +314,12 @@ export const pumpAlerts = sqliteTable('pump_alerts', {
   kind: text('kind'),
   /** ATH 报警突破的窗口档次（'3d'/'90d'/'all'…）。非 ATH 报警为 null */
   athWindow: text('ath_window'),
+  /**
+   * 报警时的市值。**必须与同一行的 price_usd 同源** ——
+   * 数据源给的 marketCap 是"该池价格 × 供应量"，我们一旦换了价
+   * （校正计价代币、或改用看板中位价）就得按比例缩放，否则两个数互相矛盾。
+   */
+  marketCapUsd: real('market_cap_usd'),
 });
 
 /**

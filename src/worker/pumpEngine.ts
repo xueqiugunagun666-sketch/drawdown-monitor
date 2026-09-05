@@ -14,6 +14,7 @@
  * 不 seed 就会把它进来之前的涨幅补报一遍（commit 6699db0 那个坑的反向版本）。
  */
 import { Decimal } from '../lib/decimal.ts';
+import { scaleMarketCap } from '../sources/quotePrice.ts';
 import * as athRepo from '../db/athRepo.ts';
 import {
   BREAKOUT_MARGIN, REARM_RATIO, ADVANCE_RATIO as ATH_ADVANCE_RATIO,
@@ -344,6 +345,12 @@ async function evaluateToken(
       price = boardPrice;
     }
   }
+  /**
+   * 市值跟着实际用的价走。看板的价来自跨池中位数，而批量报价的市值
+   * 来自它自己那个池 —— 不换算的话两个数会互相矛盾（Monkey 的离群池
+   * 报市值 $5,054 万，正常池 $142 万，差 36 倍）。
+   */
+  const marketCapUsd = scaleMarketCap(quote.marketCapUsd, quote.priceUsd, price.toString());
   if (!price.gt(0)) return;
 
   // 先把本轮价格并进当前 5m candle，历史就是这样一轮轮攒起来的。
@@ -412,7 +419,7 @@ async function evaluateToken(
   const ath = evaluateAthFor(tokenId, price, now);
   if (ath) {
     await fanout(tokenId, holders, quote, price, ath.winner, ath.kind,
-      ath.basePrice, now, ath.baseTs, ath.windowKey);
+      ath.basePrice, now, ath.baseTs, ath.windowKey, marketCapUsd);
     return;
   }
 
@@ -452,7 +459,7 @@ async function evaluateToken(
 
   // ---- 扇出：每个持有者一行，带各自的余额与持仓价值 ----
   const base = windows.find((w) => w.timeframe === winner.timeframe && w.basis === winner.basis)?.base ?? null;
-  await fanout(tokenId, holders, quote, price, winner, kind, base, now);
+  await fanout(tokenId, holders, quote, price, winner, kind, base, now, null, null, marketCapUsd);
 }
 
 /**
@@ -556,6 +563,8 @@ async function fanout(
   baseTs: number | null = null,
   /** ATH 报警突破的是哪一档窗口（'3d'/'90d'/'all'…），前端据此措辞 */
   athWindow: string | null = null,
+  /** 与本行 priceUsd 同源的市值 */
+  marketCapUsd: number | null = null,
 ): Promise<void> {
   let notified = 0, skipped = 0;
   for (const h of holders) {
@@ -592,6 +601,7 @@ async function fanout(
       basePriceUsd: base ? base.toString() : null,
       baseTs,
       athWindow,
+      marketCapUsd,
       balance: h.balance,
       valueUsd: value ? value.toString() : null,
       ackedAt: null,
