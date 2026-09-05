@@ -18,6 +18,8 @@ export interface AlertRow {
   kind?: string | null;
   /** ATH 报警的口径：「历史新高」或「N 天新高」。非 ATH 报警为 null */
   athScope?: string | null;
+  /** 基准价的时刻。ATH 报警用它说「前高立于 23 天前」 */
+  baseTs?: number | null;
 }
 
 /** 币名优先，没有才退回地址 —— 显示一串十六进制等于没说 */

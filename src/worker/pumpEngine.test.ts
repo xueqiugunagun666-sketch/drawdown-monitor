@@ -748,3 +748,27 @@ test('ATH 与暴涨同轮触发时只发 ATH —— 破新高本来就蕴含着�
   assert.equal(all.length, 1, '同一件事只响一次');
   assert.equal(all[0]!.kind, 'ath', 'ATH 是更强的说法，优先它');
 });
+
+test('ATH 报警记下前高是什么时候立的 —— 之后 ath_ts 会被覆盖，事后查不到', async () => {
+  const id = 'bsc:0xathbasets';
+  const u = wr.createUser(`ath${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  const oldHighTs = NOW - 23 * 86400;
+  athRepo.upsertWalletAth({
+    tokenId: id, athPrice: '2', athTs: oldHighTs, historyStartTs: NOW - 60 * 86400,
+    pairCreatedAt: NOW - 60 * 86400, complete: true, backfilledAt: NOW,
+  });
+
+  await runPumpTick(NOW, deps({ '0xathbasets': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xathbasets': { priceUsd: '2.5' } }));
+
+  const a = wr.listPumpAlerts(u.id, 0).find((x) => x.kind === 'ath')!;
+  assert.equal(a.baseTs, oldHighTs, '记的是旧高点的时刻，不是现在');
+  assert.equal(a.basePriceUsd, '2');
+  // 库里的 ath_ts 已经被推到现在了，正说明必须在报警时就记下来
+  assert.equal(athRepo.getWalletAth(id)!.athTs, NOW + 60);
+});

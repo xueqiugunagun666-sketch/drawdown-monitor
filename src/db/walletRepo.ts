@@ -224,12 +224,15 @@ export function monitoredTokenIds(): string[] {
 export type AlertKind = 'level' | 'advance' | 'ath' | 'ath-advance';
 
 export function insertPumpAlert(
-  row: Omit<PumpAlertRow, 'ackedAt' | 'kind'>
-     & { ackedAt?: number | null; kind?: AlertKind | null },
+  row: Omit<PumpAlertRow, 'ackedAt' | 'kind' | 'baseTs'>
+     & { ackedAt?: number | null; kind?: AlertKind | null; baseTs?: number | null },
 ): void {
   // kind 默认 'level'：调用方不关心时就是穿档，旧行也全是这么来的
   getDb().insert(pumpAlerts)
-    .values({ ...row, ackedAt: row.ackedAt ?? null, kind: row.kind ?? 'level' }).run();
+    .values({
+      ...row, ackedAt: row.ackedAt ?? null,
+      kind: row.kind ?? 'level', baseTs: row.baseTs ?? null,
+    }).run();
 }
 
 export function listPumpAlerts(userId: string, sinceTs: number): PumpAlertRow[] {

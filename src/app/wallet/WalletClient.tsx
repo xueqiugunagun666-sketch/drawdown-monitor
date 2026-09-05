@@ -7,7 +7,11 @@ import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
 import AlertFeed, { LatestAlertBanner, alertName, type AlertRow } from './AlertFeed.tsx';
 import HealthWatch from './HealthWatch.tsx';
 import AlarmTest from './AlarmTest.tsx';
-import { playPumpSound, notifyPump } from '../../lib/pumpSound.ts';
+import {
+  playPumpSound, notifyPump, PUMP_PHRASE, ATH_PHRASE,
+} from '../../lib/pumpSound.ts';
+import { humanAgo } from '../../lib/time.ts';
+import { usd } from './HoldingsTable.tsx';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 
 export default function WalletClient() {
@@ -123,7 +127,12 @@ export default function WalletClient() {
         setAlerts((prev) => [...added, ...prev]);
 
         const top = added.reduce((m, a) => (a.level > m.level ? a : m));
-        playPumpSound(top.level);
+        const isAth = top.kind === 'ath' || top.kind === 'ath-advance';
+
+        // 两种报警念不同的话 —— 光靠听就能分出是哪一种，
+        // 而它们该引起的反应不一样
+        playPumpSound({ phrase: isAth ? ATH_PHRASE : PUMP_PHRASE });
+
         /**
          * 通知标题必须写币名。系统通知里没法选中复制，弹出一串 0x
          * 等于什么也没告诉用户。
@@ -134,39 +143,49 @@ export default function WalletClient() {
          */
         const name = alertName(top);
         const nameless = !top.symbol;
+
         /**
-         * 「暴涨」是穿过一个新档位（里程碑），「又涨」是没升档但还在往上走。
-         * 分开说是因为两者对读的人意思不同：看到「又涨 4.4x」你知道这是
-         * 同一波还在继续，而不是一件新事。旧行没有 kind，按穿档读。
-         */
-        /**
-         * 四种报警读起来意思不同，措辞要分开：
-         *   暴涨 3.0x        穿过一个新档位（里程碑）
-         *   又涨 4.4x        没升档但同一波还在继续
-         *   突破历史新高      进入价格发现区，头上没有套牢盘
-         *   再创新高          破新高之后又涨了一截
+         * 四种报警读起来意思不同，内容**分开写**：
+         *
+         *   暴涨 3.0x     穿过一个新档位（里程碑）
+         *   又涨 4.4x     没升档但同一波还在继续
+         *   破历史新高     进入价格发现区，头上没有套牢盘
+         *   再创新高       破新高之后又涨了一截
+         *
+         * ATH 与暴涨要回答的问题根本不同：暴涨答"涨了几倍、从哪个窗口的
+         * 什么基准算的"；破新高答"前高是什么时候立的、现在高出多少"。
+         * 「前高立于 23 天前」是 ATH 独有且最关键的一句 —— 打破一个立了
+         * 三个月的高点，和打破昨天的高点，分量差得远。倍数反而次要：
+         * 破新高的意义在"进入价格发现区"，不在涨了几个百分点。
          *
          * ATH 那两条**必须带口径**：我们的历史只从开始监控那天算起，
-         * 九成的币覆盖完整可以说「历史新高」，其余的只能说「N 天新高」。
-         * 把 6 天新高说成历史新高是这个系统最该避免的谎。
+         * 九成的币覆盖完整可以说「历史新高」，其余只能说「N 天新高」。
          */
-        const isAth = top.kind === 'ath' || top.kind === 'ath-advance';
         const scope = top.athScope ?? '新高';
+        const overPct = ((Number(top.multiple) - 1) * 100).toFixed(0);
+
         const verb = isAth
-          ? (top.kind === 'ath' ? `突破${scope}` : '再创新高')
+          ? (top.kind === 'ath' ? `破${scope}` : `再创${scope}`)
           : (top.kind === 'advance' ? '又涨' : '暴涨');
+
         const detail = isAth
-          ? `较前高 ${Number(top.multiple).toFixed(2)}x · ${scope}`
+          ? [
+            top.baseTs ? `前高立于 ${humanAgo(top.baseTs)}` : null,
+            `现价高出 ${overPct}%`,
+            top.valueUsd ? `持仓 ${usd(top.valueUsd)}` : null,
+          ].filter(Boolean).join(' · ')
           : top.kind === 'advance'
             ? `${describeBasis(top.timeframe, top.basis)} · 比上次报警又涨了一截`
             : `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`;
-        // ATH 的标题不带倍数 —— 「突破历史新高」本身就是全部信息，
-        // 后面缀个 1.1x 反而把重点冲淡了；倍数放正文
+
+        // ATH 标题不带倍数 —— 「破历史新高」本身就是全部信息，
+        // 后面缀个 1.1x 反而把重点冲淡；高出多少放正文
         const title = isAth
           ? (nameless ? `${top.chain ?? '未知链'} 上有币${verb}` : `${name} ${verb}`)
           : (nameless
             ? `${top.chain ?? '未知链'} 上有币${verb} ${Number(top.multiple).toFixed(1)}x`
             : `${name} ${verb} ${Number(top.multiple).toFixed(1)}x`);
+
         notifyPump(
           title,
           [detail, nameless ? top.address ?? top.tokenId : null].filter(Boolean).join('\n'),

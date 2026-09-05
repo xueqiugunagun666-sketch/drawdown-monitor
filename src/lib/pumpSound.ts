@@ -16,8 +16,13 @@
  */
 export type SoundStatus = 'locked' | 'ready' | 'blocked';
 
-/** 播报内容 */
+/**
+ * 播报内容。两种报警念**不同的话** —— 都念「有东西暴涨了」的话，
+ * 光靠听分不出是哪一种，而这两件事该做的反应不一样：
+ * 暴涨是"从低点弹起来了"，破新高是"进入价格发现区、头上没有套牢盘"。
+ */
 export const PUMP_PHRASE = '有东西暴涨了';
+export const ATH_PHRASE = '有币创新高了';
 
 let ctx: AudioContext | null = null;
 
@@ -111,12 +116,12 @@ export function currentVoiceName(): string | null {
   return cachedVoice?.name ?? null;
 }
 
-export function speakPump(): boolean {
+export function speakPump(phrase: string = PUMP_PHRASE): boolean {
   if (typeof speechSynthesis === 'undefined' || !cachedVoice) return false;
   try {
     // 上一条还没播完会排队，暴涨提示要的是"立刻知道"，直接顶掉
     speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(PUMP_PHRASE);
+    const u = new SpeechSynthesisUtterance(phrase);
     u.voice = cachedVoice;
     u.lang = cachedVoice.lang;
     u.volume = 1;
@@ -198,8 +203,12 @@ export async function unlockAudio(): Promise<SoundStatus> {
  *
  * 档位不改变提示强度 —— 之前用爆炸次数区分档位，实际体验是被吓一跳，
  * 而具体涨了多少倍在通知和页面上都写着，不需要靠声音表达。
+ *
+ * 但**报警的种类**要能听出来：暴涨念「有东西暴涨了」，破新高念
+ * 「有币创新高了」。都念同一句的话，光靠听分不出是哪一种，
+ * 而这两件事该引起的反应不一样。
  */
-export function playPumpSound(_level?: number): void {
+export function playPumpSound(opts?: { phrase?: string }): void {
   /**
    * 被挂起就先试着唤醒。不带用户手势的 resume() 不保证成功 ——
    * 成功了这次报警照常响，失败了 watchSoundStatus 会把开关翻回
@@ -212,7 +221,7 @@ export function playPumpSound(_level?: number): void {
   }
   // 让提示音先响完再说话，叠在一起会互相盖住
   setTimeout(() => {
-    if (!speakPump()) fallbackTone();
+    if (!speakPump(opts?.phrase)) fallbackTone();
   }, 300);
 }
 

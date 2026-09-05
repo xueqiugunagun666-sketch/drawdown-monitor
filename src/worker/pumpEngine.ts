@@ -365,7 +365,7 @@ async function evaluateToken(
    */
   const ath = evaluateAthFor(tokenId, price, now);
   if (ath) {
-    await fanout(tokenId, holders, quote, price, ath.winner, ath.kind, ath.basePrice, now);
+    await fanout(tokenId, holders, quote, price, ath.winner, ath.kind, ath.basePrice, now, ath.baseTs);
     return;
   }
 
@@ -415,7 +415,7 @@ async function evaluateToken(
  * 历史最高就没有资格说"突破新高"。
  */
 function evaluateAthFor(tokenId: string, price: Decimal, now: number): {
-  winner: PendingFire; kind: 'ath' | 'ath-advance'; basePrice: Decimal;
+  winner: PendingFire; kind: 'ath' | 'ath-advance'; basePrice: Decimal; baseTs: number | null;
 } | null {
   const row = athRepo.getWalletAth(tokenId);
   if (!row) return null;
@@ -428,6 +428,13 @@ function evaluateAthFor(tokenId: string, price: Decimal, now: number): {
       lastAlertPrice: row.lastAlertPrice ? new Decimal(row.lastAlertPrice) : null,
       refAth: row.refAth ? new Decimal(row.refAth) : null,
     };
+
+  /**
+   * 前高的时刻要在更新之前取。raiseWalletAth 会把 ath_ts 改成新高的
+   * 时刻，事后再查就查不到"旧高点是什么时候立的"了 —— 而
+   * 「前高立于 23 天前」正是 ATH 报警最关键的一句。
+   */
+  const prevAthTs = row.athTs;
 
   const r = evaluateAth(prev, { price, ath: stored });
 
@@ -452,6 +459,7 @@ function evaluateAthFor(tokenId: string, price: Decimal, now: number): {
     },
     kind: r.fire === 'breakout' ? 'ath' : 'ath-advance',
     basePrice: ref,
+    baseTs: prevAthTs,
   };
 }
 
@@ -465,6 +473,7 @@ async function fanout(
   kind: 'level' | 'advance' | 'ath' | 'ath-advance',
   base: Decimal | null,
   now: number,
+  baseTs: number | null = null,
 ): Promise<void> {
   let notified = 0, skipped = 0;
   for (const h of holders) {
@@ -499,6 +508,7 @@ async function fanout(
       multiple: winner.multiple.toString(),
       priceUsd: quote.priceUsd,
       basePriceUsd: base ? base.toString() : null,
+      baseTs,
       balance: h.balance,
       valueUsd: value ? value.toString() : null,
       ackedAt: null,

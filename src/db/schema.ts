@@ -294,6 +294,15 @@ export const pumpAlerts = sqliteTable('pump_alerts', {
   multiple: text('multiple').notNull(),               // 实际倍数，十进制字符串
   priceUsd: text('price_usd'),
   basePriceUsd: text('base_price_usd'),
+  /**
+   * 基准价的时刻。ATH 报警用它说「前高立于 23 天前」——
+   * 打破一个立了三个月的高点，和打破昨天的高点，完全是两件事，
+   * 而这个信息暴涨报警里没有。
+   *
+   * 必须在报警时就记下来：wallet_ath.ath_ts 在突破后会被更新成新高的
+   * 时刻，事后再查就查不到旧高点是什么时候立的了。
+   */
+  baseTs: integer('base_ts'),
   balance: text('balance'),
   valueUsd: text('value_usd'),
   ackedAt: integer('acked_at'),

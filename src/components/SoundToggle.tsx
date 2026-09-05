@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import {
   unlockAudio, soundStatus, requestNotificationPermission, playPumpSound,
-  loadVoice, currentVoiceName, watchSoundStatus, PUMP_PHRASE, type SoundStatus,
+  loadVoice, currentVoiceName, watchSoundStatus, PUMP_PHRASE, ATH_PHRASE,
+  type SoundStatus,
 } from '../lib/pumpSound.ts';
 
 /**
@@ -45,7 +46,7 @@ export default function SoundToggle() {
       <div className="flex items-center gap-3 text-xs text-neutral-500 flex-wrap">
         <span className="text-[#3fbf7f]">● 声音已开启</span>
         {voice
-          ? <span>暴涨时会播报「{PUMP_PHRASE}」（{voice}）</span>
+          ? <span>暴涨播报「{PUMP_PHRASE}」，破新高播报「{ATH_PHRASE}」（{voice}）</span>
           // 没有中文语音要明说，否则用户以为会播报、实际只有滴声
           : <span className="text-[#fab219]">这台设备没有中文语音，只会响提示音，不会播报</span>}
         {notify !== 'granted' && (
