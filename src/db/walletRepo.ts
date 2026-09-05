@@ -223,7 +223,10 @@ export function monitoredTokenIds(): string[] {
  *   level / advance —— 暴涨：穿过档位 / 未升档但又涨了一截
  *   ath / ath-advance —— 突破历史新高 / 破新高之后又涨了一截
  */
-export type AlertKind = 'level' | 'advance' | 'ath' | 'ath-advance';
+export type AlertKind =
+  | 'level' | 'advance'          // 暴涨：穿档 / 未升档但又涨了一截
+  | 'ath' | 'ath-advance'        // 破新高 / 破新高之后又涨了一截
+  | 'source-down';               // 系统消息：某个报价源不可信了，只发给管理员
 
 export function insertPumpAlert(
   row: Omit<PumpAlertRow, 'ackedAt' | 'kind' | 'baseTs' | 'athWindow' | 'marketCapUsd'>

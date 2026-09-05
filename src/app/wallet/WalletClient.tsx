@@ -9,7 +9,7 @@ import { baseMarketCap } from '../../lib/alertMarketCap.ts';
 import HealthWatch from './HealthWatch.tsx';
 import AlarmTest from './AlarmTest.tsx';
 import {
-  playPumpSound, notifyPump, PUMP_PHRASE, ATH_PHRASE,
+  playPumpSound, notifyPump, PUMP_PHRASE, ATH_PHRASE, SYSTEM_PHRASE,
 } from '../../lib/pumpSound.ts';
 import { humanAgo } from '../../lib/time.ts';
 import { money } from '../trash/TrashList.tsx';
@@ -141,10 +141,12 @@ export default function WalletClient() {
 
         const top = added.reduce((m, a) => (a.level > m.level ? a : m));
         const isAth = top.kind === 'ath' || top.kind === 'ath-advance';
+        const isSystem = top.kind === 'source-down';
 
         // 两种报警念不同的话 —— 光靠听就能分出是哪一种，
         // 而它们该引起的反应不一样
-        playPumpSound({ phrase: isAth ? ATH_PHRASE : PUMP_PHRASE });
+        // 系统消息不念「暴涨」那句 —— 它不是行情
+        playPumpSound({ phrase: isSystem ? SYSTEM_PHRASE : isAth ? ATH_PHRASE : PUMP_PHRASE });
 
         /**
          * 通知标题必须写币名。系统通知里没法选中复制，弹出一串 0x
@@ -211,8 +213,10 @@ export default function WalletClient() {
             : `${name} ${verb} ${Number(top.multiple).toFixed(1)}x`);
 
         notifyPump(
-          title,
-          [detail, nameless ? top.address ?? top.tokenId : null].filter(Boolean).join('\n'),
+          isSystem ? `报价源 ${top.tokenId.split(':')[1] ?? ''} 可能不可信` : title,
+          isSystem
+            ? '它与另一个数据源的价格对不上，已连续多轮。详见服务器日志。'
+            : [detail, nameless ? top.address ?? top.tokenId : null].filter(Boolean).join('\n'),
         );
         void load();     // 顺带刷新持仓价值
       });

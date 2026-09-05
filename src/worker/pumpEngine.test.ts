@@ -41,6 +41,8 @@ function history(tokenId: string, base: string) {
 }
 
 const deps = (quotes: Record<string, Partial<BatchQuote>>): PumpDeps => ({
+  // 关掉影子核对：测试不该真的去打外部接口
+  fetchShadowPrices: null,
   fetchQuotes: async (_chain, addrs) => {
     const m = new Map<string, BatchQuote>();
     for (const a of addrs) {

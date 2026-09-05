@@ -23,6 +23,8 @@ export type SoundStatus = 'locked' | 'ready' | 'blocked';
  */
 export const PUMP_PHRASE = '有东西暴涨了';
 export const ATH_PHRASE = '有币创新高了';
+/** 系统消息（数据源故障之类）。念得不一样，好让人知道这不是行情 */
+export const SYSTEM_PHRASE = '监控系统有情况';
 
 let ctx: AudioContext | null = null;
 

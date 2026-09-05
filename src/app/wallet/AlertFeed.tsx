@@ -30,6 +30,11 @@ export interface AlertRow {
   baseTs?: number | null;
 }
 
+/** 系统消息（报价源故障之类），不是行情。只发给管理员 */
+export function isSystemAlert(kind: string | null | undefined): boolean {
+  return kind === 'source-down';
+}
+
 /** 币名优先，没有才退回地址 —— 显示一串十六进制等于没说 */
 export function alertName(a: AlertRow): string {
   if (a.symbol) return a.symbol;
@@ -162,32 +167,42 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
                 * 左列：暴涨给倍数（3.0x），破新高给「新高」二字 ——
                 * 倍数对破新高没有意义，1.1x 看着比 3.0x 弱，实际重要得多。
                 */}
-              {isAthAlert(a.kind) ? (
+              {isSystemAlert(a.kind) ? (
+                <span className="text-[#fab219] text-sm font-medium w-16 shrink-0">系统</span>
+              ) : isAthAlert(a.kind) ? (
                 <span className={`${ATH_COLOR} text-sm font-medium w-16 shrink-0`}>新高</span>
               ) : (
                 <span className={`${pumpClass(a.level)} tabular-nums font-medium w-16 shrink-0`}>
                   {new Decimal(a.multiple).toFixed(1)}x
                 </span>
               )}
-              <span className="text-[15px] text-neutral-200 shrink-0 font-medium">{alertName(a)}</span>
-              <span className={`text-xs shrink-0 ${isAthAlert(a.kind) ? ATH_COLOR : 'text-neutral-500'}`}>
-                {isAthAlert(a.kind)
+              <span className="text-[15px] text-neutral-200 shrink-0 font-medium">
+                {isSystemAlert(a.kind)
+                  ? `报价源 ${a.tokenId.split(':')[1] ?? ''} 可能不可信`
+                  : alertName(a)}
+              </span>
+              <span className={`text-xs shrink-0 ${
+                isSystemAlert(a.kind) ? 'text-[#fab219]'
+                  : isAthAlert(a.kind) ? ATH_COLOR : 'text-neutral-500'}`}>
+                {isSystemAlert(a.kind)
+                  ? '与另一个数据源对不上，详见服务器日志'
+                  : isAthAlert(a.kind)
                   ? [a.athScope ?? '新高', describeAthDelta(a.multiple)].filter(Boolean).join(' · ')
-                  : describeBasis(a.timeframe, a.basis)}
+                    : describeBasis(a.timeframe, a.basis)}
               </span>
               {isAthAlert(a.kind) && a.baseTs && (
                 <span className="text-neutral-600 text-xs shrink-0 hidden md:inline">
                   前高立于 {humanAgo(a.baseTs)}
                 </span>
               )}
-              {a.marketCapUsd != null && (
+              {!isSystemAlert(a.kind) && a.marketCapUsd != null && (
                 <span className="text-neutral-200 text-[13px] font-medium tabular-nums shrink-0">
                   {(() => { const b = baseMarketCap(a.marketCapUsd, a.priceUsd, a.basePriceUsd);
                     return b != null ? `${money(b)} → ` : ''; })()}
                   {money(a.marketCapUsd)}
                 </span>
               )}
-              {a.basePriceUsd && a.priceUsd && (
+              {!isSystemAlert(a.kind) && a.basePriceUsd && a.priceUsd && (
                 <span className="text-neutral-600 text-xs tabular-nums hidden lg:inline">
                   ${formatPrice(new Decimal(a.basePriceUsd), 6)} → ${formatPrice(new Decimal(a.priceUsd), 6)}
                 </span>

@@ -15,6 +15,9 @@
  */
 import { Decimal } from '../lib/decimal.ts';
 import { scaleMarketCap } from '../sources/quotePrice.ts';
+import { fetchXxyyPrices, supportsChain as xxyySupportsChain } from '../sources/xxyy.ts';
+import { compareQuotes, judge } from './sourceAgreement.ts';
+import { recordVerdict } from './sourceWatch.ts';
 import * as athRepo from '../db/athRepo.ts';
 import {
   BREAKOUT_MARGIN, REARM_RATIO, ADVANCE_RATIO as ATH_ADVANCE_RATIO,
@@ -87,6 +90,12 @@ export interface PumpDeps {
   backfill?: BackfillDeps;
   /** 取代币元信息（持有人数）。返回 null 表示查不到 */
   fetchTokenInfo?: (chain: string, address: string) => Promise<TokenInfo | null>;
+  /**
+   * 影子报价源，用来与主源交叉核对。
+   * 传 null 表示**关掉影子核对** —— 测试要用这个，否则每个用例都会真的
+   * 去打一次外部接口。
+   */
+  fetchShadowPrices?: typeof fetchXxyyPrices | null;
 }
 
 export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes, fetchTokenInfo };
@@ -232,6 +241,19 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
     }
   }
   const quoteMs = Date.now() - t0;
+
+  /**
+   * XXYY 影子核对：**只比对、不参与判定**。
+   *
+   * 它一次能带 500 个地址（DexScreener 是 30），真接上去能把报价阶段
+   * 从二十几秒压到几秒。但它是没有公开文档的私有接口，而今天已经被
+   * 数据源坑过三次 —— 三次都是"返回 200、字段齐全、只是数字错了"。
+   * 所以先影子跑一段：每轮拿重叠部分对一次，连续多轮不合格就报给管理员。
+   * 确认可信之后再切换成主报价源。
+   */
+  if (deps.fetchShadowPrices !== null) {
+    await shadowCheckXxyy(byChain, quotes, now, deps.fetchShadowPrices ?? fetchXxyyPrices);
+  }
 
   for (const tokenId of tokenIds) {
     try {
@@ -644,6 +666,56 @@ async function fanout(
       `${tokenId} 暴涨 ${winner.multiple.toFixed(2)}x ` +
       `(${winner.timeframe}/${winner.basis}, ${winner.level}x 档)，通知 ${notified} 人` +
       (skipped > 0 ? `（${skipped} 人仓位低于各自的阈值，已跳过）` : ''),
+    );
+  }
+}
+
+
+/* ---------------- XXYY 影子核对 ---------------- */
+
+/**
+ * 拿 XXYY 的批量报价与本轮 DexScreener 的结果对一遍。
+ *
+ * 失败一律吞掉（只记日志）—— 影子源出问题绝不能影响正常判定，
+ * 这是"先用着"阶段最要紧的一条。
+ */
+async function shadowCheckXxyy(
+  byChain: Map<string, string[]>, quotes: Map<string, BatchQuote>, now: number,
+  fetchPrices: typeof fetchXxyyPrices,
+): Promise<void> {
+  const mine = new Map<string, { priceUsd: string }>();
+  const theirs = new Map<string, { priceUsd: string }>();
+
+  for (const [chain, addrs] of byChain) {
+    if (!xxyySupportsChain(chain)) continue;
+    let got;
+    try {
+      got = await fetchPrices(chain, addrs);
+    } catch (err) {
+      log.debug(`xxyy ${chain} 取价失败（影子模式，不影响判定）: ${safeErrorMessage(err)}`);
+      continue;
+    }
+    for (const a of addrs) {
+      const key = `${chain}:${a}`;
+      const ds = quotes.get(key);
+      if (ds) mine.set(key, { priceUsd: ds.priceUsd });
+      const x = got.get(a.toLowerCase());
+      if (x) theirs.set(key, { priceUsd: x.priceUsd });
+    }
+  }
+
+  if (mine.size === 0) return;
+  const report = compareQuotes(mine, theirs);
+  const verdict = judge(report, mine.size);
+  recordVerdict('xxyy', verdict, now,
+    `重叠 ${report.compared}/${mine.size}，一致 ${report.agreed}`);
+
+  if (report.compared > 0) {
+    log.info(
+      `xxyy 影子核对：重叠 ${report.compared}/${mine.size}，`
+      + `一致率 ${report.rate === null ? '—' : (report.rate * 100).toFixed(1) + '%'}`
+      + (report.worst.length > 0
+        ? `，最大偏离 ${report.worst[0]!.ratio} 倍（${report.worst[0]!.key}）` : ''),
     );
   }
 }
