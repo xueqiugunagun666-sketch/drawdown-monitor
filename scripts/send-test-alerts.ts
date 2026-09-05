@@ -71,6 +71,7 @@ function fakeAlert(index: number): FiredAlert | null {
       h1: { buys: 40 + index * 7, sells: 30 + index * 5 },
       h24: { buys: 0, sells: 0 },
     },
+    links: { imageUrl: null, websiteUrl: null, twitterUrl: null, telegramUrl: null },
     primaryPool: toRef(primary), allPools: pools.map(toRef),
     medianPriceUsd: price, crossValidated: pools.length >= 3,
     fetchedAt: nowSec(), source: 'test',

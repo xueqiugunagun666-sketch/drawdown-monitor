@@ -14,6 +14,7 @@ import { processQuote } from './engine.ts';
 import { enqueueBackfill } from './backfill.ts';
 import { deliver, notifyPlain } from './notifier.ts';
 import * as repo from '../db/repo.ts';
+import { setTokenLinks } from '../db/walletRepo.ts';
 import type { ChainId } from '../sources/types.ts';
 
 const log = makeLogger('poller');
@@ -58,6 +59,12 @@ export async function pollOnce(): Promise<void> {
         const quote = await fetchQuote(chain, token.address, nativeUsd);
         repo.markQuoteSuccess(token.id, quote);
         repo.recordSourceOk(SOURCE_ID);
+        /**
+         * 项目方绑定的官网 / 推特 / 电报，与钱包页共用 token_meta 这一张表。
+         * 数据是同一个响应白送的（info 字段），零额外请求 ——
+         * 之前只有钱包引擎在写，看板独有的币就一直空着。
+         */
+        setTokenLinks(token.id, nowSec(), quote.links);
         covered++;
         staleNotified.delete(token.id);
 

@@ -31,7 +31,14 @@ export const SOURCE_ID = 'dexscreener';
 const loggedOutliers = new Map<string, string>();
 
 /** DexScreener 单个 pair 的原始结构（只声明我们用到的字段） */
+interface RawInfo {
+  imageUrl?: unknown;
+  websites?: unknown;
+  socials?: unknown;
+}
+
 interface RawPair {
+  info?: RawInfo;
   chainId: string;
   dexId: string;
   pairAddress: string;
@@ -225,6 +232,17 @@ export async function fetchQuote(
       h1: txnsOf(primaryRaw, 'h1'),
       h24: txnsOf(primaryRaw, 'h24'),
     },
+    /**
+     * 项目方在 DexScreener 付费绑定的官网与社交。
+     * **同一个响应里本来就有**（info 字段），零额外请求 —— 这是钱包页
+     * 那套外链图标用的同一批数据，看板这边一直没取，白白空着。
+     */
+    links: {
+      imageUrl: safeExternalUrl(primaryRaw.info?.imageUrl),
+      websiteUrl: pickFirstUrl(primaryRaw.info?.websites),
+      twitterUrl: pickSocialUrl(primaryRaw.info?.socials, 'twitter'),
+      telegramUrl: pickSocialUrl(primaryRaw.info?.socials, 'telegram'),
+    },
     primaryPool: toPoolRef(primary),
     allPools: candidates.map(toPoolRef),
     medianPriceUsd: sel.medianPriceUsd,
@@ -232,4 +250,44 @@ export async function fetchQuote(
     fetchedAt: Math.floor(Date.now() / 1000),
     source: SOURCE_ID,
   };
+}
+
+/* ---------------- 项目方绑定的外链 ---------------- */
+
+/**
+ * 只认 http/https 的绝对地址。
+ *
+ * 这些 URL 是项目方自己填的内容，会原样变成页面上可点的链接 ——
+ * 不校验就等于让第三方往我们页面里塞任意 href（javascript: 之类）。
+ */
+export function safeExternalUrl(v: unknown): string | null {
+  if (typeof v !== 'string' || v.length === 0) return null;
+  try {
+    const u = new URL(v);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+interface RawLink { url?: unknown; type?: unknown }
+
+export function pickFirstUrl(list: unknown): string | null {
+  if (!Array.isArray(list)) return null;
+  for (const w of list as RawLink[]) {
+    const u = safeExternalUrl(w?.url);
+    if (u) return u;
+  }
+  return null;
+}
+
+export function pickSocialUrl(list: unknown, type: string): string | null {
+  if (!Array.isArray(list)) return null;
+  for (const s of list as RawLink[]) {
+    if (typeof s?.type === 'string' && s.type.toLowerCase() === type) {
+      const u = safeExternalUrl(s.url);
+      if (u) return u;
+    }
+  }
+  return null;
 }

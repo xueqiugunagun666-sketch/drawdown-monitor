@@ -49,6 +49,7 @@ function quote(price: string, at: number, liquidity = 100_000): TokenQuote {
     fdvUsd: null, marketCapUsd: 1_234_567,
     volume: { m5: 5000, h1: 60000, h24: 1_000_000 },
     txns: { m5: { buys: 10, sells: 8 }, h1: { buys: 120, sells: 90 }, h24: { buys: 2000, sells: 1800 } },
+    links: { imageUrl: null, websiteUrl: null, twitterUrl: null, telegramUrl: null },
     primaryPool: pool(poolAddrFor(ADDR), price, liquidity),
     allPools: [pool(poolAddrFor(ADDR), price, liquidity)],
     medianPriceUsd: p, crossValidated: true,

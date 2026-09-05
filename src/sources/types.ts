@@ -46,6 +46,16 @@ export interface TokenQuote {
   marketCapUsd: number | null;
   volume: { m5: number; h1: number; h24: number };
   txns: { m5: Txns; h1: Txns; h24: Txns };
+  /**
+   * 项目方在 DexScreener 付费绑定的官网 / 社交 / 头像。
+   * 同一个响应里本来就有，零额外请求；项目方没买增强信息时全是 null。
+   */
+  links: {
+    imageUrl: string | null;
+    websiteUrl: string | null;
+    twitterUrl: string | null;
+    telegramUrl: string | null;
+  };
   primaryPool: PoolRef;
   /** 全部 base 池，含被排除的离群池（isOutlier 标记） */
   allPools: PoolRef[];

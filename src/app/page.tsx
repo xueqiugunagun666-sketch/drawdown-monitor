@@ -7,6 +7,7 @@ import { nowSec, humanAgo } from '../lib/time.ts';
 import { ATH_MODES, ROLLING_WINDOW_SECONDS, type AthMode } from '../worker/athModes.ts';
 import { backfillProgress } from '../worker/backfill.ts';
 import * as repo from '../db/repo.ts';
+import { listTokenLinks } from '../db/walletRepo.ts';
 import { currentActor } from '../lib/accountAuthServer.ts';
 import { canDelete, canEditMeta, canToggleGlobal } from '../lib/permissions.ts';
 
@@ -30,6 +31,8 @@ export default async function Home({
   const activeMode = (cfg.defaultRule.athMode ?? 'rolling_90d') as AthMode;
   const levels = [...cfg.defaultRule.levels].sort((a, b) => a - b);
 
+  // 一次取全部外链，按 token_id 查 —— 别在 map 里一行一次查库
+  const links = listTokenLinks();
   const rows: RowData[] = tokens.map((t) => {
     const candles = repo.getCandles(t.id, '5m', 0);
     const last = candles.at(-1);
@@ -82,6 +85,9 @@ export default async function Home({
       canDelete: canDelete(actor, t.ownerId ?? null),
       canEditMeta: canEditMeta(actor, t.ownerId ?? null),
       canToggleGlobal: canToggleGlobal(actor),
+      websiteUrl: links.get(t.id)?.websiteUrl ?? null,
+      twitterUrl: links.get(t.id)?.twitterUrl ?? null,
+      telegramUrl: links.get(t.id)?.telegramUrl ?? null,
     };
   }).sort((a, b) => {
     // 置顶的排最前 —— 盯着但还没跌的币，按跌幅排会沉到底下看不见。

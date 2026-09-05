@@ -7,6 +7,7 @@ import TokenActions from './TokenActions.tsx';
 import PinButton from './PinButton.tsx';
 import { copyText, selectElement } from '../lib/copy.ts';
 import { severityClass, severityBar } from '../lib/severity.ts';
+import TokenLinks from './TokenLinks.tsx';
 
 export interface RowData {
   id: string;
@@ -35,6 +36,10 @@ export interface RowData {
   canDelete: boolean;
   canEditMeta: boolean;
   canToggleGlobal: boolean;
+  /** 项目方在 DexScreener 付费绑定的官网与社交，跟着报价白拿的 */
+  websiteUrl?: string | null;
+  twitterUrl?: string | null;
+  telegramUrl?: string | null;
 }
 
 function fmtDd(v: number | null, digits = 1): string {
@@ -148,6 +153,12 @@ export default function TokenRow({ r }: { r: RowData }) {
               <PinButton tokenId={r.id} pinned={r.pinned} />
             </span>
             <CopyName tokenId={r.id} symbol={r.symbol} />
+            {/* 外链按钮要在 z-10 里 —— 整行铺了一层 absolute 的详情页链接，
+                不抬起来的话点图标会被那层吃掉 */}
+            <span className="relative z-10 flex shrink-0">
+              <TokenLinks chain={r.chain} address={r.id.split(':')[1] ?? ''}
+                websiteUrl={r.websiteUrl} twitterUrl={r.twitterUrl} telegramUrl={r.telegramUrl} />
+            </span>
             <span className="meta-label shrink-0">{r.chain}</span>
             {r.isStale && <span className="badge-fired shrink-0">失联</span>}
             {r.frozen && <span className="badge-quiet shrink-0">已冻结</span>}
