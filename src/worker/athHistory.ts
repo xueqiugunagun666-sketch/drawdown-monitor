@@ -32,8 +32,11 @@ export interface AthSummary {
   historyStartTs: number | null;
   /** 历史覆盖了这个币的全部生命 */
   complete: boolean;
-  /** 我们手上有多少天历史。报警文案要用它说「N 天新高」 */
-  coverageDays: number;
+  /**
+   * 我们手上有多少秒历史。用秒不用天是因为很多币只有几小时 ——
+   * 取整到天会变成 0，说不清楚。
+   */
+  coverageSeconds: number;
 }
 
 /**
@@ -61,20 +64,40 @@ export function summarizeAth(
 
   return {
     athPrice, athTs, historyStartTs: start, complete,
-    coverageDays: start === null ? 0 : Math.max(0, Math.floor((now - start) / 86400)),
+    coverageSeconds: start === null ? 0 : Math.max(0, now - start),
   };
 }
 
 /**
+ * 「历史完整」但币太年轻时，还要把年龄说出来的分界。
+ *
+ * 对一个 2 小时前建池的币说「突破历史新高」是真话 —— 我们确实覆盖了它
+ * 的全部生命 —— 但听起来像个里程碑，而它的"历史"只有两小时。线上有
+ * 67 个币属于这一类（完整但不到 2 天）。说成「上市 2 小时新高」，
+ * 读的人才能正确估量这条消息的分量。
+ */
+export const YOUNG_DAYS = 2;
+
+/**
  * 报警文案里怎么称呼这个高点。
  *
- * 历史不完整时必须把天数说出来，而且要点明"不代表历史最高" ——
- * 含糊其辞地说「新高」，读的人默认理解成历史新高。
+ * 历史不完整时必须把跨度说出来 —— 含糊其辞地说「新高」，读的人默认
+ * 理解成历史新高。跨度不足一天就用小时，取整到天会变成 0 说不清楚。
  */
-export function describeAthScope(s: Pick<AthSummary, 'complete' | 'coverageDays'>): string {
-  if (s.complete) return '历史新高';
-  if (s.coverageDays <= 0) return '新高（历史不足一天）';
-  return `${s.coverageDays} 天新高`;
+export function describeAthScope(
+  s: { complete: boolean; coverageSeconds: number },
+): string {
+  const hours = Math.floor(s.coverageSeconds / 3600);
+  const days = Math.floor(s.coverageSeconds / 86400);
+
+  if (s.complete) {
+    if (days >= YOUNG_DAYS) return '历史新高';
+    if (hours >= 1) return `上市 ${hours} 小时新高`;
+    return '上市不足一小时新高';
+  }
+  if (days >= 1) return `${days} 天新高`;
+  if (hours >= 1) return `${hours} 小时新高`;
+  return '新高（历史不足一小时）';
 }
 
 /**

@@ -31,7 +31,7 @@ test('空历史返回 null 而不是 0 —— 没有数据和最高价是 0 是�
   assert.equal(s.athTs, null);
   assert.equal(s.historyStartTs, null);
   assert.equal(s.complete, false);
-  assert.equal(s.coverageDays, 0);
+  assert.equal(s.coverageSeconds, 0);
 });
 
 test('历史起点早于建池时间 = 覆盖完整，可以说历史新高', () => {
@@ -45,7 +45,7 @@ test('历史起点晚于建池时间 = 不完整，只能说 N 天新高', () =>
   // 币是 90 天前建的池，我们只有最近 6 天
   const s = summarizeAth([c(NOW - 6 * DAY, '1'), c(NOW, '2')], NOW - 90 * DAY, NOW);
   assert.equal(s.complete, false);
-  assert.equal(s.coverageDays, 6);
+  assert.equal(s.coverageSeconds, 6 * DAY);
   assert.equal(describeAthScope(s), '6 天新高');
 });
 
@@ -64,10 +64,29 @@ test('宽限一小时：差几分钟不该被判成不完整', () => {
   assert.equal(late.complete, false, '超出宽限就是不完整');
 });
 
-test('历史不足一天时说清楚，不能含糊说"新高"', () => {
-  const s = summarizeAth([c(NOW - 3600, '1')], NOW - 90 * DAY, NOW);
-  assert.equal(s.coverageDays, 0);
-  assert.equal(describeAthScope(s), '新高（历史不足一天）');
+test('历史不足一天时用小时说，不能含糊说"新高"', () => {
+  const s = summarizeAth([c(NOW - 5 * 3600, '1')], NOW - 90 * DAY, NOW);
+  assert.equal(describeAthScope(s), '5 小时新高');
+  const tiny = summarizeAth([c(NOW - 600, '1')], NOW - 90 * DAY, NOW);
+  assert.equal(describeAthScope(tiny), '新高（历史不足一小时）');
+});
+
+test('历史完整但币太年轻时要把年龄说出来', () => {
+  // 线上有 67 个币属于这一类。对 2 小时前建池的币说「突破历史新高」
+  // 是真话，但听起来像个里程碑，而它的"历史"只有两小时
+  const created = NOW - 2 * 3600;
+  const young = summarizeAth([c(created, '1'), c(NOW, '2')], created, NOW);
+  assert.equal(young.complete, true);
+  assert.equal(describeAthScope(young), '上市 2 小时新高');
+
+  const older = summarizeAth([c(NOW - 5 * DAY, '1')], NOW - 5 * DAY, NOW);
+  assert.equal(describeAthScope(older), '历史新高', '够老了才配这四个字');
+});
+
+test('刚建池不到一小时', () => {
+  const created = NOW - 600;
+  const s = summarizeAth([c(created, '1')], created, NOW);
+  assert.equal(describeAthScope(s), '上市不足一小时新高');
 });
 
 test('分辨率按币龄挑：年轻用小时线（精度高），老币只能用日线', () => {

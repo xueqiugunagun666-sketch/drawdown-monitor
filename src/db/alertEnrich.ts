@@ -52,10 +52,10 @@ function lookupAthScope(tokenId: string): string | null {
       `SELECT complete, history_start_ts FROM wallet_ath WHERE token_id = ?`,
     ).get(tokenId) as { complete: number; history_start_ts: number | null } | undefined;
     if (!r) return null;
-    const days = r.history_start_ts === null
+    const secs = r.history_start_ts === null
       ? 0
-      : Math.max(0, Math.floor((Math.floor(Date.now() / 1000) - r.history_start_ts) / 86400));
-    return describeAthScope({ complete: r.complete === 1, coverageDays: days });
+      : Math.max(0, Math.floor(Date.now() / 1000) - r.history_start_ts);
+    return describeAthScope({ complete: r.complete === 1, coverageSeconds: secs });
   } catch {
     return null;                 // 表还没建（迁移未跑），降级成"没有口径"
   }
