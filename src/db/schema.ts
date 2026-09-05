@@ -410,3 +410,30 @@ export const trashSignals = sqliteTable('trash_signals', {
   sources: text('sources'),
   fetchedAt: integer('fetched_at').notNull(),
 });
+
+/**
+ * 钱包币的历史最高价与覆盖范围。
+ *
+ * **另起一张表而不是复用 ath_state**：那张是看板那套引擎的，带 mode /
+ * quote_mode 两个维度，还存 ATH 时刻的流动性与市值 —— 钱包币的 K 线
+ * 没有这些字段，硬塞进去只会让两套引擎互相写乱。而且这里需要 ath_state
+ * 没有的东西：建池时间与历史覆盖是否完整。
+ *
+ * complete 决定报警怎么措辞：历史起点早于建池时间才敢说「历史新高」，
+ * 否则只能说「N 天新高」。把 6 天新高说成历史新高是这个系统最该避免的谎。
+ */
+export const walletAth = sqliteTable('wallet_ath', {
+  tokenId: text('token_id').primaryKey(),
+  /** 历史最高的收盘价，十进制字符串。用收盘价不用最高价 —— 单根影线不算 */
+  athPrice: text('ath_price'),
+  athTs: integer('ath_ts'),
+  /** 我们手上最早的一根 K 线 */
+  historyStartTs: integer('history_start_ts'),
+  /** DexScreener 给的建池时间（秒）。判定覆盖是否完整就靠它 */
+  pairCreatedAt: integer('pair_created_at'),
+  /** 1 = 历史覆盖了这个币的全部生命，可以说「历史新高」 */
+  complete: integer('complete').default(0).notNull(),
+  /** 上次长历史回填的时刻。用来决定要不要重拉 */
+  backfilledAt: integer('backfilled_at'),
+  updatedAt: integer('updated_at'),
+});

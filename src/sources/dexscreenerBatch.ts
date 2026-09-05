@@ -70,6 +70,12 @@ export interface BatchQuote {
    */
   priceCorrected: boolean;
   /**
+   * 建池时间（秒）。ATH 判定要靠它回答"我们的历史覆盖了这个币的全部生命吗"
+   * —— 覆盖了才敢说「历史新高」，否则只能说「N 天新高」。
+   * 同一个响应里本来就有，白拿。
+   */
+  pairCreatedAt: number | null;
+  /**
    * 项目方在 DexScreener 付费绑定的官网与社交账号，以及代币头像。
    * 同一个响应里本来就有（info 字段），白拿 —— 零额外请求。
    * 没买增强信息的币就没有 info，这几项都是 null/空数组。
@@ -88,6 +94,7 @@ interface RawPair {
   marketCap?: number;
   priceNative?: unknown;
   quoteToken?: { address?: string; symbol?: string };
+  pairCreatedAt?: unknown;
   info?: {
     imageUrl?: unknown;
     websites?: unknown;
@@ -179,6 +186,9 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
       quoteSymbol: p.quoteToken?.symbol ?? null,
       quoteAddress: p.quoteToken?.address ? norm(p.quoteToken.address) : null,
       priceCorrected: false,
+      // 毫秒转秒。缺失或不是数字时给 null —— 不知道币多老，就没资格说"全部历史"
+      pairCreatedAt: typeof p.pairCreatedAt === 'number' && Number.isFinite(p.pairCreatedAt)
+        ? Math.floor(p.pairCreatedAt / 1000) : null,
       imageUrl: safeUrl(p.info?.imageUrl),
       websiteUrl: pickWebsite(p.info?.websites),
       twitterUrl: pickSocial(p.info?.socials, 'twitter'),

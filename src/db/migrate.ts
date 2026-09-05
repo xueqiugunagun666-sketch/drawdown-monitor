@@ -135,6 +135,16 @@ CREATE TABLE IF NOT EXISTS pump_alerts (
   acked_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pump_alerts_user ON pump_alerts(user_id, fired_at);
+CREATE TABLE IF NOT EXISTS wallet_ath (
+  token_id TEXT PRIMARY KEY,
+  ath_price TEXT,
+  ath_ts INTEGER,
+  history_start_ts INTEGER,
+  pair_created_at INTEGER,
+  complete INTEGER NOT NULL DEFAULT 0,
+  backfilled_at INTEGER,
+  updated_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS trash_signals (
   id INTEGER PRIMARY KEY,
   chain TEXT NOT NULL,

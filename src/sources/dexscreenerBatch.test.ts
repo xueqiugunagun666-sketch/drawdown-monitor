@@ -164,3 +164,21 @@ test('info 结构不对时不崩', () => {
     assert.equal(q.websiteUrl, null, JSON.stringify(info));
   }
 });
+
+test('建池时间：毫秒转秒', () => {
+  const body = JSON.stringify([{
+    baseToken: { address: '0xage', symbol: 'A' }, priceUsd: '1',
+    liquidity: { usd: 1 }, pairCreatedAt: 1786719239000,
+  }]);
+  assert.equal(parseBatchQuotes(body, ['0xage']).get('0xage')!.pairCreatedAt, 1786719239);
+});
+
+test('建池时间缺失或不是数字时给 null —— 不知道币多老就没资格说"全部历史"', () => {
+  for (const v of [undefined, null, 'nope', NaN]) {
+    const body = JSON.stringify([{
+      baseToken: { address: '0xage2', symbol: 'A' }, priceUsd: '1',
+      liquidity: { usd: 1 }, pairCreatedAt: v,
+    }]);
+    assert.equal(parseBatchQuotes(body, ['0xage2']).get('0xage2')!.pairCreatedAt, null, String(v));
+  }
+});
