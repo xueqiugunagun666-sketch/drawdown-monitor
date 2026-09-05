@@ -15,6 +15,8 @@
  */
 import PQueue from 'p-queue';
 import { httpGet } from '../lib/http.ts';
+import { Decimal } from '../lib/decimal.ts';
+import { isMajorQuote, correctPrice } from './quotePrice.ts';
 import { getConfig } from '../lib/config.ts';
 import { SourceError } from '../lib/errors.ts';
 import { makeLogger } from '../lib/log.ts';
@@ -48,6 +50,26 @@ export interface BatchQuote {
   marketCapUsd: number | null;
   symbol: string | null;
   /**
+   * 这个池子用什么计价，以及以计价代币计的价格。
+   *
+   * 必须留着，因为 **priceUsd 不能无条件相信**：它是
+   * priceUsd = priceNative × 计价代币的美元价 算出来的，而 DexScreener
+   * 对小众计价代币的美元估值可能错得离谱。线上实测 GMEB 被估成 $2,307，
+   * 而它自己的 GMEB/USDT 池（流动性 $40 万）显示只值 $19.16 —— 拿 GMEB
+   * 计价的 9 个币持仓价值全部虚高 120 倍。有了这两项才能交叉验证并重算。
+   */
+  priceNative: string | null;
+  quoteSymbol: string | null;
+  quoteAddress: string | null;
+  /**
+   * 这条报价的美元价被校正过。
+   *
+   * 带出来是给一次性清理脚本用的：被校正的币，历史 K 线是按虚高价存的，
+   * 留着会在序列里制造一次凭空的百倍暴跌。靠它精确定位要清理谁，
+   * 比"拿现价和历史比，差太多就删"可靠 —— 后者会把真的暴跌了的币误删。
+   */
+  priceCorrected: boolean;
+  /**
    * 项目方在 DexScreener 付费绑定的官网与社交账号，以及代币头像。
    * 同一个响应里本来就有（info 字段），白拿 —— 零额外请求。
    * 没买增强信息的币就没有 info，这几项都是 null/空数组。
@@ -64,6 +86,8 @@ interface RawPair {
   liquidity?: { usd?: number };
   volume?: { h24?: number; h1?: number };
   marketCap?: number;
+  priceNative?: unknown;
+  quoteToken?: { address?: string; symbol?: string };
   info?: {
     imageUrl?: unknown;
     websites?: unknown;
@@ -151,6 +175,10 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
       // 市值可能真的没有（新币未定供应量），缺就是 null，不拿 0 冒充
       marketCapUsd: typeof p.marketCap === 'number' ? p.marketCap : null,
       symbol: p.baseToken?.symbol ?? null,
+      priceNative: typeof p.priceNative === 'string' ? p.priceNative : null,
+      quoteSymbol: p.quoteToken?.symbol ?? null,
+      quoteAddress: p.quoteToken?.address ? norm(p.quoteToken.address) : null,
+      priceCorrected: false,
       imageUrl: safeUrl(p.info?.imageUrl),
       websiteUrl: pickWebsite(p.info?.websites),
       twitterUrl: pickSocial(p.info?.socials, 'twitter'),
@@ -190,9 +218,108 @@ export async function fetchBatchQuotes(
     for (const [k, v] of parseBatchQuotes(res.body, batch)) merged.set(k, v);
   }
 
+  await applyQuoteCorrections(chain, chainCfg.dexscreenerId, merged);
+
   const missing = addresses.map(norm).filter((a) => !merged.has(a));
   if (missing.length > 0) {
     log.debug(`${chain} 有 ${missing.length}/${addresses.length} 个地址没拿到报价`);
   }
   return merged;
+}
+
+
+/* ---------------- 计价代币的美元价校正 ---------------- */
+
+/**
+ * 计价代币美元价的缓存。
+ *
+ * 值得缓存是因为**这一层的基数极小**：线上 435 个监控币里出现的不同
+ * 计价代币只有 25 个，而且换得很慢。十分钟一刷，成本一次批量请求。
+ */
+const quoteUsdCache = new Map<string, { price: Decimal | null; at: number }>();
+const QUOTE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * 查一批计价代币自己的美元价。
+ *
+ * **只信它用主流资产计价的那个池子** —— 否则就是拿一个可疑的价去验另一个
+ * 可疑的价，等于没验。查不到就记 null 并照样缓存，免得每轮都为同一个
+ * 查不到的代币重发请求。
+ */
+async function resolveQuoteUsd(
+  dexscreenerId: string, addrs: string[], now: number,
+): Promise<Map<string, Decimal | null>> {
+  const out = new Map<string, Decimal | null>();
+  const need: string[] = [];
+  for (const a of addrs) {
+    const hit = quoteUsdCache.get(a);
+    if (hit && now - hit.at < QUOTE_CACHE_TTL_MS) out.set(a, hit.price);
+    else need.push(a);
+  }
+  if (need.length === 0) return out;
+
+  for (const batch of chunkAddresses(need)) {
+    const url = `https://api.dexscreener.com/tokens/v1/${dexscreenerId}/${batch.join(',')}`;
+    let res;
+    try {
+      res = await queue.add(() => httpGet(url, 20_000), { throwOnTimeout: true });
+    } catch {
+      continue;                    // 校正是尽力而为，失败就保持原价
+    }
+    if (res.status !== 200) continue;
+
+    let pairs: unknown;
+    try { pairs = JSON.parse(res.body); } catch { continue; }
+    if (!Array.isArray(pairs)) continue;
+
+    // 同一个代币可能有多个主流池，取流动性最高的那个
+    const best = new Map<string, { price: Decimal; liq: number }>();
+    for (const p of pairs as RawPair[]) {
+      const a = p.baseToken?.address ? norm(p.baseToken.address) : null;
+      if (!a || !batch.includes(a)) continue;
+      if (!isMajorQuote(p.quoteToken?.symbol) || !p.priceUsd) continue;
+      const liq = p.liquidity?.usd ?? 0;
+      const prev = best.get(a);
+      if (prev && prev.liq >= liq) continue;
+      try { best.set(a, { price: new Decimal(p.priceUsd), liq }); } catch { /* 跳过 */ }
+    }
+    for (const a of batch) {
+      const price = best.get(a)?.price ?? null;
+      out.set(a, price);
+      quoteUsdCache.set(a, { price, at: now });
+    }
+  }
+  return out;
+}
+
+/**
+ * 把一批报价里"用小众代币计价"的那些交叉验证一遍，错的重算。
+ *
+ * 见 quotePrice.ts 顶部：DexScreener 的 priceUsd 是 priceNative × 计价代币
+ * 美元价，而它对小众计价代币的估值可能错上百倍。实测 GMEB 一个就让 9 个币
+ * 的持仓价值虚高 120 倍。
+ */
+async function applyQuoteCorrections(
+  chain: string, dexscreenerId: string, quotes: Map<string, BatchQuote>,
+): Promise<void> {
+  const suspects = new Set<string>();
+  for (const q of quotes.values()) {
+    if (q.quoteAddress && !isMajorQuote(q.quoteSymbol)) suspects.add(q.quoteAddress);
+  }
+  if (suspects.size === 0) return;
+
+  const real = await resolveQuoteUsd(dexscreenerId, [...suspects], Date.now());
+  let fixed = 0;
+  for (const [addr, q] of quotes) {
+    if (!q.quoteAddress || isMajorQuote(q.quoteSymbol)) continue;
+    const r = correctPrice(q.priceUsd, q.priceNative, real.get(q.quoteAddress) ?? null);
+    if (!r.corrected) continue;
+    quotes.set(addr, { ...q, priceUsd: r.priceUsd, priceCorrected: true });
+    fixed++;
+    log.warn(
+      `${chain}:${addr} 计价代币 ${q.quoteSymbol} 的美元价偏离 `
+      + `${r.deviation!.toFixed(1)} 倍，价格由 ${q.priceUsd} 校正为 ${r.priceUsd}`,
+    );
+  }
+  if (fixed > 0) log.info(`${chain} 本批校正了 ${fixed} 个币的美元价`);
 }

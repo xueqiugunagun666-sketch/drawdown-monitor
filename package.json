@@ -28,7 +28,8 @@
     "backfill:owner": "tsx --env-file-if-exists=.env scripts/backfill-owner.ts",
     "audit": "tsx --env-file-if-exists=.env scripts/audit.ts",
     "invite": "tsx --env-file-if-exists=.env scripts/invite.ts",
-    "trash:resync": "tsx --env-file-if-exists=.env scripts/trash-resync.ts"
+    "trash:resync": "tsx --env-file-if-exists=.env scripts/trash-resync.ts",
+    "purge:mispriced": "tsx --env-file-if-exists=.env scripts/purge-mispriced-candles.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
