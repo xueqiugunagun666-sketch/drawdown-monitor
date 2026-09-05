@@ -29,9 +29,35 @@ export const MAX_BATCH = 30;
 
 /**
  * 自带节流：钱包循环独立于价格轮询器调用它，不受后者的 maxConcurrency 约束。
- * DexScreener 对该端点的公开限额是 300 req/min，这里按 120/min 留足余量。
+ * 限速预算（2026-09-06 重算）：
+ *   DexScreener 公开限额        300 req/min（按 IP）
+ *   看板轮询占用                 21 个币 / 30 秒 = 42 req/min（同一个 IP）
+ *   留 20% 余量                  可用 240，扣掉看板 -> 钱包这边给 200/min
+ *
+ * 原先是 120/min，太保守：实测 19 个用户时峰值一轮 2,556 个币要 89 个请求，
+ * 光排队就 54.9 秒，整轮 61.5 秒**超出 60 秒预算**。提到 200/min 后同样的
+ * 轮次排队降到约 27 秒，并把每轮的天花板从 3,600 个币抬到 6,000 个。
+ *
+ * 单个请求实测只要 0.1 秒，所以真正的成本几乎全是这里的排队间隔 ——
+ * 这个常数就是整个系统的容量上限，改它之前先把上面那本账重算一遍。
  */
-const queue = new PQueue({ concurrency: 1, interval: 500, intervalCap: 1 });
+const queue = new PQueue({ concurrency: 3, interval: 300, intervalCap: 1 });
+
+/**
+ * 撞到 429 时先停一会儿。
+ *
+ * 提速之后余量变薄，万一算错了账（比如看板加了币、或者对方收紧限额），
+ * 没有这道缓冲就会**连续**撞 429，每次都丢掉一整批报价 —— 而丢报价是
+ * 静默的：币还在监控，只是这一轮没判。停一下让窗口过去，比硬撞划算。
+ */
+const RATE_LIMIT_PAUSE_MS = 5000;
+
+function backOffOnRateLimit(): void {
+  if (queue.isPaused) return;            // 已经在退避中，别叠加
+  log.warn(`撞到 429，暂停 ${RATE_LIMIT_PAUSE_MS / 1000} 秒 —— 限速预算可能算低了`);
+  queue.pause();
+  setTimeout(() => queue.start(), RATE_LIMIT_PAUSE_MS);
+}
 
 export interface BatchQuote {
   priceUsd: string;          // 保持字符串 —— 中途不许过 Number
@@ -215,6 +241,7 @@ export async function fetchBatchQuotes(
     const url = `https://api.dexscreener.com/tokens/v1/${chainCfg.dexscreenerId}/${batch.join(',')}`;
     const res = await queue.add(() => httpGet(url, 20_000), { throwOnTimeout: true });
     if (res.status === 429) {
+      backOffOnRateLimit();
       throw new SourceError({
         sourceId: SOURCE_ID, kind: 'rate_limited', chain,
         message: '429 限流', missing: batch,
@@ -276,6 +303,9 @@ async function resolveQuoteUsd(
     } catch {
       continue;                    // 校正是尽力而为，失败就保持原价
     }
+    // 这条路与报价共用同一个限速预算，撞到 429 同样要退避 ——
+    // 只 continue 的话会继续硬撞，把报价那边也拖下水
+    if (res.status === 429) { backOffOnRateLimit(); continue; }
     if (res.status !== 200) continue;
 
     let pairs: unknown;
