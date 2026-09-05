@@ -360,7 +360,7 @@ async function evaluateToken(
   // 两边都写会互相覆盖 h/l 与 liquidity_total（一个是主池、一个是全池口径），
   // 让 source 列反复翻转。让位给它。
   if (!fromWatchlist) {
-    wr.upsertWalletCandle(tokenId, quote.priceUsd, quote.liquidityUsd, now);
+    wr.upsertWalletCandle(tokenId, quote.priceUsd, quote.liquidityUsd, now, marketCapUsd);
 
     /**
      * 历史不足时补 24 小时的 5m K 线。必须在算窗口与 seed 之前做完 ——

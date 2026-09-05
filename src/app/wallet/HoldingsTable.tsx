@@ -5,6 +5,7 @@ import { Decimal, formatPrice } from '../../lib/decimal.ts';
 import { describeBasis } from '../../lib/pumpStyle.ts';
 import { copyText } from '../../lib/copy.ts';
 import ValueFilter from './ValueFilter.tsx';
+import { money } from '../trash/TrashList.tsx';
 import TokenLinks from '../../components/TokenLinks.tsx';
 
 export interface HoldingRow {
@@ -12,6 +13,8 @@ export interface HoldingRow {
   amount: string | null; priceUsd: string | null; valueUsd: string | null;
   monitored: boolean; filterReason: string | null; lastQuoteAt: number | null; decimalsKnown: boolean;
   websiteUrl?: string | null; twitterUrl?: string | null; telegramUrl?: string | null;
+  /** 当前市值，与 priceUsd 同源 */
+  marketCapUsd?: number | null;
   /** 四个窗口里最高的当前倍数 */
   best: { multiple: string; timeframe: string; basis: string } | null;
 }
@@ -154,6 +157,13 @@ function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
         </span>
       </div>
       <div className="flex items-baseline gap-2 mt-0.5 text-xs text-neutral-600">
+        {/* 市值排在最前、颜色更亮 —— 判断"这币现在多大"靠它，
+            而价格是一串要数零的小数，量级信息几乎读不出来 */}
+        {h.marketCapUsd != null && (
+          <span className="tabular-nums text-[13px] text-neutral-300 font-medium">
+            {money(h.marketCapUsd)}
+          </span>
+        )}
         <span className="tabular-nums">{amount(h.amount)}</span>
         <span>@</span>
         <span className="tabular-nums">{price(h.priceUsd)}</span>

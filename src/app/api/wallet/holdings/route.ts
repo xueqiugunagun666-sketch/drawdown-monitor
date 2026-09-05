@@ -20,12 +20,25 @@ export async function GET(req: Request) {
   const now = Math.floor(Date.now() / 1000);
 
   const lastStmt = db.prepare(
-    `SELECT c, ts FROM candles WHERE token_id = ? AND timeframe = '5m' ORDER BY ts DESC LIMIT 1`);
+    `SELECT c, ts, market_cap_usd FROM candles
+     WHERE token_id = ? AND timeframe = '5m' ORDER BY ts DESC LIMIT 1`);
+  /**
+   * 市值可能只记在稍早的那一根上（数据源偶尔不给），往回找几根 ——
+   * 比让整行显示「—」强，量级信息几分钟不变。
+   */
+  const mcStmt = db.prepare(
+    `SELECT market_cap_usd AS mc FROM candles
+     WHERE token_id = ? AND timeframe = '5m' AND market_cap_usd IS NOT NULL
+     ORDER BY ts DESC LIMIT 1`);
   const seriesStmt = db.prepare(
     `SELECT ts, o, l FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts >= ? ORDER BY ts`);
 
   const rows = holdings.map((h) => {
-    const last = lastStmt.get(h.tokenId) as { c: string | null; ts: number } | undefined;
+    const last = lastStmt.get(h.tokenId) as
+      { c: string | null; ts: number; market_cap_usd: number | null } | undefined;
+    const marketCapUsd = last?.market_cap_usd
+      ?? (mcStmt.get(h.tokenId) as { mc: number | null } | undefined)?.mc
+      ?? null;
     const amount = toHumanAmount(h.balance, h.decimals);
     const price = last?.c ? new Decimal(last.c) : null;
 
@@ -60,6 +73,7 @@ export async function GET(req: Request) {
       filterReason: h.filterReason,
       lastQuoteAt: last?.ts ?? null,
       decimalsKnown: h.decimals !== null,
+      marketCapUsd,
       best,
       websiteUrl: links.get(h.tokenId)?.websiteUrl ?? null,
       twitterUrl: links.get(h.tokenId)?.twitterUrl ?? null,

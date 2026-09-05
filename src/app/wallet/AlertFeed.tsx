@@ -8,6 +8,7 @@ import {
   pumpClass, pumpBar, describeBasis, isAthAlert, describeAthDelta, ATH_COLOR, ATH_BAR,
 } from '../../lib/pumpStyle.ts';
 import { humanAgo } from '../../lib/time.ts';
+import { baseMarketCap } from '../../lib/alertMarketCap.ts';
 import { money } from '../trash/TrashList.tsx';
 
 export interface AlertRow {
@@ -62,6 +63,7 @@ export function LatestAlertBanner(
   }
 
   const ath = isAthAlert(a.kind);
+  const baseMc = baseMarketCap(a.marketCapUsd, a.priceUsd, a.basePriceUsd);
 
   return (
     // 外层不能再是 button —— 里面要放复制按钮，button 不能嵌 button
@@ -106,7 +108,7 @@ export function LatestAlertBanner(
       <div className="flex items-baseline gap-2 flex-wrap mt-1.5">
         {a.marketCapUsd != null && (
           <span className="text-[17px] font-semibold tabular-nums text-neutral-100">
-            市值 {money(a.marketCapUsd)}
+            市值 {baseMc != null ? `${money(baseMc)} → ` : ''}{money(a.marketCapUsd)}
           </span>
         )}
         {a.basePriceUsd && a.priceUsd && (
@@ -180,6 +182,8 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
               )}
               {a.marketCapUsd != null && (
                 <span className="text-neutral-200 text-[13px] font-medium tabular-nums shrink-0">
+                  {(() => { const b = baseMarketCap(a.marketCapUsd, a.priceUsd, a.basePriceUsd);
+                    return b != null ? `${money(b)} → ` : ''; })()}
                   {money(a.marketCapUsd)}
                 </span>
               )}

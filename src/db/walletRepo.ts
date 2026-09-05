@@ -304,6 +304,8 @@ const MAX_TICK_JUMP = 1000;
 
 export function upsertWalletCandle(
   tokenId: string, priceUsd: string, liquidityUsd: number, fetchedAt: number,
+  /** 与 priceUsd 同源的市值。持仓列表要显示它，不记就只能显示价格 */
+  marketCapUsd: number | null = null,
 ): boolean {
   const ts = Math.floor(fetchedAt / 300) * 300;
   const db = getRawDb();
@@ -326,9 +328,10 @@ export function upsertWalletCandle(
 
   if (!existing) {
     db.prepare(
-      `INSERT INTO candles (token_id, timeframe, ts, o, h, l, c, liquidity_total, source)
-       VALUES (?, '5m', ?, ?, ?, ?, ?, ?, 'wallet-batch')`,
-    ).run(tokenId, ts, priceUsd, priceUsd, priceUsd, priceUsd, liquidityUsd);
+      `INSERT INTO candles
+         (token_id, timeframe, ts, o, h, l, c, liquidity_total, market_cap_usd, source)
+       VALUES (?, '5m', ?, ?, ?, ?, ?, ?, ?, 'wallet-batch')`,
+    ).run(tokenId, ts, priceUsd, priceUsd, priceUsd, priceUsd, liquidityUsd, marketCapUsd);
     return true;
   }
 
@@ -336,9 +339,10 @@ export function upsertWalletCandle(
   const hi = existing.h ? Decimal.max(new Decimal(existing.h), p) : p;
   const lo = existing.l ? Decimal.min(new Decimal(existing.l), p) : p;
   db.prepare(
-    `UPDATE candles SET h = ?, l = ?, c = ?, liquidity_total = ?
+    `UPDATE candles SET h = ?, l = ?, c = ?, liquidity_total = ?,
+       market_cap_usd = COALESCE(?, market_cap_usd)
      WHERE token_id = ? AND timeframe = '5m' AND ts = ?`,
-  ).run(hi.toString(), lo.toString(), priceUsd, liquidityUsd, tokenId, ts);
+  ).run(hi.toString(), lo.toString(), priceUsd, liquidityUsd, marketCapUsd, tokenId, ts);
   return true;
 }
 

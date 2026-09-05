@@ -5,6 +5,7 @@ import SoundToggle from '../../components/SoundToggle.tsx';
 import WalletList, { type WalletRow } from './WalletList.tsx';
 import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
 import AlertFeed, { LatestAlertBanner, alertName, type AlertRow } from './AlertFeed.tsx';
+import { baseMarketCap } from '../../lib/alertMarketCap.ts';
 import HealthWatch from './HealthWatch.tsx';
 import AlarmTest from './AlarmTest.tsx';
 import {
@@ -184,7 +185,10 @@ export default function WalletClient() {
          * 市值排在正文最前面 —— 用户是按市值思考的（「从 5 万涨到 10 万」），
          * 而价格是一串 0.00006726，读它要先数零，对"这币现在多大"没帮助。
          */
-        const mc = top.marketCapUsd != null ? `市值 ${money(top.marketCapUsd)}` : null;
+        const baseMc = baseMarketCap(top.marketCapUsd, top.priceUsd, top.basePriceUsd);
+        const mc = top.marketCapUsd != null
+          ? `市值 ${baseMc != null ? `${money(baseMc)} → ` : ''}${money(top.marketCapUsd)}`
+          : null;
         const detail = [
           mc,
           isAth
