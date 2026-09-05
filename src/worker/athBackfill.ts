@@ -12,7 +12,9 @@
  */
 import { fetchKlinePage, supportsChain, isConfigured } from '../sources/gmgn.ts';
 import { fetchBatchQuotes } from '../sources/dexscreenerBatch.ts';
-import { summarizeAth, pickResolution } from './athHistory.ts';
+import { summarizeAth, pickResolution, sourcesAgree } from './athHistory.ts';
+import { MAX_PRICE_DEVIATION } from './walletBackfill.ts';
+import { Decimal } from '../lib/decimal.ts';
 import * as athRepo from '../db/athRepo.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
@@ -41,6 +43,8 @@ export interface BackfillOutcome {
   done: number;
   skipped: number;
   complete: number;
+  /** 长历史与实时价不在一个口径，没建立参照线 */
+  rejected: number;
 }
 
 /**
@@ -52,7 +56,7 @@ export interface BackfillOutcome {
 export async function backfillAth(
   tokenIds: string[], now: number, deps: AthBackfillDeps = realAthDeps,
 ): Promise<BackfillOutcome> {
-  const out: BackfillOutcome = { done: 0, skipped: 0, complete: 0 };
+  const out: BackfillOutcome = { done: 0, skipped: 0, complete: 0, rejected: 0 };
   if (!deps.isConfigured()) {
     log.warn('GMGN 未配置，跳过长历史回填');
     return out;
@@ -71,14 +75,20 @@ export async function backfillAth(
       continue;
     }
 
-    // 建池时间：一次批量请求 30 个，比逐个查省得多
+    /**
+     * 一次批量请求同时拿到两样东西：
+     *   建池时间 —— 决定用什么分辨率，也决定历史算不算完整
+     *   实时价   —— 用来校验长历史与实时报价是不是同一个口径
+     */
     const created = new Map<string, number | null>();
+    const live = new Map<string, Decimal | null>();
     try {
       for (const [addr, q] of await deps.fetchQuotes(chain, addrs)) {
         created.set(addr, q.pairCreatedAt);
+        try { live.set(addr, new Decimal(q.priceUsd)); } catch { live.set(addr, null); }
       }
     } catch (err) {
-      log.warn(`${chain} 取建池时间失败，本链按"币龄未知"处理: ${safeErrorMessage(err)}`);
+      log.warn(`${chain} 取报价失败，本链按"币龄未知"处理: ${safeErrorMessage(err)}`);
     }
 
     for (const addr of addrs) {
@@ -98,17 +108,29 @@ export async function backfillAth(
       }
 
       const s = summarizeAth(candles, createdAt, now);
+
+      /**
+       * 长历史与实时报价必须同口径，否则算出来的 ATH 毫无意义 ——
+       * 实测 Monkey 两个源差 258 倍，导致任何实时价看着都像天量突破。
+       * 对不上就**存 null**：没有参照线就不报，这是诚实的失败方式。
+       */
+      const lastClose = candles.length > 0 ? candles[candles.length - 1]!.c : null;
+      const agree = sourcesAgree(lastClose, live.get(addr) ?? null, MAX_PRICE_DEVIATION);
+      if (!agree) {
+        log.warn(`${tokenId} 长历史与实时价不在一个口径，不建立 ATH 参照线`);
+        out.rejected++;
+      }
+
       athRepo.upsertWalletAth({
         tokenId,
-        athPrice: s.athPrice ? s.athPrice.toString() : null,
-        athTs: s.athTs,
+        athPrice: agree && s.athPrice ? s.athPrice.toString() : null,
+        athTs: agree ? s.athTs : null,
         historyStartTs: s.historyStartTs,
         pairCreatedAt: createdAt,
-        complete: s.complete,
+        complete: agree && s.complete,
         backfilledAt: now,
       });
-      out.done++;
-      if (s.complete) out.complete++;
+      if (agree) { out.done++; if (s.complete) out.complete++; }
     }
   }
   return out;

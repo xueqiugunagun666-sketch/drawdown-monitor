@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Decimal } from '../lib/decimal.ts';
 import {
-  summarizeAth, describeAthScope, pickResolution, COMPLETENESS_SLACK_SECONDS,
+  summarizeAth, describeAthScope, pickResolution, sourcesAgree,
+  COMPLETENESS_SLACK_SECONDS,
 } from './athHistory.ts';
 import type { Candle } from '../sources/types.ts';
 
@@ -117,4 +118,34 @@ test('分辨率按币龄挑：年轻用小时线（精度高），老币只能�
   assert.equal(pickResolution(41), '1d', '超过 41 天小时线就盖不住了');
   assert.equal(pickResolution(2016), '1d');
   assert.equal(pickResolution(null), '1d', '不知道币龄就按最老处理');
+});
+
+/* ---------- 长历史与实时价的口径校验 ---------- */
+
+test('两个源量级一致就放行', () => {
+  assert.equal(sourcesAgree(new Decimal('1'), new Decimal('1.05'), 10), true);
+  assert.equal(sourcesAgree(new Decimal('1'), new Decimal('9.9'), 10), true, '真实大涨不该被误杀');
+});
+
+test('Monkey 那条：两个源差 258 倍，必须拦', () => {
+  // GMGN 最后一根收盘 1.9951331e-25，DexScreener 现价 5.154e-23
+  const gmgn = new Decimal('0.00000000000000000000000019951331');
+  const dex = new Decimal('0.00000000000000000000005154');
+  assert.equal(sourcesAgree(gmgn, dex, 10), false);
+});
+
+test('方向对称 —— 谁大谁小都要拦', () => {
+  assert.equal(sourcesAgree(new Decimal('100'), new Decimal('1'), 10), false);
+  assert.equal(sourcesAgree(new Decimal('1'), new Decimal('100'), 10), false);
+});
+
+test('正好 10 倍放行，超过才拦', () => {
+  assert.equal(sourcesAgree(new Decimal('1'), new Decimal('10'), 10), true);
+  assert.equal(sourcesAgree(new Decimal('1'), new Decimal('10.1'), 10), false);
+});
+
+test('缺一边就无从比较，不拦 —— 别因为拿不到实时价就把所有 ATH 废掉', () => {
+  assert.equal(sourcesAgree(null, new Decimal('1'), 10), true);
+  assert.equal(sourcesAgree(new Decimal('1'), null, 10), true);
+  assert.equal(sourcesAgree(new Decimal('0'), new Decimal('1'), 10), true);
 });

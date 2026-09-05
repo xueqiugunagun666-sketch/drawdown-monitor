@@ -43,8 +43,8 @@ async function main(): Promise<void> {
   const secs = ((Date.now() - t0) / 1000).toFixed(0);
 
   log.info(
-    `完成：成功 ${r.done}、跳过 ${r.skipped}，其中 ${r.complete} 个历史覆盖完整`
-    + `（可以说「历史新高」），耗时 ${secs}s`,
+    `完成：成功 ${r.done}、跳过 ${r.skipped}、口径不符 ${r.rejected}，`
+    + `其中 ${r.complete} 个历史覆盖完整（可以说「历史新高」），耗时 ${secs}s`,
   );
   process.exit(0);
 }

@@ -38,7 +38,7 @@ const COVERAGE_RATIO = 0.5;
  * 偏向拦截：拦错了只是没有历史，窗口会诚实地标 too_young；
  * 放过了就是推一条 126 倍的假报警，而工具喊一次狼来了就会被关掉。
  */
-const MAX_PRICE_DEVIATION = 10;
+export const MAX_PRICE_DEVIATION = 10;
 
 export interface BackfillDeps {
   fetchKline: (chain: string, address: string, tf: '5m', beforeTs?: number) => Promise<Candle[]>;

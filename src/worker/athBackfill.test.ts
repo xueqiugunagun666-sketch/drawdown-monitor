@@ -35,7 +35,7 @@ function deps(over: Partial<AthBackfillDeps> = {}): AthBackfillDeps {
 
 test('回填后写入 ATH，且历史覆盖建池时间时标记为完整', async () => {
   const r = await backfillAth(['bsc:0xa1'], NOW, deps());
-  assert.deepEqual(r, { done: 1, skipped: 0, complete: 1 });
+  assert.deepEqual(r, { done: 1, skipped: 0, complete: 1, rejected: 0 });
   const row = athRepo.getWalletAth('bsc:0xa1')!;
   assert.equal(row.athPrice, '9', '取最高收盘价');
   assert.equal(row.athTs, NOW - 10 * DAY);
@@ -96,12 +96,12 @@ test('取建池时间整批失败时仍然回填，只是一律判不完整', as
 
 test('GMGN 不支持的链整链跳过', async () => {
   const r = await backfillAth(['weird:0xz'], NOW, deps({ supportsChain: () => false }));
-  assert.deepEqual(r, { done: 0, skipped: 1, complete: 0 });
+  assert.deepEqual(r, { done: 0, skipped: 1, complete: 0, rejected: 0 });
 });
 
 test('未配置 GMGN 时什么都不做，而不是报错', async () => {
   const r = await backfillAth(['bsc:0xq'], NOW, deps({ isConfigured: () => false }));
-  assert.deepEqual(r, { done: 0, skipped: 0, complete: 0 });
+  assert.deepEqual(r, { done: 0, skipped: 0, complete: 0, rejected: 0 });
 });
 
 test('实时刷新新高不动 backfilled_at —— 否则长历史永远不重拉', () => {
@@ -124,4 +124,30 @@ test('挑出需要重拉的币：没记录的和过期的', () => {
     pairCreatedAt: NOW, complete: true, backfilledAt: NOW });
   const need = athRepo.tokenIdsNeedingBackfill([stale, fresh, 'bsc:0xbrandnew'], NOW - 7 * DAY);
   assert.deepEqual(need.sort(), [stale, 'bsc:0xbrandnew'].sort());
+});
+
+test('长历史与实时价不在一个口径时不建立参照线 —— Monkey 那条假新高', () => {
+  // 实测 GMGN 与 DexScreener 对 Monkey 差 258 倍。存一个错的参照线，
+  // 结果是任何实时价看着都像天量突破
+  return backfillAth(['bsc:0xmismatch'], NOW, deps({
+    fetchQuotes: async (_c, addrs) => new Map(addrs.map((a) => [a, {
+      ...quote(NOW - 20 * DAY), priceUsd: '1000',       // 实时价
+    }])),
+    fetchKline: async () => [candle(NOW - 20 * DAY, '1'), candle(NOW, '2')],  // 历史差 500 倍
+  })).then(() => {
+    const row = athRepo.getWalletAth('bsc:0xmismatch')!;
+    assert.equal(row.athPrice, null, '不存错的参照线，宁可没有');
+    assert.equal(row.complete, 0);
+  });
+});
+
+test('口径不符计入 rejected，不算成功', async () => {
+  const r = await backfillAth(['bsc:0xmm2'], NOW, deps({
+    fetchQuotes: async (_c, addrs) => new Map(addrs.map((a) => [a, {
+      ...quote(NOW - 20 * DAY), priceUsd: '1000',
+    }])),
+    fetchKline: async () => [candle(NOW, '2')],
+  }));
+  assert.equal(r.rejected, 1);
+  assert.equal(r.done, 0);
 });

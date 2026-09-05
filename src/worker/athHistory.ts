@@ -134,3 +134,32 @@ export function pickResolution(ageDays: number | null): '1h' | '1d' {
   if (ageDays === null) return '1d';
   return ageDays <= 40 ? '1h' : '1d';
 }
+
+/**
+ * 长历史与实时报价是不是同一个口径。
+ *
+ * GMGN 与 DexScreener 会对同一个币给出**完全不同量级**的价格 —— 实测
+ * 「不对劲」差 126 倍、「哈夫币」119 倍、「Monkey」258 倍（同一时刻，
+ * 不是涨跌）。5 分钟线的回填早就有这道守卫，而我写 ATH 回填时漏了 ——
+ * 后果是历史最高从 GMGN 算、实时价从 DexScreener 来，**任何实时价看着
+ * 都像天量突破**：Monkey 报了一条「高出 5327%」的假新高。
+ *
+ * 判据是**最后一根 K 线**对比实时价：两者只相隔几十分钟，本该几乎相等。
+ * 用最后一根而不是最高价，所以真实的大涨不会被误杀。
+ *
+ * 对不上时**不存 ATH**（存 null），而不是存一个错的：没有参照线就不报，
+ * 这是诚实的失败方式；存错的会一直推假新高，而工具喊一次狼来了就会被关掉。
+ */
+export function sourcesAgree(
+  lastCandleClose: Decimal | null | undefined,
+  livePrice: Decimal | null | undefined,
+  maxDeviation: number,
+): boolean {
+  if (!lastCandleClose || !livePrice) return true;   // 缺一边就无从比较，不拦
+  if (lastCandleClose.lte(0) || livePrice.lte(0)) return true;
+  const ratio = Decimal.max(
+    lastCandleClose.div(livePrice),
+    livePrice.div(lastCandleClose),
+  );
+  return ratio.lte(maxDeviation);
+}
