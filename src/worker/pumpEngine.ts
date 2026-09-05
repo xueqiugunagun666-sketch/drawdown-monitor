@@ -176,6 +176,21 @@ function isWatchlistToken(tokenId: string): boolean {
   return r !== undefined;
 }
 
+/** 这个币最新一根 5m candle 的收盘价。用来校验实时报价是不是同一个量级 */
+function latestCandleClose(tokenId: string): Decimal | null {
+  const r = getRawDb().prepare(
+    `SELECT c FROM candles WHERE token_id = ? AND timeframe = '5m' AND c IS NOT NULL
+     ORDER BY ts DESC LIMIT 1`,
+  ).get(tokenId) as { c: string } | undefined;
+  if (!r) return null;
+  try {
+    const d = new Decimal(r.c);
+    return d.gt(0) ? d : null;
+  } catch {
+    return null;
+  }
+}
+
 function load5mCandles(tokenId: string, sinceTs: number) {
   return getRawDb().prepare(
     `SELECT ts, o, l FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts >= ? ORDER BY ts`,
@@ -297,7 +312,34 @@ async function evaluateToken(
   wr.setTokenLinks(tokenId, now, quote);
 
   // ---- 倍数 ----
-  const price = new Decimal(quote.priceUsd);
+  const fromWatchlist = isWatchlistToken(tokenId);
+  /**
+   * 这个币的 K 线如果是**共享看板**那条流水线写的，判定就得用它的价，
+   * 不能用我们自己的批量报价。
+   *
+   * 两边的口径不一样：看板做主池选举、跨池中位数并剔除离群池；
+   * 批量接口只回一个池、不做任何剔除。2026-09-05 的 Monkey 就栽在这里 ——
+   * 看板明确把那个 XAUt 池当离群剔掉了（中位价 2.0e-25），而批量接口
+   * 回的**恰恰就是那个池**（5.9e-21）。拿它去比看板写的历史低点，
+   * 算出「暴涨 34852 倍」。
+   *
+   * 不用"幅度超过 N 倍就拦"那种守卫：真实的币一轮内涨 11 倍完全可能，
+   * 而那正是这个工具要抓的事，拦掉比误报更糟。问题的本质不是幅度大，
+   * 是**两个数不是同一种测量**，所以只在跨流水线时换用对方的价。
+   */
+  let price = new Decimal(quote.priceUsd);
+  if (fromWatchlist) {
+    const boardPrice = latestCandleClose(tokenId);
+    if (boardPrice) {
+      if (Decimal.max(price.div(boardPrice), boardPrice.div(price)).gt(2)) {
+        log.debug(
+          `${tokenId} 在看板上，改用看板价 ${boardPrice.toString()}`
+          + `（批量报价 ${quote.priceUsd}）`,
+        );
+      }
+      price = boardPrice;
+    }
+  }
   if (!price.gt(0)) return;
 
   // 先把本轮价格并进当前 5m candle，历史就是这样一轮轮攒起来的。
@@ -306,7 +348,7 @@ async function evaluateToken(
   // 它 30 秒一轮、做主池选举与跨池中位数校验，数据比批量报价好。
   // 两边都写会互相覆盖 h/l 与 liquidity_total（一个是主池、一个是全池口径），
   // 让 source 列反复翻转。让位给它。
-  if (!isWatchlistToken(tokenId)) {
+  if (!fromWatchlist) {
     wr.upsertWalletCandle(tokenId, quote.priceUsd, quote.liquidityUsd, now);
 
     /**

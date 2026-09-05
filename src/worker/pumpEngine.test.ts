@@ -733,7 +733,7 @@ test('冷启动已在高位的币不补报历史新高', async () => {
 });
 
 test('ATH 与暴涨同轮触发时只发 ATH —— 破新高本来就蕴含着在涨', async () => {
-  const id = 'bsc:0xboth';
+  const id = 'bsc:0xathboth';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
   wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
@@ -741,9 +741,9 @@ test('ATH 与暴涨同轮触发时只发 ATH —— 破新高本来就蕴含着�
   history(id, '1');
   withAth(id, '1.5');
 
-  await runPumpTick(NOW, deps({ '0xboth': { priceUsd: '1' } }));
+  await runPumpTick(NOW, deps({ '0xathboth': { priceUsd: '1' } }));
   // 涨到 3 倍：暴涨的 2x/3x 档和 ATH 突破都成立
-  await runPumpTick(NOW + 60, deps({ '0xboth': { priceUsd: '3' } }));
+  await runPumpTick(NOW + 60, deps({ '0xathboth': { priceUsd: '3' } }));
   const all = wr.listPumpAlerts(u.id, 0);
   assert.equal(all.length, 1, '同一件事只响一次');
   assert.equal(all[0]!.kind, 'ath', 'ATH 是更强的说法，优先它');
@@ -771,4 +771,83 @@ test('ATH 报警记下前高是什么时候立的 —— 之后 ath_ts 会被覆
   assert.equal(a.basePriceUsd, '2');
   // 库里的 ath_ts 已经被推到现在了，正说明必须在报警时就记下来
   assert.equal(athRepo.getWalletAth(id)!.athTs, NOW + 60);
+});
+
+/* ---------------- 报价与 K 线的量级校验 ---------------- */
+
+test('报价与 K 线差三万倍时不判定 —— Monkey 那条 34852 倍', async () => {
+  /**
+   * 2026-09-05 线上：Monkey 同时在看板和钱包里。K 线由看板写
+   * （多池中位数并剔除了那个 XAUt 离群池）稳定在 2.0e-25，而钱包用的
+   * 批量接口只回一个池 —— 恰恰是被剔除的那个 —— 价格 5.9e-21。
+   */
+  const id = 'bsc:0xmonkey';
+  const u = wr.createUser(`mk${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xmk${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '0.0000000000000000000000002');
+
+  await runPumpTick(NOW, deps({ '0xmonkey': { priceUsd: '0.0000000000000000000000002' } }));
+  const before = wr.listPumpAlerts(u.id, 0).length;
+
+  // 下一轮报价跳三万倍
+  await runPumpTick(NOW + 60, deps({ '0xmonkey': { priceUsd: '0.000000000000000000005925' } }));
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, before, '离群报价不该产生报警');
+});
+
+test('正常波动不受影响', async () => {
+  const id = 'bsc:0xnormal2';
+  const u = wr.createUser(`nm${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xnm${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xnormal2': { priceUsd: '1' } }));
+  // 涨 3 倍：远低于 10 倍门槛，照常报
+  await runPumpTick(NOW + 60, deps({ '0xnormal2': { priceUsd: '3' } }));
+  assert.ok(wr.listPumpAlerts(u.id, 0).length > 0, '3 倍是正常行情，必须报');
+});
+
+test('看板币用看板的价判定，不用批量报价 —— Monkey 那条 34852 倍', async () => {
+  /**
+   * 2026-09-05 线上：Monkey 同时在看板和钱包里。看板做多池中位数并把那个
+   * XAUt 池当离群剔掉了（中位价 2.0e-25），而钱包用的批量接口只回一个池
+   * —— 恰恰就是被剔除的那个（5.9e-21）。拿它比看板写的历史低点，
+   * 算出「暴涨 34852 倍」。
+   */
+  const id = 'bsc:0xscalemix';
+  const u = wr.createUser(`sc${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xsc${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '0.0000000000000000000000002');        // 看板量级
+  getRawDb().prepare(
+    `INSERT INTO tokens (id, chain, address, added_at, enabled, frozen, fail_count, pinned, visibility)
+     VALUES (?, 'bsc', '0xscalemix', 1, 1, 0, 0, 0, 'public')`,
+  ).run(id);
+
+  await runPumpTick(NOW, deps({ '0xscalemix': { priceUsd: '0.0000000000000000000000002' } }));
+  const before = wr.listPumpAlerts(u.id, 0).length;
+
+  // 批量报价跳到另一个量级 —— 该被看板价顶替掉
+  await runPumpTick(NOW + 60, deps({ '0xscalemix': { priceUsd: '0.000000000000000000005925' } }));
+  assert.equal(wr.listPumpAlerts(u.id, 0).length, before, '离群池的报价不该产生报警');
+});
+
+test('只在钱包里的币，一轮内涨 11 倍照常报 —— 那正是这工具要抓的事', async () => {
+  // 反面用例：不能用"幅度超过 N 倍就拦"那种守卫，会把真实暴涨也拦掉
+  const id = 'bsc:0xrealpump';
+  const u = wr.createUser(`rp${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xrp${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xrealpump': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xrealpump': { priceUsd: '11' } }));
+  const a = wr.listPumpAlerts(u.id, 0);
+  assert.ok(a.length > 0, '11 倍必须报');
+  assert.equal(a[0]!.level, 10);
 });
