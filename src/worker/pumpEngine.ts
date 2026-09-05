@@ -14,6 +14,10 @@
  * 不 seed 就会把它进来之前的涨幅补报一遍（commit 6699db0 那个坑的反向版本）。
  */
 import { Decimal } from '../lib/decimal.ts';
+import * as athRepo from '../db/athRepo.ts';
+import {
+  evaluateAth, seedAthState, type AthSnapshot,
+} from './athState.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
 import { fetchBatchQuotes, type BatchQuote } from '../sources/dexscreenerBatch.ts';
@@ -349,6 +353,22 @@ async function evaluateToken(
     }
   }
 
+  /**
+   * ATH 判定走**独立的状态机**，与暴涨那套并行。
+   *
+   * 两者说的不是一回事：暴涨是"从最近低点涨了 N 倍"，ATH 是"进入价格
+   * 发现区、头上没有套牢盘"。一个币可以涨 5 倍还远在高点之下，也可以
+   * 只涨 15% 就破新高。
+   *
+   * 但同一轮里两个都触发时**只发 ATH 那条** —— 破新高本来就蕴含着在涨，
+   * 为同一件事响两次是纯粹的噪音。
+   */
+  const ath = evaluateAthFor(tokenId, price, now);
+  if (ath) {
+    await fanout(tokenId, holders, quote, price, ath.winner, ath.kind, ath.basePrice, now);
+    return;
+  }
+
   const recent = recentAlert(tokenId, now);
   const crossed = pickWinner(fires);
 
@@ -385,6 +405,67 @@ async function evaluateToken(
 
   // ---- 扇出：每个持有者一行，带各自的余额与持仓价值 ----
   const base = windows.find((w) => w.timeframe === winner.timeframe && w.basis === winner.basis)?.base ?? null;
+  await fanout(tokenId, holders, quote, price, winner, kind, base, now);
+}
+
+/**
+ * ATH 判定。返回非 null 表示这一轮该发 ATH 报警。
+ *
+ * 没有 wallet_ath 记录（长历史还没回填到）时静默跳过 —— 没有可信的
+ * 历史最高就没有资格说"突破新高"。
+ */
+function evaluateAthFor(tokenId: string, price: Decimal, now: number): {
+  winner: PendingFire; kind: 'ath' | 'ath-advance'; basePrice: Decimal;
+} | null {
+  const row = athRepo.getWalletAth(tokenId);
+  if (!row) return null;
+
+  const stored = row.athPrice ? new Decimal(row.athPrice) : null;
+  const prev: AthSnapshot = row.lastAlertAt === null && row.state === 'ARMED' && !row.refAth
+    ? seedAthState(price, stored)      // 首次判定：已在高位的不补报历史
+    : {
+      state: row.state === 'FIRED' ? 'FIRED' : 'ARMED',
+      lastAlertPrice: row.lastAlertPrice ? new Decimal(row.lastAlertPrice) : null,
+      refAth: row.refAth ? new Decimal(row.refAth) : null,
+    };
+
+  const r = evaluateAth(prev, { price, ath: stored });
+
+  if (r.newAth) athRepo.raiseWalletAth(tokenId, r.newAth.toString(), now);
+  athRepo.saveAthAlertState(
+    tokenId, r.next.state,
+    r.next.lastAlertPrice ? r.next.lastAlertPrice.toString() : null,
+    r.next.refAth ? r.next.refAth.toString() : null,
+    now, r.fire !== null,
+  );
+  if (!r.fire || !stored) return null;
+
+  /**
+   * 倍数报的是**相对突破参照线**的涨幅，不是相对事实最高价 ——
+   * 后者突破后就等于现价，倍数永远是 1.00，等于什么也没说。
+   */
+  const ref = prev.refAth ?? stored;
+  return {
+    winner: {
+      tokenId, timeframe: '24h', basis: 'low', level: 0,
+      multiple: ref.gt(0) ? price.div(ref) : new Decimal(1), at: now,
+    },
+    kind: r.fire === 'breakout' ? 'ath' : 'ath-advance',
+    basePrice: ref,
+  };
+}
+
+/** 把一条报警发给每个持有人，各自带自己的余额与持仓价值 */
+async function fanout(
+  tokenId: string,
+  holders: ReturnType<typeof wr.usersHoldingToken>,
+  quote: BatchQuote,
+  price: Decimal,
+  winner: PendingFire,
+  kind: 'level' | 'advance' | 'ath' | 'ath-advance',
+  base: Decimal | null,
+  now: number,
+): Promise<void> {
   let notified = 0, skipped = 0;
   for (const h of holders) {
     const row = wr.getHolding(h.walletId, tokenId);

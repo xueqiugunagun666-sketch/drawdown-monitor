@@ -67,3 +67,23 @@ export function tokenIdsNeedingBackfill(allTokenIds: string[], before: number): 
     return !r || r.backfilledAt === null || r.backfilledAt < before;
   });
 }
+
+/** 报警状态机的持久化。与 upsertWalletAth 分开 —— 那个管长历史，这个管报警 */
+export function saveAthAlertState(
+  tokenId: string,
+  state: 'ARMED' | 'FIRED',
+  lastAlertPrice: string | null,
+  refAth: string | null,
+  now: number,
+  fired: boolean,
+): void {
+  getDb().run(sql`
+    UPDATE wallet_ath SET
+      state = ${state},
+      last_alert_price = ${lastAlertPrice},
+      ref_ath = ${refAth},
+      last_alert_at = ${fired ? now : sql`last_alert_at`},
+      updated_at = ${now}
+    WHERE token_id = ${tokenId}
+  `);
+}

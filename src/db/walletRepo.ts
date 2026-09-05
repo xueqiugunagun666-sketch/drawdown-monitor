@@ -216,9 +216,16 @@ export function monitoredTokenIds(): string[] {
 
 /* ---------------- 报警 ---------------- */
 
+/**
+ * 报警的种类。
+ *   level / advance —— 暴涨：穿过档位 / 未升档但又涨了一截
+ *   ath / ath-advance —— 突破历史新高 / 破新高之后又涨了一截
+ */
+export type AlertKind = 'level' | 'advance' | 'ath' | 'ath-advance';
+
 export function insertPumpAlert(
   row: Omit<PumpAlertRow, 'ackedAt' | 'kind'>
-     & { ackedAt?: number | null; kind?: 'level' | 'advance' | null },
+     & { ackedAt?: number | null; kind?: AlertKind | null },
 ): void {
   // kind 默认 'level'：调用方不关心时就是穿档，旧行也全是这么来的
   getDb().insert(pumpAlerts)

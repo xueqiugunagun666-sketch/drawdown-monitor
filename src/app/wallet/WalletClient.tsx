@@ -139,14 +139,36 @@ export default function WalletClient() {
          * 分开说是因为两者对读的人意思不同：看到「又涨 4.4x」你知道这是
          * 同一波还在继续，而不是一件新事。旧行没有 kind，按穿档读。
          */
-        const verb = top.kind === 'advance' ? '又涨' : '暴涨';
-        const detail = top.kind === 'advance'
-          ? `${describeBasis(top.timeframe, top.basis)} · 比上次报警又涨了一截`
-          : `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`;
-        notifyPump(
-          nameless
+        /**
+         * 四种报警读起来意思不同，措辞要分开：
+         *   暴涨 3.0x        穿过一个新档位（里程碑）
+         *   又涨 4.4x        没升档但同一波还在继续
+         *   突破历史新高      进入价格发现区，头上没有套牢盘
+         *   再创新高          破新高之后又涨了一截
+         *
+         * ATH 那两条**必须带口径**：我们的历史只从开始监控那天算起，
+         * 九成的币覆盖完整可以说「历史新高」，其余的只能说「N 天新高」。
+         * 把 6 天新高说成历史新高是这个系统最该避免的谎。
+         */
+        const isAth = top.kind === 'ath' || top.kind === 'ath-advance';
+        const scope = top.athScope ?? '新高';
+        const verb = isAth
+          ? (top.kind === 'ath' ? `突破${scope}` : '再创新高')
+          : (top.kind === 'advance' ? '又涨' : '暴涨');
+        const detail = isAth
+          ? `较前高 ${Number(top.multiple).toFixed(2)}x · ${scope}`
+          : top.kind === 'advance'
+            ? `${describeBasis(top.timeframe, top.basis)} · 比上次报警又涨了一截`
+            : `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`;
+        // ATH 的标题不带倍数 —— 「突破历史新高」本身就是全部信息，
+        // 后面缀个 1.1x 反而把重点冲淡了；倍数放正文
+        const title = isAth
+          ? (nameless ? `${top.chain ?? '未知链'} 上有币${verb}` : `${name} ${verb}`)
+          : (nameless
             ? `${top.chain ?? '未知链'} 上有币${verb} ${Number(top.multiple).toFixed(1)}x`
-            : `${name} ${verb} ${Number(top.multiple).toFixed(1)}x`,
+            : `${name} ${verb} ${Number(top.multiple).toFixed(1)}x`);
+        notifyPump(
+          title,
           [detail, nameless ? top.address ?? top.tokenId : null].filter(Boolean).join('\n'),
         );
         void load();     // 顺带刷新持仓价值

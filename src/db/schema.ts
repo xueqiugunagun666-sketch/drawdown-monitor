@@ -435,5 +435,19 @@ export const walletAth = sqliteTable('wallet_ath', {
   complete: integer('complete').default(0).notNull(),
   /** 上次长历史回填的时刻。用来决定要不要重拉 */
   backfilledAt: integer('backfilled_at'),
+  /**
+   * 报警状态机。'ARMED' = 在 ATH 之下，可以报突破；'FIRED' = 已经报过。
+   * 报的是**突破这个事件**，不是每个新高 —— 单调上涨全程只响一次，
+   * 而不是每根 K 线一条。
+   */
+  state: text('state').default('ARMED').notNull(),
+  /** 上次为这个币报 ATH 时的价格。补报是跟它比的 */
+  lastAlertPrice: text('last_alert_price'),
+  lastAlertAt: integer('last_alert_at'),
+  /**
+   * 突破的参照线，ARMED 期间冻结。与 ath_price（事实上的最高价）是两回事 ——
+   * 让参照线跟着价格涨的话，10% 门槛也跟着上移，缓慢上涨永远够不到。
+   */
+  refAth: text('ref_ath'),
   updatedAt: integer('updated_at'),
 });

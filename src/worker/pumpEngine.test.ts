@@ -654,3 +654,97 @@ test('补报不会在行情回落又涨回原位时触发', async () => {
   await runPumpTick(NOW + 360, deps({ '0xnoretrigger': { priceUsd: '2.7' } }));
   assert.equal(wr.listPumpAlerts(u.id, 0).length, n, '只是回到原位，不是新消息');
 });
+
+/* ---------------- ATH 报警 ---------------- */
+
+import * as athRepo from '../db/athRepo.ts';
+
+function withAth(tokenId: string, ath: string, complete = true) {
+  athRepo.upsertWalletAth({
+    tokenId, athPrice: ath, athTs: NOW - 86400, historyStartTs: NOW - 30 * 86400,
+    pairCreatedAt: NOW - 30 * 86400, complete, backfilledAt: NOW,
+  });
+}
+
+test('突破历史新高 10% 才报，不到不报', async () => {
+  const id = 'bsc:0xathbreak';
+  const u = wr.createUser(`ath${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+  withAth(id, '2');
+
+  await runPumpTick(NOW, deps({ '0xathbreak': { priceUsd: '1' } }));          // seed
+  await runPumpTick(NOW + 60, deps({ '0xathbreak': { priceUsd: '2.1' } }));   // 超过 ATH 但只有 5%
+  const athOnly = () => wr.listPumpAlerts(u.id, 0).filter((a) => a.kind?.startsWith('ath'));
+  assert.equal(athOnly().length, 0, '不到 10% 不算突破（这一轮报的是暴涨 2x 档）');
+
+  await runPumpTick(NOW + 120, deps({ '0xathbreak': { priceUsd: '2.3' } }));  // 超过 15%
+  assert.equal(athOnly().length, 1);
+  assert.equal(athOnly()[0]!.kind, 'ath');
+});
+
+test('单调上涨全程只报一次 —— 不是每根 K 线一条', async () => {
+  const id = 'bsc:0xathgrind';
+  const u = wr.createUser(`ath${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+  withAth(id, '2');
+
+  await runPumpTick(NOW, deps({ '0xathgrind': { priceUsd: '1' } }));
+  let t = NOW;
+  for (const p of ['2.3', '2.4', '2.5', '2.6', '2.7', '2.8']) {
+    t += 60;
+    await runPumpTick(t, deps({ '0xathgrind': { priceUsd: p } }));
+  }
+  const ath = wr.listPumpAlerts(u.id, 0).filter((a) => a.kind === 'ath' || a.kind === 'ath-advance');
+  assert.equal(ath.length, 1, `六轮新高只该报一次，实际 ${ath.length}`);
+});
+
+test('没有 wallet_ath 记录时不报 —— 没有可信历史就没资格说"突破新高"', async () => {
+  const id = 'bsc:0xnoath';
+  const u = wr.createUser(`ath${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xnoath': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xnoath': { priceUsd: '99' } }));
+  const ath = wr.listPumpAlerts(u.id, 0).filter((a) => a.kind?.startsWith('ath'));
+  assert.equal(ath.length, 0);
+});
+
+test('冷启动已在高位的币不补报历史新高', async () => {
+  const id = 'bsc:0xathseed';
+  const u = wr.createUser(`ath${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+  withAth(id, '2');
+  // 一进来就已经在 ATH 的三倍
+  await runPumpTick(NOW, deps({ '0xathseed': { priceUsd: '6' } }));
+  const ath = wr.listPumpAlerts(u.id, 0).filter((a) => a.kind?.startsWith('ath'));
+  assert.equal(ath.length, 0, '不为"它进来之前就破过新高"补报');
+});
+
+test('ATH 与暴涨同轮触发时只发 ATH —— 破新高本来就蕴含着在涨', async () => {
+  const id = 'bsc:0xboth';
+  const u = wr.createUser(`ath${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+  withAth(id, '1.5');
+
+  await runPumpTick(NOW, deps({ '0xboth': { priceUsd: '1' } }));
+  // 涨到 3 倍：暴涨的 2x/3x 档和 ATH 突破都成立
+  await runPumpTick(NOW + 60, deps({ '0xboth': { priceUsd: '3' } }));
+  const all = wr.listPumpAlerts(u.id, 0);
+  assert.equal(all.length, 1, '同一件事只响一次');
+  assert.equal(all[0]!.kind, 'ath', 'ATH 是更强的说法，优先它');
+});
