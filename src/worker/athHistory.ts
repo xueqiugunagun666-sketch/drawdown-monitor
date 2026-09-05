@@ -26,7 +26,24 @@ import type { Candle } from '../sources/types.ts';
 export const COMPLETENESS_SLACK_SECONDS = 3600;
 
 export interface AthSummary {
-  /** 最高收盘价。用收盘不用最高 —— 单根影线戳出来的高点不算 */
+  /**
+   * 历史最高价，取每根 K 线的**最高价**（h），不是收盘价。
+   *
+   * 第一版取收盘价，理由是"单根影线戳出来的高点不算"—— 那个理由对
+   * **实时判定**成立（一根影线不该触发报警），对**确立历史最高**是错的：
+   * 历史最高本来就是最高价，用收盘价会系统性低估，于是任何一次普通上涨
+   * 都像"破新高"。
+   *
+   * 线上实测（Sue，2026-09-05）：真实最高 0.006444（当天 11:00），
+   * 而按小时线收盘价算出来只有 0.0046575 —— 低了 38%。价格涨到 0.005016
+   * 时对着这条偏低的线看像突破 1.126 倍，实际离真实高点还差 22%，
+   * 报了一条彻头彻尾的假新高。
+   *
+   * 两处用不同口径是**故意**的，而且方向一致地保守：
+   *   参照线取最高价 —— 更难被突破
+   *   实时触发取 5 分钟收盘价 —— 需要站稳才算
+   * 两边都偏向"不报"，这正是误报最贵的场景该有的偏向。
+   */
   athPrice: Decimal | null;
   athTs: number | null;
   historyStartTs: number | null;
@@ -54,9 +71,13 @@ export function summarizeAth(
 
   for (const c of candles) {
     if (start === null || c.ts < start) start = c.ts;
-    // c 可能是 null（数据源偶尔给残缺的根），跳过而不是当 0
-    if (!c.c) continue;
-    if (athPrice === null || c.c.gt(athPrice)) { athPrice = c.c; athTs = c.ts; }
+    /**
+     * 优先用最高价；数据源偶尔只给收盘价（残缺的根），那就退而求其次。
+     * 两个都没有就跳过，不拿 0 冒充。
+     */
+    const peak = c.h ?? c.c;
+    if (!peak) continue;
+    if (athPrice === null || peak.gt(athPrice)) { athPrice = peak; athTs = c.ts; }
   }
 
   const complete = start !== null && pairCreatedAt !== null

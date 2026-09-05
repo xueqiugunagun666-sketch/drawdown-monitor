@@ -9,15 +9,36 @@ import type { Candle } from '../sources/types.ts';
 const DAY = 86400;
 const NOW = 1_788_600_000;
 
-const c = (ts: number, close: string | null): Candle => ({
-  ts, o: null, h: null, l: null,
+const c = (ts: number, close: string | null, high?: string): Candle => ({
+  ts, o: null, l: null,
+  h: high === undefined ? null : new Decimal(high),
   c: close === null ? null : new Decimal(close),
 } as unknown as Candle);
 
-test('取最高收盘价，不取最高价 —— 单根影线戳出来的高点不算', () => {
+test('取每根的最高价 —— 历史最高本来就是最高价', () => {
   const s = summarizeAth([c(NOW - 3 * DAY, '1'), c(NOW - 2 * DAY, '3'), c(NOW - DAY, '2')], null, NOW);
   assert.equal(s.athPrice!.toString(), '3');
   assert.equal(s.athTs, NOW - 2 * DAY);
+});
+
+test('回归：日内尖峰不能被收盘价抹掉 —— Sue 那条假新高就是这么来的', () => {
+  // 线上实测：Sue 真实最高 0.006444（当天 11:00），按小时线收盘价算
+  // 只有 0.0046575，低 38%。价格到 0.005016 时看着像突破 1.126 倍，
+  // 实际离真实高点还差 22%
+  const s = summarizeAth([
+    c(NOW - 2 * DAY, '0.004', '0.0042'),
+    c(NOW - DAY, '0.0046575175', '0.006443578'),   // 收盘远低于当根最高
+    c(NOW, '0.0044', '0.0045'),
+  ], null, NOW);
+  assert.equal(s.athPrice!.toString(), '0.006443578');
+  assert.equal(s.athTs, NOW - DAY);
+});
+
+test('只有收盘价（残缺的根）时退而用收盘价，不当没有', () => {
+  const s = summarizeAth([c(NOW - DAY, '5'), c(NOW, '3', '9')], null, NOW);
+  assert.equal(s.athPrice!.toString(), '9');
+  const onlyClose = summarizeAth([c(NOW - DAY, '5'), c(NOW, '7')], null, NOW);
+  assert.equal(onlyClose.athPrice!.toString(), '7');
 });
 
 test('残缺的根跳过，不当成 0', () => {

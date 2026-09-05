@@ -4,7 +4,9 @@ import { useState } from 'react';
 import { copyText } from '../../lib/copy.ts';
 
 import { Decimal, formatPrice } from '../../lib/decimal.ts';
-import { pumpClass, pumpBar, describeBasis } from '../../lib/pumpStyle.ts';
+import {
+  pumpClass, pumpBar, describeBasis, isAthAlert, describeAthDelta, ATH_COLOR, ATH_BAR,
+} from '../../lib/pumpStyle.ts';
 import { humanAgo } from '../../lib/time.ts';
 
 export interface AlertRow {
@@ -54,19 +56,37 @@ export function LatestAlertBanner(
     setTimeout(() => setCopied(false), 2200);
   }
 
+  const ath = isAthAlert(a.kind);
+
   return (
     // 外层不能再是 button —— 里面要放复制按钮，button 不能嵌 button
-    <div className="rounded-lg border border-[#3fbf7f]/50 bg-[#3fbf7f]/10 px-3 py-2.5">
+    // 破新高换蓝色边框与底色 —— 横幅是第一眼看到的东西，
+    // 类型必须靠颜色就能分出来，不能等读完文字
+    <div className={ath
+      ? 'rounded-lg border border-[#6fb4f0]/50 bg-[#6fb4f0]/10 px-3 py-2.5'
+      : 'rounded-lg border border-[#3fbf7f]/50 bg-[#3fbf7f]/10 px-3 py-2.5'}>
       <div className="flex items-baseline gap-2 flex-wrap">
         <button type="button" onClick={() => onFocus?.(a.tokenId)}
-          className="text-[#3fbf7f] text-lg font-medium hover:underline underline-offset-4
-                     focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#3fbf7f] rounded">
+          className={`${ath ? 'text-[#6fb4f0]' : 'text-[#3fbf7f]'} text-lg font-medium
+                     hover:underline underline-offset-4 rounded
+                     focus-visible:outline focus-visible:outline-1`}>
           {alertName(a)}
         </button>
-        <span className={`${pumpClass(a.level)} text-lg font-medium tabular-nums`}>
-          {new Decimal(a.multiple).toFixed(1)}x
+        {ath ? (
+          <span className={`${ATH_COLOR} text-lg font-medium`}>
+            {a.kind === 'ath-advance' ? '再创新高' : `破${a.athScope ?? '新高'}`}
+          </span>
+        ) : (
+          <span className={`${pumpClass(a.level)} text-lg font-medium tabular-nums`}>
+            {new Decimal(a.multiple).toFixed(1)}x
+          </span>
+        )}
+        <span className="text-sm text-neutral-400">
+          {ath
+            ? [describeAthDelta(a.multiple), a.baseTs ? `前高立于 ${humanAgo(a.baseTs)}` : null]
+              .filter(Boolean).join(' · ')
+            : describeBasis(a.timeframe, a.basis)}
         </span>
-        <span className="text-sm text-neutral-400">{describeBasis(a.timeframe, a.basis)}</span>
         <span className="ml-auto text-xs text-neutral-500 shrink-0">{humanAgo(a.firedAt)}</span>
       </div>
 
@@ -110,15 +130,34 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
             <li key={a.id}
               className="relative flex items-center gap-3 rounded-lg surface-interactive
                          pl-4 pr-3 py-2.5 text-sm overflow-hidden">
-              <span className={`absolute left-0 top-0 bottom-0 w-1 ${pumpBar(a.level)}`} />
-              {/* 倍数用数字承载信息，颜色只是冗余强化 */}
-              <span className={`${pumpClass(a.level)} tabular-nums font-medium w-16 shrink-0`}>
-                {new Decimal(a.multiple).toFixed(1)}x
-              </span>
+              <span className={`absolute left-0 top-0 bottom-0 w-1
+                ${isAthAlert(a.kind) ? ATH_BAR : pumpBar(a.level)}`} />
+              {/**
+                * 破新高与暴涨在列表里必须一眼分得开。之前两者渲染完全一样
+                * （都是「倍数 x + 窗口基准」），破新高会显示成
+                * 「1.1x Sue 24 小时内从低点」—— 读起来就是一条平庸的暴涨。
+                *
+                * 左列：暴涨给倍数（3.0x），破新高给「新高」二字 ——
+                * 倍数对破新高没有意义，1.1x 看着比 3.0x 弱，实际重要得多。
+                */}
+              {isAthAlert(a.kind) ? (
+                <span className={`${ATH_COLOR} text-sm font-medium w-16 shrink-0`}>新高</span>
+              ) : (
+                <span className={`${pumpClass(a.level)} tabular-nums font-medium w-16 shrink-0`}>
+                  {new Decimal(a.multiple).toFixed(1)}x
+                </span>
+              )}
               <span className="text-[15px] text-neutral-200 shrink-0 font-medium">{alertName(a)}</span>
-              <span className="text-neutral-500 text-xs shrink-0">
-                {describeBasis(a.timeframe, a.basis)}
+              <span className={`text-xs shrink-0 ${isAthAlert(a.kind) ? ATH_COLOR : 'text-neutral-500'}`}>
+                {isAthAlert(a.kind)
+                  ? [a.athScope ?? '新高', describeAthDelta(a.multiple)].filter(Boolean).join(' · ')
+                  : describeBasis(a.timeframe, a.basis)}
               </span>
+              {isAthAlert(a.kind) && a.baseTs && (
+                <span className="text-neutral-600 text-xs shrink-0 hidden md:inline">
+                  前高立于 {humanAgo(a.baseTs)}
+                </span>
+              )}
               {a.basePriceUsd && a.priceUsd && (
                 <span className="text-neutral-600 text-xs tabular-nums hidden sm:inline">
                   ${formatPrice(new Decimal(a.basePriceUsd), 6)} → ${formatPrice(new Decimal(a.priceUsd), 6)}
