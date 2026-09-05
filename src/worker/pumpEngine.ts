@@ -16,8 +16,12 @@
 import { Decimal } from '../lib/decimal.ts';
 import * as athRepo from '../db/athRepo.ts';
 import {
-  evaluateAth, seedAthState, type AthSnapshot,
+  BREAKOUT_MARGIN, REARM_RATIO, ADVANCE_RATIO as ATH_ADVANCE_RATIO,
 } from './athState.ts';
+import {
+  ATH_WINDOWS, largestBrokenWindow, windowRank, describeWindow,
+} from './athWindows.ts';
+import { windowHighs, historyStart } from '../db/athDailyRepo.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
 import { fetchBatchQuotes, type BatchQuote } from '../sources/dexscreenerBatch.ts';
@@ -407,7 +411,8 @@ async function evaluateToken(
    */
   const ath = evaluateAthFor(tokenId, price, now);
   if (ath) {
-    await fanout(tokenId, holders, quote, price, ath.winner, ath.kind, ath.basePrice, now, ath.baseTs);
+    await fanout(tokenId, holders, quote, price, ath.winner, ath.kind,
+      ath.basePrice, now, ath.baseTs, ath.windowKey);
     return;
   }
 
@@ -458,50 +463,83 @@ async function evaluateToken(
  */
 function evaluateAthFor(tokenId: string, price: Decimal, now: number): {
   winner: PendingFire; kind: 'ath' | 'ath-advance'; basePrice: Decimal; baseTs: number | null;
+  windowKey: string; windowLabel: string;
 } | null {
   const row = athRepo.getWalletAth(tokenId);
   if (!row) return null;
 
-  const stored = row.athPrice ? new Decimal(row.athPrice) : null;
-  const prev: AthSnapshot = row.lastAlertAt === null && row.state === 'ARMED' && !row.refAth
-    ? seedAthState(price, stored)      // 首次判定：已在高位的不补报历史
-    : {
-      state: row.state === 'FIRED' ? 'FIRED' : 'ARMED',
-      lastAlertPrice: row.lastAlertPrice ? new Decimal(row.lastAlertPrice) : null,
-      refAth: row.refAth ? new Decimal(row.refAth) : null,
-    };
+  /**
+   * 各滚动窗口的高点。缓存几分钟 —— 算一次要扫 ath_daily 加最多 30 天的
+   * 5 分钟数据，471 个币每轮都算跑不起；而窗口高点变化很慢，
+   * 真创了新高时当轮的价格本来就会顶上去。
+   */
+  let highs: Map<string, Decimal>;
+  const cacheAge = row.windowHighsAt === null ? Infinity : now - row.windowHighsAt;
+  if (cacheAge < athRepo.WINDOW_CACHE_SECONDS) {
+    highs = new Map();
+    for (const [k, v] of athRepo.readWindowHighs(row)) {
+      try { highs.set(k, new Decimal(v)); } catch { /* 坏值跳过 */ }
+    }
+  } else {
+    highs = windowHighs(tokenId, ATH_WINDOWS, now);
+    const asText = new Map<string, string>();
+    for (const [k, v] of highs) asText.set(k, v.toString());
+    athRepo.saveWindowHighs(tokenId, asText, now);
+  }
+  if (highs.size === 0) return null;          // 还没有任何历史，说不了"新高"
+
+  const start = historyStart(tokenId);
+  const broken = largestBrokenWindow(price, highs, start, now, BREAKOUT_MARGIN);
 
   /**
-   * 前高的时刻要在更新之前取。raiseWalletAth 会把 ath_ts 改成新高的
-   * 时刻，事后再查就查不到"旧高点是什么时候立的"了 —— 而
-   * 「前高立于 23 天前」正是 ATH 报警最关键的一句。
+   * 报警的判据是**突破了更长的窗口**，不是"又创了个新高"。
+   *
+   * 上涨途中每一轮都在破 3 天新高，但那是同一件事说七遍。只有当它够到
+   * 一个此前没够到过的、更长的窗口时，才是新消息 —— 破 90 天高点和
+   * 破 3 天高点，分量差得远。
    */
-  const prevAthTs = row.athTs;
+  const prevRank = row.lastWindow ? windowRank(row.lastWindow) : -1;
+  const nowRank = broken ? windowRank(broken.key) : -1;
 
-  const r = evaluateAth(prev, { price, ath: stored });
+  /** 回落到最短窗口高点的 REARM_RATIO 以下就重新武装，档次记录清零 */
+  const shortest = highs.get(ATH_WINDOWS[0]!.key);
+  if (shortest && price.lt(shortest.mul(REARM_RATIO)) && row.lastWindow) {
+    athRepo.saveLastWindow(tokenId, '', now);
+    athRepo.saveAthAlertState(tokenId, 'ARMED', null, null, now, false);
+    return null;
+  }
 
-  if (r.newAth) athRepo.raiseWalletAth(tokenId, r.newAth.toString(), now);
-  athRepo.saveAthAlertState(
-    tokenId, r.next.state,
-    r.next.lastAlertPrice ? r.next.lastAlertPrice.toString() : null,
-    r.next.refAth ? r.next.refAth.toString() : null,
-    now, r.fire !== null,
-  );
-  if (!r.fire || !stored) return null;
+  if (!broken) return null;
 
-  /**
-   * 倍数报的是**相对突破参照线**的涨幅，不是相对事实最高价 ——
-   * 后者突破后就等于现价，倍数永远是 1.00，等于什么也没说。
-   */
-  const ref = prev.refAth ?? stored;
+  const lastAlert = row.lastAlertPrice ? new Decimal(row.lastAlertPrice) : null;
+  const isNewWindow = nowRank > prevRank;
+  const advanced = !isNewWindow && lastAlert !== null
+    && price.gte(lastAlert.mul(ATH_ADVANCE_RATIO));
+  if (!isNewWindow && !advanced) {
+    // 仍在同一档窗口内爬升，且涨幅不够 —— 不吵
+    if (price.gt(new Decimal(row.athPrice ?? '0'))) {
+      athRepo.raiseWalletAth(tokenId, price.toString(), now);
+    }
+    return null;
+  }
+
+  const ref = highs.get(broken.key)!;
+  athRepo.saveLastWindow(tokenId, broken.key, now);
+  athRepo.saveAthAlertState(tokenId, 'FIRED', price.toString(), ref.toString(), now, true);
+  if (price.gt(new Decimal(row.athPrice ?? '0'))) {
+    athRepo.raiseWalletAth(tokenId, price.toString(), now);
+  }
+
   return {
     winner: {
       tokenId, timeframe: '24h', basis: 'low', level: 0,
       multiple: ref.gt(0) ? price.div(ref) : new Decimal(1), at: now,
     },
-    kind: r.fire === 'breakout' ? 'ath' : 'ath-advance',
+    kind: isNewWindow ? 'ath' : 'ath-advance',
     basePrice: ref,
-    baseTs: prevAthTs,
+    baseTs: row.athTs,
+    windowKey: broken.key,
+    windowLabel: describeWindow(broken),
   };
 }
 
@@ -516,6 +554,8 @@ async function fanout(
   base: Decimal | null,
   now: number,
   baseTs: number | null = null,
+  /** ATH 报警突破的是哪一档窗口（'3d'/'90d'/'all'…），前端据此措辞 */
+  athWindow: string | null = null,
 ): Promise<void> {
   let notified = 0, skipped = 0;
   for (const h of holders) {
@@ -551,6 +591,7 @@ async function fanout(
       priceUsd: quote.priceUsd,
       basePriceUsd: base ? base.toString() : null,
       baseTs,
+      athWindow,
       balance: h.balance,
       valueUsd: value ? value.toString() : null,
       ackedAt: null,

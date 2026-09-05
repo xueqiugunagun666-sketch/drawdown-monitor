@@ -87,3 +87,36 @@ export function saveAthAlertState(
     WHERE token_id = ${tokenId}
   `);
 }
+
+/* ---------------- 滚动窗口 ---------------- */
+
+/** 窗口高点缓存多久重算一次。窗口高点变化很慢，真创新高时当轮价格本来就会顶上去 */
+export const WINDOW_CACHE_SECONDS = 300;
+
+export function readWindowHighs(row: WalletAthRow): Map<string, string> {
+  const m = new Map<string, string>();
+  if (!row.windowHighs) return m;
+  try {
+    const o = JSON.parse(row.windowHighs) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(o)) if (typeof v === 'string') m.set(k, v);
+  } catch { /* 坏 JSON 当作没有，下一轮重算 */ }
+  return m;
+}
+
+export function saveWindowHighs(
+  tokenId: string, highs: Map<string, string>, now: number,
+): void {
+  getDb().run(sql`
+    UPDATE wallet_ath
+    SET window_highs = ${JSON.stringify(Object.fromEntries(highs))}, window_highs_at = ${now}
+    WHERE token_id = ${tokenId}
+  `);
+}
+
+/** 记下这次报到了哪一档窗口。只有突破更长的窗口才算新消息 */
+export function saveLastWindow(tokenId: string, windowKey: string, now: number): void {
+  getDb().run(sql`
+    UPDATE wallet_ath SET last_window = ${windowKey}, updated_at = ${now}
+    WHERE token_id = ${tokenId}
+  `);
+}

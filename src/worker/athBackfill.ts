@@ -16,6 +16,7 @@ import { summarizeAth, pickResolution, sourcesAgree } from './athHistory.ts';
 import { MAX_PRICE_DEVIATION } from './walletBackfill.ts';
 import { Decimal } from '../lib/decimal.ts';
 import * as athRepo from '../db/athRepo.ts';
+import { replaceDailyHighs, clearDailyHighs, toDay } from '../db/athDailyRepo.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
 import type { Candle } from '../sources/types.ts';
@@ -130,8 +131,37 @@ export async function backfillAth(
         complete: agree && s.complete,
         backfilledAt: now,
       });
-      if (agree) { out.done++; if (s.complete) out.complete++; }
+      /**
+       * 长历史按天落库，供滚动窗口用。口径不符时**清掉**而不是留着 ——
+       * 留一份量级不对的历史，等于让每个窗口的高点都是错的。
+       */
+      if (agree) {
+        replaceDailyHighs(tokenId, toDailyHighs(candles));
+        out.done++;
+        if (s.complete) out.complete++;
+      } else {
+        clearDailyHighs(tokenId);
+      }
     }
   }
   return out;
+}
+
+/**
+ * 把任意分辨率的 K 线压成"每天最高价"。
+ *
+ * 只留 high：窗口高点只需要它，存 OHLC 是四倍的行宽换不来任何东西。
+ */
+export function toDailyHighs(candles: Candle[]): Array<{ day: number; high: string }> {
+  const best = new Map<number, Decimal>();
+  for (const c of candles) {
+    const peak = c.h ?? c.c;
+    if (!peak || !peak.gt(0)) continue;
+    const day = toDay(c.ts);
+    const prev = best.get(day);
+    if (!prev || peak.gt(prev)) best.set(day, peak);
+  }
+  return [...best.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([day, high]) => ({ day, high: high.toString() }));
 }

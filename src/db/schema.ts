@@ -312,6 +312,8 @@ export const pumpAlerts = sqliteTable('pump_alerts', {
    * 旧行是 NULL，一律按 'level' 读 —— 它们本来就都是穿档产生的。
    */
   kind: text('kind'),
+  /** ATH 报警突破的窗口档次（'3d'/'90d'/'all'…）。非 ATH 报警为 null */
+  athWindow: text('ath_window'),
 });
 
 /**
@@ -458,5 +460,32 @@ export const walletAth = sqliteTable('wallet_ath', {
    * 让参照线跟着价格涨的话，10% 门槛也跟着上移，缓慢上涨永远够不到。
    */
   refAth: text('ref_ath'),
+  /**
+   * 各滚动窗口的历史高点缓存，JSON: {"3d":"0.01","7d":"0.02",...}。
+   *
+   * 缓存是必要的：算一次要扫 ath_daily 加最多 30 天的 5 分钟数据，
+   * 471 个币每轮都算跑不起。窗口高点变化很慢（真创了新高时当轮的价格
+   * 本来就会顶上去），隔几分钟刷一次足够。
+   */
+  windowHighs: text('window_highs'),
+  windowHighsAt: integer('window_highs_at'),
+  /** 上次报警报到哪一档窗口（'3d'/'90d'/'all'…）。只有突破更长的才算新消息 */
+  lastWindow: text('last_window'),
   updatedAt: integer('updated_at'),
 });
+
+/**
+ * 长历史的**按天高点**，只为滚动窗口服务。
+ *
+ * 单独一张表而不是写进 candles：那张表是暴涨窗口与回撤引擎在用的，
+ * 混进不同分辨率的行会让"24 小时内有多少根 5m"这类覆盖率判断全乱套。
+ *
+ * 只存每天的最高价，不存 OHLC —— 窗口高点只需要 high。
+ * 465 个币 × 360 天约 17 万行，十几 MB。
+ */
+export const athDaily = sqliteTable('ath_daily', {
+  tokenId: text('token_id').notNull(),
+  /** 当天 00:00 UTC 的秒数 */
+  day: integer('day').notNull(),
+  high: text('high').notNull(),
+}, (t) => [primaryKey({ columns: [t.tokenId, t.day] })]);

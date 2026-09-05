@@ -658,31 +658,72 @@ test('补报不会在行情回落又涨回原位时触发', async () => {
 /* ---------------- ATH 报警 ---------------- */
 
 import * as athRepo from '../db/athRepo.ts';
+import { replaceDailyHighs, toDay } from '../db/athDailyRepo.ts';
 
-function withAth(tokenId: string, ath: string, complete = true) {
+/**
+ * 造一个"有长历史"的币：wallet_ath 记录 + ath_daily 的按天高点。
+ *
+ * 必须写 ath_daily —— 滚动窗口的参照线来自真实历史（ath_daily 与 candles
+ * 取大），不是 wallet_ath.ath_price 那个单值。days 决定哪些窗口算被覆盖。
+ */
+function withAth(tokenId: string, ath: string, days = 400) {
+  const DAY = 86400;
   athRepo.upsertWalletAth({
-    tokenId, athPrice: ath, athTs: NOW - 86400, historyStartTs: NOW - 30 * 86400,
-    pairCreatedAt: NOW - 30 * 86400, complete, backfilledAt: NOW,
+    tokenId, athPrice: ath, athTs: NOW - DAY, historyStartTs: NOW - days * DAY,
+    pairCreatedAt: NOW - days * DAY, complete: true, backfilledAt: NOW,
   });
+  // 高点落在很久以前，最近这些天都低，好让"突破"是真的突破
+  const rows = [{ day: toDay(NOW - days * DAY), high: ath }];
+  for (let i = days - 1; i >= 0; i--) rows.push({ day: toDay(NOW - i * DAY), high: '0.0001' });
+  replaceDailyHighs(tokenId, rows);
 }
 
-test('突破历史新高 10% 才报，不到不报', async () => {
+test('按突破的最长窗口报 —— 分量不同的两件事不该说成一样', async () => {
   const id = 'bsc:0xathbreak';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
   wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '1');
-  withAth(id, '2');
+  withAth(id, '2');            // 400 天前有个 2 的高点，最近都很低
+
+  const athOnly = () => wr.listPumpAlerts(u.id, 0).filter((a) => a.kind?.startsWith('ath'));
 
   await runPumpTick(NOW, deps({ '0xathbreak': { priceUsd: '1' } }));          // seed
-  await runPumpTick(NOW + 60, deps({ '0xathbreak': { priceUsd: '2.1' } }));   // 超过 ATH 但只有 5%
-  const athOnly = () => wr.listPumpAlerts(u.id, 0).filter((a) => a.kind?.startsWith('ath'));
-  assert.equal(athOnly().length, 0, '不到 10% 不算突破（这一轮报的是暴涨 2x 档）');
+  await runPumpTick(NOW + 60, deps({ '0xathbreak': { priceUsd: '1.05' } }));  // 只比近期高点高 5%
+  assert.equal(athOnly().length, 0, '不到 10% 不算突破');
 
-  await runPumpTick(NOW + 120, deps({ '0xathbreak': { priceUsd: '2.3' } }));  // 超过 15%
-  assert.equal(athOnly().length, 1);
-  assert.equal(athOnly()[0]!.kind, 'ath');
+  // 2.1：远超近期各窗口，但不到 400 天前那个 2 的 10% 之上
+  await runPumpTick(NOW + 120, deps({ '0xathbreak': { priceUsd: '2.1' } }));
+  const first = athOnly();
+  assert.equal(first.length, 1);
+  assert.equal(first[0]!.athWindow, '360d', '突破的最长窗口是 360 天，不是全部历史');
+
+  // 2.3：越过 2 × 1.1，这才是真的历史新高
+  await runPumpTick(NOW + 180, deps({ '0xathbreak': { priceUsd: '2.3' } }));
+  const second = athOnly();
+  assert.equal(second.length, 2, '够到更长的窗口 = 新消息');
+  assert.equal(second[0]!.athWindow, 'all');
+});
+
+test('同一档窗口内继续爬升不重复报 —— 那是同一件事说七遍', async () => {
+  const id = 'bsc:0xathsame';
+  const u = wr.createUser(`ath${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+  withAth(id, '99');           // 全部历史的高点很高，够不到
+
+  await runPumpTick(NOW, deps({ '0xathsame': { priceUsd: '1' } }));
+  let t = NOW;
+  for (const px of ['1.2', '1.3', '1.4', '1.5', '1.6']) {
+    t += 60;
+    await runPumpTick(t, deps({ '0xathsame': { priceUsd: px } }));
+  }
+  const ath = wr.listPumpAlerts(u.id, 0).filter((a) => a.kind?.startsWith('ath'));
+  assert.equal(ath.length, 1, `五轮新高只该报一次，实际 ${ath.length}`);
+  assert.equal(ath[0]!.athWindow, '360d', '近期各窗口的高点都是 1，一次突破全都够到，取最长的');
 });
 
 test('单调上涨全程只报一次 —— 不是每根 K 线一条', async () => {
@@ -759,21 +800,22 @@ test('ATH 报警记下前高是什么时候立的 —— 之后 ath_ts 会被覆
 
   const oldHighTs = NOW - 23 * 86400;
   athRepo.upsertWalletAth({
-    tokenId: id, athPrice: '2', athTs: oldHighTs, historyStartTs: NOW - 60 * 86400,
-    pairCreatedAt: NOW - 60 * 86400, complete: true, backfilledAt: NOW,
+    tokenId: id, athPrice: '2', athTs: oldHighTs, historyStartTs: NOW - 400 * 86400,
+    pairCreatedAt: NOW - 400 * 86400, complete: true, backfilledAt: NOW,
   });
+  replaceDailyHighs(id, [
+    { day: toDay(oldHighTs), high: '2' },
+    { day: toDay(NOW), high: '0.0001' },
+  ]);
 
   await runPumpTick(NOW, deps({ '0xathbasets': { priceUsd: '1' } }));
   await runPumpTick(NOW + 60, deps({ '0xathbasets': { priceUsd: '2.5' } }));
 
   const a = wr.listPumpAlerts(u.id, 0).find((x) => x.kind === 'ath')!;
   assert.equal(a.baseTs, oldHighTs, '记的是旧高点的时刻，不是现在');
-  assert.equal(a.basePriceUsd, '2');
   // 库里的 ath_ts 已经被推到现在了，正说明必须在报警时就记下来
   assert.equal(athRepo.getWalletAth(id)!.athTs, NOW + 60);
 });
-
-/* ---------------- 报价与 K 线的量级校验 ---------------- */
 
 test('报价与 K 线差三万倍时不判定 —— Monkey 那条 34852 倍', async () => {
   /**

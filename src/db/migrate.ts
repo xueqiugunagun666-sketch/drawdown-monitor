@@ -135,6 +135,12 @@ CREATE TABLE IF NOT EXISTS pump_alerts (
   acked_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pump_alerts_user ON pump_alerts(user_id, fired_at);
+CREATE TABLE IF NOT EXISTS ath_daily (
+  token_id TEXT NOT NULL,
+  day INTEGER NOT NULL,
+  high TEXT NOT NULL,
+  PRIMARY KEY (token_id, day)
+);
 CREATE TABLE IF NOT EXISTS wallet_ath (
   token_id TEXT PRIMARY KEY,
   ath_price TEXT,
@@ -210,10 +216,14 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['token_meta', 'last_backfill_at', 'INTEGER'],
   ['pump_alerts', 'kind', 'TEXT'],
   ['pump_alerts', 'base_ts', 'INTEGER'],
+  ['pump_alerts', 'ath_window', 'TEXT'],
   ['wallet_ath', 'state', "TEXT NOT NULL DEFAULT 'ARMED'"],
   ['wallet_ath', 'last_alert_price', 'TEXT'],
   ['wallet_ath', 'last_alert_at', 'INTEGER'],
   ['wallet_ath', 'ref_ath', 'TEXT'],
+  ['wallet_ath', 'window_highs', 'TEXT'],
+  ['wallet_ath', 'window_highs_at', 'INTEGER'],
+  ['wallet_ath', 'last_window', 'TEXT'],
   ['token_meta', 'image_url', 'TEXT'],
   ['token_meta', 'website_url', 'TEXT'],
   ['token_meta', 'twitter_url', 'TEXT'],

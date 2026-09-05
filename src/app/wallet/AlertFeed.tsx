@@ -18,8 +18,10 @@ export interface AlertRow {
   seq?: number;
   /** 'level' 穿档 | 'advance' 又涨了一截 | 'ath' 破新高 | 'ath-advance' 破新高后又涨。旧行 null 按穿档读 */
   kind?: string | null;
-  /** ATH 报警的口径：「历史新高」或「N 天新高」。非 ATH 报警为 null */
+  /** ATH 报警的口径：「90 天新高」「历史新高」等。非 ATH 报警为 null */
   athScope?: string | null;
+  /** 突破的窗口档次（'3d'/'90d'/'all'…） */
+  athWindow?: string | null;
   /** 基准价的时刻。ATH 报警用它说「前高立于 23 天前」 */
   baseTs?: number | null;
 }

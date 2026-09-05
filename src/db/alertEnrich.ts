@@ -12,6 +12,7 @@
 import { getRawDb } from './index.ts';
 import type { PumpAlertRow } from './walletRepo.ts';
 import { describeAthScope } from '../worker/athHistory.ts';
+import { windowByKey, describeWindow } from '../worker/athWindows.ts';
 
 export interface EnrichedAlert extends PumpAlertRow {
   symbol: string | null;
@@ -41,12 +42,19 @@ export function lookupSymbol(tokenId: string): string | null {
 }
 
 /**
- * ATH 报警要说清楚这是多少天的"新高"。
+ * ATH 报警的口径。
  *
- * 覆盖不完整时把 6 天新高说成「历史新高」是这个系统最该避免的谎，
- * 所以口径跟着每条报警一起送到前端，而不是让前端自己猜。
+ * 直接读报警行上记的窗口档次，**不再靠"我们覆盖了多少天"去推** ——
+ * 那说的是我们的局限，而这里要说的是行情：突破 90 天高点和突破 3 天
+ * 高点分量差得远，读的人要的是后者。
+ *
+ * 旧报警行没有 ath_window，退回按覆盖天数描述（老口径）。
  */
-function lookupAthScope(tokenId: string): string | null {
+function lookupAthScope(tokenId: string, athWindow: string | null): string | null {
+  if (athWindow) {
+    const w = windowByKey(athWindow);
+    if (w) return describeWindow(w);
+  }
   try {
     const r = getRawDb().prepare(
       `SELECT complete, history_start_ts FROM wallet_ath WHERE token_id = ?`,
@@ -57,7 +65,7 @@ function lookupAthScope(tokenId: string): string | null {
       : Math.max(0, Math.floor(Date.now() / 1000) - r.history_start_ts);
     return describeAthScope({ complete: r.complete === 1, coverageSeconds: secs });
   } catch {
-    return null;                 // 表还没建（迁移未跑），降级成"没有口径"
+    return null;
   }
 }
 
@@ -68,13 +76,14 @@ export function enrichAlerts(rows: PumpAlertRow[]): EnrichedAlert[] {
   return rows.map((a) => {
     if (!cache.has(a.tokenId)) cache.set(a.tokenId, lookupSymbol(a.tokenId));
     const isAth = a.kind === 'ath' || a.kind === 'ath-advance';
-    if (isAth && !scopes.has(a.tokenId)) scopes.set(a.tokenId, lookupAthScope(a.tokenId));
+    const scopeKey = `${a.tokenId}|${a.athWindow ?? ''}`;
+    if (isAth && !scopes.has(scopeKey)) scopes.set(scopeKey, lookupAthScope(a.tokenId, a.athWindow));
     return {
       ...a,
       symbol: cache.get(a.tokenId) ?? null,
       address: a.tokenId.split(':')[1] ?? null,
       chain: a.tokenId.split(':')[0] ?? null,
-      athScope: isAth ? scopes.get(a.tokenId) ?? null : null,
+      athScope: isAth ? scopes.get(scopeKey) ?? null : null,
     };
   });
 }
