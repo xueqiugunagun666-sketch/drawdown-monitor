@@ -89,10 +89,35 @@ test('详细 API：后续批次故障不丢此前成功报价，旧 API 仍返�
 });
 
 test('按 baseToken.address 归位，大小写不敏感', () => {
-  const m = parseBatchQuotes(JSON.stringify([pair('0xAAA', '1.5', 9000, 20000)]), ['0xaaa']);
+  const m = parseBatchQuotes(JSON.stringify([pair('0XAAA', '1.5', 9000, 20000)]), ['0xaaa'], 'bsc');
   assert.equal(m.get('0xaaa')?.priceUsd, '1.5');
   assert.equal(m.get('0xaaa')?.liquidityUsd, 9000);
   assert.equal(m.get('0xaaa')?.volume24hUsd, 20000);
+});
+
+test('保留池身份、秒级采样时间与可信计价币元数据', () => {
+  const address = '0XAbCdEf';
+  const q = parseBatchQuotes(JSON.stringify([{
+    pairAddress: '0xPair123',
+    dexId: 'uniswap',
+    baseToken: { address, symbol: 'X' },
+    priceUsd: '1.5',
+    liquidity: { usd: 9000 },
+    quoteToken: {
+      address: '0X833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      symbol: 'USDC',
+    },
+  }]), ['0xabcdef'], 'base', 1_757_000_123).get('0xabcdef')!;
+
+  assert.equal(q.pairAddress, '0xpair123');
+  assert.equal(q.dexId, 'uniswap');
+  assert.equal(q.fetchedAt, 1_757_000_123);
+  assert.deepEqual(q.quoteIdentity, {
+    chain: 'base',
+    address: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    symbol: 'USDC',
+    trust: 'trusted',
+  });
 });
 
 test('请求的地址在响应里缺失时不出现在结果中，不当作零', () => {

@@ -75,12 +75,15 @@ test('解析出价格、市值与池子地址', () => {
   const m = parseXxyyPrices(ok([{
     mint: '0x198dba421a7db566a90da5de7901abe3443b4444',
     priceUSD: 0.004501142640253807, marketCap: 4501142.64, dexId: 'pan2',
-    pairAddress: '0xabc',
-  }]), 'bsc');
+    pairAddress: '0XAbC',
+  }]), 'bsc', 1_757_000_123);
   const q = m.get('0x198dba421a7db566a90da5de7901abe3443b4444')!;
   assert.equal(q.priceUsd, '0.004501142640253807');
   assert.equal(q.marketCapUsd, 4501142.64);
   assert.equal(q.pairAddress, '0xabc');
+  assert.equal(q.chain, 'bsc');
+  assert.equal(q.mint, '0x198dba421a7db566a90da5de7901abe3443b4444');
+  assert.equal(q.fetchedAt, 1_757_000_123);
 });
 
 test('priceUSD 为 0 当成「没数据」而不是「价格是零」', () => {
@@ -104,8 +107,9 @@ test('负数与非数字同样丢弃', () => {
 });
 
 test('地址统一小写 —— 上游大小写不定，键要能对上', () => {
-  const m = parseXxyyPrices(ok([{ mint: '0xABCDEF', priceUSD: 1 }]), 'bsc');
+  const m = parseXxyyPrices(ok([{ mint: '0XABCDEF', priceUSD: 1 }]), 'bsc');
   assert.equal(m.has('0xabcdef'), true);
+  assert.equal(m.get('0xabcdef')?.mint, '0xabcdef');
 });
 
 test('Solana mint 保留大小写', () => {

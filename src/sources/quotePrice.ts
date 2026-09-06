@@ -19,6 +19,10 @@
  * 与计价代币自己的美元价对比，差太多就用真实价重算。
  */
 import { Decimal } from '../lib/decimal.ts';
+import {
+  isTrustedQuoteIdentity,
+  type QuoteIdentityTrust,
+} from '../lib/tokenIdentity.ts';
 
 /**
  * 主流计价资产。用这些计价时 DexScreener 的美元价可以直接信 ——
@@ -35,6 +39,20 @@ export const MAJOR_QUOTES = new Set([
 
 export function isMajorQuote(symbol: string | null | undefined): boolean {
   return MAJOR_QUOTES.has((symbol ?? '').toUpperCase());
+}
+
+/**
+ * 暴露精确计价币身份判定，但本轮不把它接入正式校正分支。
+ *
+ * `isMajorQuote` 仍保持原有符号兼容行为；调用方可以额外保存这个结果，
+ * 将“符号看起来主流”和“链+合约确实已确认”区分开来。
+ */
+export function quoteIdentityStatus(
+  chain: string,
+  quoteAddress: string | null,
+  quoteSymbol: string | null,
+): QuoteIdentityTrust {
+  return isTrustedQuoteIdentity(chain, quoteAddress, quoteSymbol);
 }
 
 /**

@@ -21,6 +21,7 @@ import { httpPostJson } from '../lib/http.ts';
 import { SourceError, type SourceFailureKind } from '../lib/errors.ts';
 import { makeLogger } from '../lib/log.ts';
 import { Decimal } from '../lib/decimal.ts';
+import { normalizeAddress } from '../lib/tokenIdentity.ts';
 
 export const SOURCE_ID = 'xxyy';
 const log = makeLogger(SOURCE_ID);
@@ -46,7 +47,7 @@ export function supportsChain(chain: string): boolean {
 
 /** EVM 地址大小写不敏感；Solana mint 大小写敏感，绝不能统一转小写。 */
 export function normalizeMint(chain: string, mint: string): string {
-  return /^0x/i.test(mint) && chain !== 'solana' ? mint.toLowerCase() : mint;
+  return normalizeAddress(chain, mint);
 }
 
 /**
@@ -65,6 +66,10 @@ export interface XxyyQuote {
   priceUsd: string;
   marketCapUsd: number | null;
   pairAddress: string | null;
+  /** 解析时保留来源链和规范化后的 mint；旧注入调用方可以省略。 */
+  chain?: string;
+  mint?: string;
+  fetchedAt?: number;
 }
 
 export interface XxyyBatchFailure {
@@ -106,7 +111,11 @@ interface RawRow {
  * （USDT / WBNB / USDC）一律回 0，它显然不是真的不值钱 —— 把 0 当价格
  * 会算出无穷大的倍数。
  */
-export function parseXxyyPrices(body: string, chain: string): Map<string, XxyyQuote> {
+export function parseXxyyPrices(
+  body: string,
+  chain: string,
+  fetchedAt = Math.floor(Date.now() / 1000),
+): Map<string, XxyyQuote> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -148,7 +157,11 @@ export function parseXxyyPrices(body: string, chain: string): Map<string, XxyyQu
       // 后续一律走 Decimal；这里也不使用 Number 做价格校验或算术。
       priceUsd: price.toString(),
       marketCapUsd: mc,
-      pairAddress: typeof r.pairAddress === 'string' ? r.pairAddress : null,
+      pairAddress: typeof r.pairAddress === 'string'
+        ? normalizeAddress(chain, r.pairAddress) : null,
+      chain: chain.trim().toLowerCase(),
+      mint,
+      fetchedAt,
     });
   }
   return out;

@@ -20,6 +20,12 @@ import { isMajorQuote, correctPrice, scaleMarketCap } from './quotePrice.ts';
 import { getConfig } from '../lib/config.ts';
 import { SourceError, type SourceFailureKind } from '../lib/errors.ts';
 import { makeLogger } from '../lib/log.ts';
+import {
+  makeQuoteIdentity,
+  normalizeAddress,
+  quoteCacheKey,
+  type QuoteIdentity,
+} from '../lib/tokenIdentity.ts';
 
 const log = makeLogger('ds-batch');
 export const SOURCE_ID = 'dexscreener-batch';
@@ -112,9 +118,17 @@ export interface BatchQuote {
   websiteUrl: string | null;
   twitterUrl: string | null;
   telegramUrl: string | null;
+  /** 池身份与采样时间；旧注入调用方可以省略，真实解析结果总会填写。 */
+  pairAddress?: string | null;
+  dexId?: string | null;
+  fetchedAt?: number;
+  /** 计价币的链+精确地址+symbol 可信度，仅作元数据，不参与本轮校正。 */
+  quoteIdentity?: QuoteIdentity;
 }
 
 interface RawPair {
+  pairAddress?: unknown;
+  dexId?: unknown;
   baseToken?: { address?: string; symbol?: string };
   priceUsd?: unknown;
   liquidity?: { usd?: number };
@@ -174,9 +188,6 @@ export function chunkAddresses(addrs: string[], size = MAX_BATCH): string[][] {
   return out;
 }
 
-/** 地址归一：EVM 大小写不敏感 */
-const norm = (a: string) => (a.startsWith('0x') ? a.toLowerCase() : a);
-
 function positivePriceText(raw: unknown): string | null {
   if (typeof raw !== 'string' && typeof raw !== 'number') return null;
   try {
@@ -188,7 +199,12 @@ function positivePriceText(raw: unknown): string | null {
   }
 }
 
-export function parseBatchQuotes(body: string, requested: string[]): Map<string, BatchQuote> {
+export function parseBatchQuotes(
+  body: string,
+  requested: string[],
+  chain = 'ethereum',
+  fetchedAt = Math.floor(Date.now() / 1000),
+): Map<string, BatchQuote> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -202,11 +218,12 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
     throw new SourceError({ sourceId: SOURCE_ID, kind: 'malformed', message: '未返回数组' });
   }
 
-  const want = new Set(requested.map(norm));
+  const want = new Set(requested.map((address) => normalizeAddress(chain, address)));
   const out = new Map<string, BatchQuote>();
 
   for (const p of parsed as RawPair[]) {
-    const addr = p.baseToken?.address ? norm(p.baseToken.address) : null;
+    const rawAddress = p.baseToken?.address;
+    const addr = rawAddress ? normalizeAddress(chain, rawAddress) : null;
     if (!addr || !want.has(addr)) continue;      // 没请求过的忽略
     const priceUsd = positivePriceText(p.priceUsd);
     if (priceUsd === null) continue;             // 没价格等于没报价
@@ -214,6 +231,9 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
     const prev = out.get(addr);
     // 同一代币多个池时取流动性最高的
     if (prev && prev.liquidityUsd >= liq) continue;
+    const quoteAddress = p.quoteToken?.address
+      ? normalizeAddress(chain, p.quoteToken.address) : null;
+    const quoteSymbol = p.quoteToken?.symbol ?? null;
     out.set(addr, {
       priceUsd,
       priceSource: 'dexscreener',
@@ -224,8 +244,8 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
       marketCapUsd: typeof p.marketCap === 'number' ? p.marketCap : null,
       symbol: p.baseToken?.symbol ?? null,
       priceNative: typeof p.priceNative === 'string' ? p.priceNative : null,
-      quoteSymbol: p.quoteToken?.symbol ?? null,
-      quoteAddress: p.quoteToken?.address ? norm(p.quoteToken.address) : null,
+      quoteSymbol,
+      quoteAddress,
       priceCorrected: false,
       // 毫秒转秒。缺失或不是数字时给 null —— 不知道币多老，就没资格说"全部历史"
       pairCreatedAt: typeof p.pairCreatedAt === 'number' && Number.isFinite(p.pairCreatedAt)
@@ -234,6 +254,11 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
       websiteUrl: pickWebsite(p.info?.websites),
       twitterUrl: pickSocial(p.info?.socials, 'twitter'),
       telegramUrl: pickSocial(p.info?.socials, 'telegram'),
+      pairAddress: typeof p.pairAddress === 'string'
+        ? normalizeAddress(chain, p.pairAddress) : null,
+      dexId: typeof p.dexId === 'string' ? p.dexId.trim().toLowerCase() : null,
+      fetchedAt,
+      quoteIdentity: makeQuoteIdentity(chain, quoteAddress, quoteSymbol),
     });
   }
   return out;
@@ -312,7 +337,7 @@ export async function fetchBatchQuotesDetailed(
     }
     let parsed: Map<string, BatchQuote>;
     try {
-      parsed = parseBatchQuotes(res.body, batch);
+      parsed = parseBatchQuotes(res.body, batch, chain, Math.floor(Date.now() / 1000));
     } catch (error) {
       const failure = failureFromError(error, batch);
       failures.push(failure);
@@ -321,7 +346,7 @@ export async function fetchBatchQuotesDetailed(
     }
     for (const [k, v] of parsed) merged.set(k, v);
 
-    const missing = batch.filter((address) => !parsed.has(norm(address)));
+    const missing = batch.filter((address) => !parsed.has(normalizeAddress(chain, address)));
     if (missing.length > 0) {
       failures.push({
         addresses: missing,
@@ -334,7 +359,9 @@ export async function fetchBatchQuotesDetailed(
 
   await applyQuoteCorrections(chain, chainCfg.dexscreenerId, merged);
 
-  const missing = addresses.map(norm).filter((a) => !merged.has(a));
+  const missing = addresses
+    .map((address) => normalizeAddress(chain, address))
+    .filter((address) => !merged.has(address));
   if (missing.length > 0) {
     log.debug(`${chain} 有 ${missing.length}/${addresses.length} 个地址没拿到报价`);
   }
@@ -371,14 +398,16 @@ const QUOTE_CACHE_TTL_MS = 10 * 60 * 1000;
  * 查不到的代币重发请求。
  */
 async function resolveQuoteUsd(
-  dexscreenerId: string, addrs: string[], now: number,
+  chain: string, dexscreenerId: string, addrs: string[], now: number,
 ): Promise<Map<string, Decimal | null>> {
   const out = new Map<string, Decimal | null>();
   const need: string[] = [];
   for (const a of addrs) {
-    const hit = quoteUsdCache.get(a);
-    if (hit && now - hit.at < QUOTE_CACHE_TTL_MS) out.set(a, hit.price);
-    else need.push(a);
+    const normalized = normalizeAddress(chain, a);
+    const key = quoteCacheKey(SOURCE_ID, chain, normalized);
+    const hit = quoteUsdCache.get(key);
+    if (hit && now - hit.at < QUOTE_CACHE_TTL_MS) out.set(normalized, hit.price);
+    else need.push(normalized);
   }
   if (need.length === 0) return out;
 
@@ -402,7 +431,8 @@ async function resolveQuoteUsd(
     // 同一个代币可能有多个主流池，取流动性最高的那个
     const best = new Map<string, { price: Decimal; liq: number }>();
     for (const p of pairs as RawPair[]) {
-      const a = p.baseToken?.address ? norm(p.baseToken.address) : null;
+      const a = p.baseToken?.address
+        ? normalizeAddress(chain, p.baseToken.address) : null;
       if (!a || !batch.includes(a)) continue;
       const priceUsd = positivePriceText(p.priceUsd);
       if (!isMajorQuote(p.quoteToken?.symbol) || priceUsd === null) continue;
@@ -414,7 +444,7 @@ async function resolveQuoteUsd(
     for (const a of batch) {
       const price = best.get(a)?.price ?? null;
       out.set(a, price);
-      quoteUsdCache.set(a, { price, at: now });
+      quoteUsdCache.set(quoteCacheKey(SOURCE_ID, chain, a), { price, at: now });
     }
   }
   return out;
@@ -432,15 +462,18 @@ async function applyQuoteCorrections(
 ): Promise<void> {
   const suspects = new Set<string>();
   for (const q of quotes.values()) {
-    if (q.quoteAddress && !isMajorQuote(q.quoteSymbol)) suspects.add(q.quoteAddress);
+    if (q.quoteAddress && !isMajorQuote(q.quoteSymbol)) {
+      suspects.add(normalizeAddress(chain, q.quoteAddress));
+    }
   }
   if (suspects.size === 0) return;
 
-  const real = await resolveQuoteUsd(dexscreenerId, [...suspects], Date.now());
+  const real = await resolveQuoteUsd(chain, dexscreenerId, [...suspects], Date.now());
   let fixed = 0;
   for (const [addr, q] of quotes) {
     if (!q.quoteAddress || isMajorQuote(q.quoteSymbol)) continue;
-    const r = correctPrice(q.priceUsd, q.priceNative, real.get(q.quoteAddress) ?? null);
+    const quoteAddress = normalizeAddress(chain, q.quoteAddress);
+    const r = correctPrice(q.priceUsd, q.priceNative, real.get(quoteAddress) ?? null);
     if (!r.corrected) continue;
     quotes.set(addr, {
       ...q,

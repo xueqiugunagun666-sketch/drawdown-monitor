@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Decimal } from '../lib/decimal.ts';
 import {
-  isMajorQuote, impliedQuoteUsd, correctPrice, DEVIATION_THRESHOLD, scaleMarketCap,
+  isMajorQuote, quoteIdentityStatus, impliedQuoteUsd, correctPrice, DEVIATION_THRESHOLD, scaleMarketCap,
 } from './quotePrice.ts';
 
 test('主流计价资产不分大小写', () => {
@@ -12,6 +12,23 @@ test('主流计价资产不分大小写', () => {
   for (const s of ['GMEB', 'USDG', 'SOXLB', 'MRNAB', '', null, undefined]) {
     assert.equal(isMajorQuote(s), false, String(s));
   }
+});
+
+test('精确计价币身份判定独立于旧的符号兼容判断', () => {
+  assert.equal(
+    quoteIdentityStatus('ethereum', '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', 'WETH'),
+    'trusted',
+  );
+  assert.equal(
+    quoteIdentityStatus('ethereum', '0x0000000000000000000000000000000000000001', 'USDT'),
+    'unknown',
+  );
+  assert.equal(
+    quoteIdentityStatus('robinhood', '0x0000000000000000000000000000000000000001', 'USDT'),
+    'unknown',
+  );
+  // 正式校正仍由原有 isMajorQuote/correctPrice 路径决定，本测试只验证可调用元数据判定。
+  assert.equal(isMajorQuote('USDT'), true);
 });
 
 test('反推池子隐含的计价代币单价', () => {
