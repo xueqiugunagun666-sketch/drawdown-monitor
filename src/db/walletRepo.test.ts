@@ -345,9 +345,9 @@ test('decimals 未知的币不参与判定', () => {
 test('离谱跳变的报价不写进 candle', () => {
   const id = 'bsc:0xjunkquote';
   const slot = Math.floor(1_700_100_000 / 300) * 300;
-  assert.equal(wr.upsertWalletCandle(id, '1', 1000, slot), true);
+  assert.equal(wr.upsertWalletCandle(id, '1', 1000, slot).status, 'accepted');
   // 实测 USDG 那根：正常约 1 美元，DexScreener 给了 5.56e-24
-  assert.equal(wr.upsertWalletCandle(id, '0.000000000000000000000005563', 1000, slot + 300), false,
+  assert.equal(wr.upsertWalletCandle(id, '0.000000000000000000000005563', 1000, slot + 300).status, 'quarantined',
     '5.56e-24 相对 1 是 1e24 倍跳变，必须丢弃');
   const n = getRawDb().prepare(
     `SELECT COUNT(*) c FROM candles WHERE token_id=?`).get(id) as { c: number };
@@ -358,21 +358,42 @@ test('正常波动照常写入', () => {
   const id = 'bsc:0xnormalmove';
   const slot = Math.floor(1_700_200_000 / 300) * 300;
   wr.upsertWalletCandle(id, '1', 1000, slot);
-  assert.equal(wr.upsertWalletCandle(id, '5', 1000, slot + 300), true, '5 倍是正常行情');
-  assert.equal(wr.upsertWalletCandle(id, '500', 1000, slot + 600), true, '100 倍也放行');
+  assert.equal(wr.upsertWalletCandle(id, '5', 1000, slot + 300).status, 'accepted', '5 倍是正常行情');
+  assert.equal(wr.upsertWalletCandle(id, '500', 1000, slot + 600).status, 'accepted', '100 倍也放行');
 });
 
 test('第一根没有参照，直接写入', () => {
   const id = 'bsc:0xfirstcandle';
-  assert.equal(wr.upsertWalletCandle(id, '0.000000000001', 1000, 1_700_300_000), true);
+  assert.equal(wr.upsertWalletCandle(id, '0.000000000001', 1000, 1_700_300_000).status, 'accepted');
 });
 
-test('跳变守卫用的是上一根收盘，不是同格内的值', () => {
+test('同一 5m 格内的离谱跳变也会被隔离', () => {
   const id = 'bsc:0xsameslot';
   const slot = Math.floor(1_700_400_000 / 300) * 300;
   wr.upsertWalletCandle(id, '1', 1000, slot);
-  // 同一格内再写一次正常值
-  assert.equal(wr.upsertWalletCandle(id, '1.5', 1000, slot + 100), true);
+  assert.equal(wr.upsertWalletCandle(id, '100', 1000, slot + 100).status, 'accepted');
+  assert.equal(
+    wr.upsertWalletCandle(id, '1000001', 1000, slot + 200).status,
+    'quarantined',
+  );
+  const row = getRawDb().prepare(
+    `SELECT h, l, c FROM candles WHERE token_id=? AND timeframe='5m' AND ts=?`,
+  ).get(id, slot) as { h: string; l: string; c: string };
+  assert.deepEqual(row, { h: '100', l: '1', c: '100' });
+});
+
+test('非法、非有限及非正价格一律隔离且不落库', () => {
+  for (const [i, price] of ['', 'NaN', 'Infinity', '-1', '0'].entries()) {
+    const id = `bsc:0xinvalidprice${i}`;
+    assert.equal(
+      wr.upsertWalletCandle(id, price, 1000, 1_700_500_000 + i).status,
+      'quarantined',
+    );
+    const row = getRawDb().prepare(
+      `SELECT COUNT(*) c FROM candles WHERE token_id=?`,
+    ).get(id) as { c: number };
+    assert.equal(row.c, 0);
+  }
 });
 
 /* ---------- 每人自己的粉尘阈值 ---------- */

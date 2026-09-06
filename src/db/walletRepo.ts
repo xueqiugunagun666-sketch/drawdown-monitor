@@ -305,27 +305,51 @@ export function maxPumpAlertSeq(): number {
  * 而真出现了下一根也会接上，不会漏掉行情。宁可漏一根也不能让
  * 垃圾报价污染整个窗口。
  */
-const MAX_TICK_JUMP = 1000;
+export const MAX_TICK_JUMP = 1000;
+
+export type WalletCandleWriteResult =
+  | { status: 'accepted'; reason: null }
+  | { status: 'quarantined'; reason: string };
 
 export function upsertWalletCandle(
   tokenId: string, priceUsd: string, liquidityUsd: number, fetchedAt: number,
   /** 与 priceUsd 同源的市值。持仓列表要显示它，不记就只能显示价格 */
   marketCapUsd: number | null = null,
   source: 'wallet-batch' | 'wallet-dexscreener' | 'wallet-xxyy' = 'wallet-batch',
-): boolean {
+): WalletCandleWriteResult {
   const ts = Math.floor(fetchedAt / 300) * 300;
   const db = getRawDb();
 
-  // 与上一根收盘比：跳变离谱的直接丢弃，不写进序列
+  let price: Decimal;
+  try {
+    price = new Decimal(priceUsd);
+  } catch {
+    return { status: 'quarantined', reason: '价格不是合法十进制数' };
+  }
+  if (!price.isFinite() || price.lte(0)) {
+    return { status: 'quarantined', reason: '价格不是有限正数' };
+  }
+
+  // 与最近一笔已接受报价比（包括同一 5m 格）：跳变离谱的直接隔离，
+  // 不能让同格内的坏报价绕过守卫并污染 h/l/c。
   const prev = db.prepare(
-    `SELECT c FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts < ?
+    `SELECT c FROM candles WHERE token_id = ? AND timeframe = '5m' AND ts <= ? AND c IS NOT NULL
      ORDER BY ts DESC LIMIT 1`,
   ).get(tokenId, ts) as { c: string | null } | undefined;
   if (prev?.c) {
-    const a = new Decimal(prev.c), b = new Decimal(priceUsd);
-    if (a.gt(0) && b.gt(0)) {
-      const ratio = Decimal.max(a.div(b), b.div(a));
-      if (ratio.gt(MAX_TICK_JUMP)) return false;
+    try {
+      const accepted = new Decimal(prev.c);
+      if (accepted.isFinite() && accepted.gt(0)) {
+        const ratio = Decimal.max(accepted.div(price), price.div(accepted));
+        if (ratio.gt(MAX_TICK_JUMP)) {
+          return {
+            status: 'quarantined',
+            reason: `相对最近已接受报价跳变 ${ratio.toSignificantDigits(8).toString()} 倍`,
+          };
+        }
+      }
+    } catch {
+      // 旧历史若已损坏，不把它当作新报价的可信参照；新报价本身仍按上面的规则校验。
     }
   }
   const existing = db.prepare(
@@ -338,18 +362,17 @@ export function upsertWalletCandle(
          (token_id, timeframe, ts, o, h, l, c, liquidity_total, market_cap_usd, source)
        VALUES (?, '5m', ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(tokenId, ts, priceUsd, priceUsd, priceUsd, priceUsd, liquidityUsd, marketCapUsd, source);
-    return true;
+    return { status: 'accepted', reason: null };
   }
 
-  const p = new Decimal(priceUsd);
-  const hi = existing.h ? Decimal.max(new Decimal(existing.h), p) : p;
-  const lo = existing.l ? Decimal.min(new Decimal(existing.l), p) : p;
+  const hi = existing.h ? Decimal.max(new Decimal(existing.h), price) : price;
+  const lo = existing.l ? Decimal.min(new Decimal(existing.l), price) : price;
   db.prepare(
     `UPDATE candles SET h = ?, l = ?, c = ?, liquidity_total = ?,
        market_cap_usd = COALESCE(?, market_cap_usd), source = ?
      WHERE token_id = ? AND timeframe = '5m' AND ts = ?`,
   ).run(hi.toString(), lo.toString(), priceUsd, liquidityUsd, marketCapUsd, source, tokenId, ts);
-  return true;
+  return { status: 'accepted', reason: null };
 }
 
 /**

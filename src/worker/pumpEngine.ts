@@ -356,7 +356,17 @@ async function evaluateToken(
    * 而那正是这个工具要抓的事，拦掉比误报更糟。问题的本质不是幅度大，
    * 是**两个数不是同一种测量**，所以只在跨流水线时换用对方的价。
    */
-  let price = new Decimal(quote.priceUsd);
+  let price: Decimal;
+  try {
+    price = new Decimal(quote.priceUsd);
+  } catch {
+    log.warn(`${tokenId} 报价隔离：价格不是合法十进制数`);
+    return;
+  }
+  if (!price.isFinite() || price.lte(0)) {
+    log.warn(`${tokenId} 报价隔离：价格不是有限正数`);
+    return;
+  }
   if (fromWatchlist) {
     const boardPrice = latestCandleClose(tokenId);
     if (boardPrice) {
@@ -375,7 +385,7 @@ async function evaluateToken(
    * 报市值 $5,054 万，正常池 $142 万，差 36 倍）。
    */
   const marketCapUsd = scaleMarketCap(quote.marketCapUsd, quote.priceUsd, price.toString());
-  if (!price.gt(0)) return;
+  if (!price.isFinite() || price.lte(0)) return;
 
   // 先把本轮价格并进当前 5m candle，历史就是这样一轮轮攒起来的。
   //
@@ -387,9 +397,13 @@ async function evaluateToken(
     const candleSource = quote.priceSource === 'xxyy'
       ? 'wallet-xxyy' : quote.priceSource === 'dexscreener'
         ? 'wallet-dexscreener' : 'wallet-batch';
-    wr.upsertWalletCandle(
+    const candleWrite = wr.upsertWalletCandle(
       tokenId, quote.priceUsd, quote.liquidityUsd, now, marketCapUsd, candleSource,
     );
+    if (candleWrite.status === 'quarantined') {
+      log.warn(`${tokenId} 报价隔离：${candleWrite.reason}`);
+      return;
+    }
 
     /**
      * 历史不足时补 24 小时的 5m K 线。必须在算窗口与 seed 之前做完 ——

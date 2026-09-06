@@ -112,6 +112,41 @@ test('从平稳涨到 2 倍会报，且带上倍数与基准价', async () => {
   assert.ok(Number(a!.multiple) >= 2);
 });
 
+test('被隔离的离谱报价不改 candle、状态，也不产生报警', async () => {
+  const id = 'bsc:0xquarantine';
+  const h = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xquarantine': { priceUsd: '1' } }));
+  const beforeStates = getRawDb().prepare(
+    `SELECT timeframe, basis, level, state, last_fired_at
+       FROM pump_states WHERE token_id=? ORDER BY timeframe, basis, level`,
+  ).all(id);
+
+  await runPumpTick(NOW + 60, deps({ '0xquarantine': { priceUsd: '1000001' } }));
+
+  const candle = getRawDb().prepare(
+    `SELECT h, l, c FROM candles WHERE token_id=? AND timeframe='5m' AND ts=?`,
+  ).get(id, CUR) as { h: string; l: string; c: string };
+  assert.deepEqual(candle, { h: '1', l: '1', c: '1' });
+  assert.deepEqual(getRawDb().prepare(
+    `SELECT timeframe, basis, level, state, last_fired_at
+       FROM pump_states WHERE token_id=? ORDER BY timeframe, basis, level`,
+  ).all(id), beforeStates);
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
+});
+
+test('真实的 11 倍行情不会被异常报价守卫误杀', async () => {
+  const id = 'bsc:0xreal11x';
+  const h = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xreal11x': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xreal11x': { priceUsd: '11' } }));
+  const alerts = wr.listPumpAlerts(h.userId, 0);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0]?.level, 10);
+  assert.equal(alerts[0]?.priceUsd, '11');
+});
+
 test('同一波行情只发一条，不是每个窗口各发一条', async () => {
   const id = 'bsc:0xonce';
   const h = holder(id);
