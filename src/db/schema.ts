@@ -211,6 +211,30 @@ export const pumpHealth = sqliteTable('pump_health', {
   updatedAt: integer('updated_at').notNull(),
 }, (t) => [primaryKey({ columns: [t.component, t.scope] })]);
 
+/**
+ * 报价规则的影子观察。正式报警仍走现有规则；这里同时保存当前采用结果与
+ * “来源冲突就暂停”的候选结果，连续观察后再决定是否切换。
+ */
+export const quoteShadow = sqliteTable('quote_shadow', {
+  tokenId: text('token_id').notNull(),
+  bucketTs: integer('bucket_ts').notNull(),
+  observedAt: integer('observed_at').notNull(),
+  dsPriceUsd: text('ds_price_usd'),
+  xxyyPriceUsd: text('xxyy_price_usd'),
+  decision: text('decision').notNull(),
+  ratio: text('ratio'),
+  roundHealthy: integer('round_healthy').default(0).notNull(),
+  currentPriceUsd: text('current_price_usd'),
+  currentSource: text('current_source'),
+  hypotheticalPriceUsd: text('hypothetical_price_usd'),
+  hypotheticalSource: text('hypothetical_source'),
+  dsPairAddress: text('ds_pair_address'),
+  dsDexId: text('ds_dex_id'),
+  dsQuoteAddress: text('ds_quote_address'),
+  dsQuoteIdentity: text('ds_quote_identity'),
+  xxyyPairAddress: text('xxyy_pair_address'),
+}, (t) => [primaryKey({ columns: [t.tokenId, t.bucketTs] })]);
+
 /** 轮询轮次记录，UI 显示"上次轮询时间" */
 export const pollRuns = sqliteTable('poll_runs', {
   id: integer('id').primaryKey({ autoIncrement: true }),

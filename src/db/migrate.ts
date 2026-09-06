@@ -105,6 +105,28 @@ CREATE TABLE IF NOT EXISTS pump_health (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (component, scope)
 );
+CREATE TABLE IF NOT EXISTS quote_shadow (
+  token_id TEXT NOT NULL,
+  bucket_ts INTEGER NOT NULL,
+  observed_at INTEGER NOT NULL,
+  ds_price_usd TEXT,
+  xxyy_price_usd TEXT,
+  decision TEXT NOT NULL,
+  ratio TEXT,
+  round_healthy INTEGER NOT NULL DEFAULT 0,
+  current_price_usd TEXT,
+  current_source TEXT,
+  hypothetical_price_usd TEXT,
+  hypothetical_source TEXT,
+  ds_pair_address TEXT,
+  ds_dex_id TEXT,
+  ds_quote_address TEXT,
+  ds_quote_identity TEXT,
+  xxyy_pair_address TEXT,
+  PRIMARY KEY (token_id, bucket_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_quote_shadow_observed
+  ON quote_shadow(observed_at);
 CREATE TABLE IF NOT EXISTS poll_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, started_at INTEGER NOT NULL, finished_at INTEGER,
   tokens_requested INTEGER NOT NULL DEFAULT 0, tokens_covered INTEGER NOT NULL DEFAULT 0,

@@ -32,6 +32,7 @@ import { windowHighs, historyStart } from '../db/athDailyRepo.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
 import * as pumpHealth from '../db/pumpHealthRepo.ts';
+import { pruneQuoteShadow, recordQuoteShadows } from '../db/quoteShadowRepo.ts';
 import {
   fetchBatchQuotes, fetchBatchQuotesDetailed, type BatchQuote, type BatchQuotesDetailedResult,
   type QuoteBatchFailure,
@@ -53,6 +54,7 @@ import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
 import { align5m, nowSec } from '../lib/time.ts';
 import { randomUUID } from 'node:crypto';
+import { decideQuote } from './quoteDecision.ts';
 
 const log = makeLogger('pump-engine');
 
@@ -343,12 +345,30 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
     failedBatches += technicalFailures;
   }
   let effectiveQuotes = quotes;
+  let xxyyRound: XxyyRound | null = null;
+  let xxyyHealthy = false;
   if (xxyyPromise) {
-    const xxyy = await xxyyPromise;
-    const verdict = assessXxyy(byChain, quotes, xxyy, now);
-    effectiveQuotes = applyGuardedXxyy(quotes, xxyy.quotes, verdict.ok);
+    xxyyRound = await xxyyPromise;
+    const verdict = assessXxyy(byChain, quotes, xxyyRound, now);
+    xxyyHealthy = verdict.ok;
+    effectiveQuotes = applyGuardedXxyy(quotes, xxyyRound.quotes, verdict.ok);
   }
   const quoteMs = Date.now() - t0;
+
+  // 整轮影子观察一次事务落库。正式报价与状态机完全不读取这张表。
+  try {
+    recordQuoteShadows(tokenIds.map((tokenId) => {
+      const ds = quotes.get(tokenId) ?? null;
+      const xxyy = xxyyRound?.quotes.get(tokenId) ?? null;
+      const observedAt = Math.max(ds?.fetchedAt ?? now, xxyy?.fetchedAt ?? now);
+      return {
+        tokenId, observedAt, ds, xxyy,
+        decision: decideQuote(ds, xxyy, xxyyHealthy),
+      };
+    }));
+  } catch (err) {
+    log.warn(`影子报价批量落库失败: ${safeErrorMessage(err)}`);
+  }
 
   for (const tokenId of tokenIds) {
     try {
@@ -362,6 +382,12 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       evalErrors++;
       log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
     }
+  }
+
+  // 每小时清一次七天前的观察。条件使用轮次时间，重启后也无需额外定时器。
+  if (now % 3600 < TICK_INTERVAL_SECONDS) {
+    try { pruneQuoteShadow(now); }
+    catch (err) { log.warn(`清理旧影子报价失败: ${safeErrorMessage(err)}`); }
   }
 
   /**
