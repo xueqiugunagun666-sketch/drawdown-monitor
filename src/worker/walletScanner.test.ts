@@ -4,7 +4,10 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { runMigrations } from '../db/migrate.ts';
 import * as wr from '../db/walletRepo.ts';
-import { scanWallet, isScanDue, SCAN_INTERVAL_SECONDS, type ScanDeps } from './walletScanner.ts';
+import {
+  scanWallet, isScanDue, candidateRetryDelay, SCAN_INTERVAL_SECONDS,
+  CANDIDATE_RETRY_MAX_SECONDS, type ScanDeps,
+} from './walletScanner.ts';
 
 before(() => { runMigrations(); });
 
@@ -123,6 +126,40 @@ test('余额读取失败的代币保留原记录，不当作已卖出', async ()
   const h = wr.listHoldingsByWallet(walletId).find((x) => x.tokenId === 'bsc:0xkeep');
   assert.ok(h, '读取失败不该删除持仓');
   assert.equal(h!.balance, '777', '余额应保持原值');
+});
+
+test('新币首次余额读取失败后，即使没有新转账也会从候选队列重试成功', async () => {
+  const { walletId, wallet } = setup();
+  await scanWallet(wallet, 500, deps({
+    scanTokens: async () => new Set(['0xretry']),
+    readBalances: async () => new Map(),
+  }));
+
+  const failed = wr.listWallets(wallet.userId).find((x) => x.id === walletId)!;
+  assert.equal(failed.lastScannedBlock, 1000, '候选已持久化后发现水位可以安全推进');
+  assert.match(failed.lastScanError ?? '', /候选重试队列/);
+  assert.equal(wr.listHoldingsByWallet(walletId).length, 0);
+
+  let asked: string[] = [];
+  await scanWallet(failed, 500 + SCAN_INTERVAL_SECONDS, deps({
+    scanTokens: async () => new Set(),                // 再也没有新转账
+    readBalances: async (_c, _w, tokens) => {
+      asked = [...tokens];
+      return new Map(tokens.map((t) => [t, { balance: '77', decimals: 18 }]));
+    },
+  }));
+  assert.deepEqual(asked, ['0xretry']);
+  assert.equal(wr.listHoldingsByWallet(walletId)[0]?.tokenId, 'bsc:0xretry');
+  assert.equal(wr.listHoldingsByWallet(walletId)[0]?.firstSeenAt, 500,
+    '重试成功时间不能覆盖最初发现时间，唤醒逻辑依赖这个字段');
+  assert.equal(wr.dueWalletTokenCandidates(walletId, 999999).length, 0,
+    '成功处理后候选应移除，不再无限重试');
+});
+
+test('失败候选按指数退避且最高不超过 6 小时', () => {
+  assert.equal(candidateRetryDelay(1), SCAN_INTERVAL_SECONDS);
+  assert.equal(candidateRetryDelay(2), SCAN_INTERVAL_SECONDS * 2);
+  assert.equal(candidateRetryDelay(99), CANDIDATE_RETRY_MAX_SECONDS);
 });
 
 test('不支持的链跳过且不报错', async () => {

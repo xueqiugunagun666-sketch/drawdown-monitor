@@ -24,6 +24,13 @@ const log = makeLogger('wallet-scanner');
 
 /** 扫描间隔：余额变化远比价格慢，12 分钟一轮足够 */
 export const SCAN_INTERVAL_SECONDS = 12 * 60;
+export const CANDIDATE_RETRY_MAX_SECONDS = 6 * 3600;
+
+/** 首次失败 12 分钟后重试，随后指数退避，最高每 6 小时一次。 */
+export function candidateRetryDelay(attemptCount: number): number {
+  const exponent = Math.max(0, Math.min(10, attemptCount - 1));
+  return Math.min(CANDIDATE_RETRY_MAX_SECONDS, SCAN_INTERVAL_SECONDS * (2 ** exponent));
+}
 
 export interface ScanDeps {
   blockNumber: (chain: string) => Promise<number>;
@@ -62,7 +69,14 @@ export async function scanWallet(
       ? await deps.scanTokens(wallet.chain, wallet.address, from, head)
       : new Set<string>();
 
-    // 已知代币 + 新发现的，一起重读余额
+    const discoveredIds = [...discovered]
+      .map((address) => `${wallet.chain}:${address.toLowerCase()}`);
+    // 这是 A15 的关键顺序：先持久化“见过这个 CA”，再做可能部分失败的 RPC。
+    wr.rememberWalletTokenCandidates(wallet.id, discoveredIds, now);
+    const candidates = wr.dueWalletTokenCandidates(wallet.id, now);
+    const candidateByToken = new Map(candidates.map((c) => [c.tokenId, c]));
+
+    // 已知持仓 + 到期候选，一起重读余额。候选不依赖后续是否还有新转账。
     const existing = wr.listHoldingsByWallet(wallet.id);
     const knownDecimals = new Map<string, number | null>();
     const all = new Set<string>();
@@ -70,7 +84,10 @@ export async function scanWallet(
       const addr = h.tokenId.split(':')[1] ?? '';
       if (addr) { all.add(addr); knownDecimals.set(addr, h.decimals); }
     }
-    for (const a of discovered) all.add(a.toLowerCase());
+    for (const candidate of candidates) {
+      const addr = candidate.tokenId.split(':')[1] ?? '';
+      if (addr) all.add(addr);
+    }
 
     const balances = await deps.readBalances(
       wallet.chain, wallet.address, [...all], knownDecimals,
@@ -80,15 +97,31 @@ export async function scanWallet(
     for (const addr of all) {
       const tokenId = `${wallet.chain}:${addr.toLowerCase()}`;
       const b = balances.get(addr);
-      if (!b) { unreadable++; continue; }              // 读不到就保留原记录
+      if (!b) {
+        unreadable++;
+        const candidate = candidateByToken.get(tokenId);
+        if (candidate) {
+          const nextAttempt = candidate.attemptCount + 1;
+          wr.markWalletTokenCandidateFailed(
+            wallet.id, tokenId, now, now + candidateRetryDelay(nextAttempt),
+            'balanceOf 或 decimals 读取失败',
+          );
+        }
+        continue;                                      // 读不到就保留原记录/候选
+      }
 
       if (BigInt(b.balance) === 0n) {
         wr.removeHolding(wallet.id, tokenId);
+        wr.removeWalletTokenCandidate(wallet.id, tokenId);
         removed++;
         continue;
       }
 
-      wr.upsertHolding(wallet.id, tokenId, b.balance, b.decimals, now);
+      wr.upsertHolding(
+        wallet.id, tokenId, b.balance, b.decimals, now,
+        candidateByToken.get(tokenId)?.discoveredAt ?? now,
+      );
+      wr.removeWalletTokenCandidate(wallet.id, tokenId);
       written++;
       if (b.decimals === null) {
         // 猜 18 会让 6 位小数的代币余额被算大 10^12 倍，
@@ -97,7 +130,10 @@ export async function scanWallet(
       }
     }
 
-    wr.updateWalletScanState(wallet.id, head, now, null);
+    const partialError = unreadable > 0
+      ? `${unreadable} 个代币余额读取失败，已进入候选重试队列`
+      : null;
+    wr.updateWalletScanState(wallet.id, head, now, partialError);
     log.info(`${tag} block ${from}-${head}: 发现 ${discovered.size}，写入 ${written}，清零 ${removed}${unreadable ? `，读取失败 ${unreadable}` : ''}`);
   } catch (err) {
     // 失败保持水位原样 —— 推进了那段区间就永远不会重扫。

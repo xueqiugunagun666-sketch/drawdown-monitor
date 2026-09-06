@@ -122,6 +122,18 @@ CREATE TABLE IF NOT EXISTS holdings (
   PRIMARY KEY (wallet_id, token_id)
 );
 CREATE INDEX IF NOT EXISTS idx_holdings_token ON holdings(token_id);
+CREATE TABLE IF NOT EXISTS wallet_token_candidates (
+  wallet_id TEXT NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+  token_id TEXT NOT NULL,
+  discovered_at INTEGER NOT NULL,
+  last_attempt_at INTEGER,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at INTEGER,
+  last_error TEXT,
+  PRIMARY KEY (wallet_id, token_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_candidates_due
+  ON wallet_token_candidates(wallet_id, next_retry_at);
 CREATE TABLE IF NOT EXISTS pump_states (
   token_id TEXT NOT NULL, timeframe TEXT NOT NULL, basis TEXT NOT NULL,
   level REAL NOT NULL, state TEXT NOT NULL, last_fired_at INTEGER,

@@ -269,6 +269,22 @@ export const holdings = sqliteTable('holdings', {
 }, (t) => [primaryKey({ columns: [t.walletId, t.tokenId] })]);
 
 /**
+ * 转账日志里已经发现、但余额还没成功读到的代币。
+ *
+ * 发现水位可以在候选落库后推进；即使该币之后再也没有新转账，worker 仍能
+ * 从这里重试 balanceOf，而不是把它永久漏掉。
+ */
+export const walletTokenCandidates = sqliteTable('wallet_token_candidates', {
+  walletId: text('wallet_id').notNull().references(() => wallets.id, { onDelete: 'cascade' }),
+  tokenId: text('token_id').notNull(),
+  discoveredAt: integer('discovered_at').notNull(),
+  lastAttemptAt: integer('last_attempt_at'),
+  attemptCount: integer('attempt_count').default(0).notNull(),
+  nextRetryAt: integer('next_retry_at'),
+  lastError: text('last_error'),
+}, (t) => [primaryKey({ columns: [t.walletId, t.tokenId] })]);
+
+/**
  * 暴涨分档状态机。**全局的，不按用户** —— 价格变动是全局事实，
  * 只有"通知谁"是每人不同的。这顺带解决了一个边界情况：
  * 新用户加入时持有一个已是 FIRED 的币，不会收到追溯报警。

@@ -9,7 +9,9 @@ import { eq, and, gte, desc, asc, sql, getTableColumns } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { Decimal } from '../lib/decimal.ts';
 import { getDb, getRawDb } from './index.ts';
-import { users, sessions, wallets, holdings, pumpAlerts, tokenMeta } from './schema.ts';
+import {
+  users, sessions, wallets, holdings, walletTokenCandidates, pumpAlerts, tokenMeta,
+} from './schema.ts';
 
 export type WalletRow = typeof wallets.$inferSelect;
 export type HoldingRow = typeof holdings.$inferSelect;
@@ -108,10 +110,11 @@ export function removeWallet(userId: string, id: string): boolean {
 
 export function upsertHolding(
   walletId: string, tokenId: string, balance: string, decimals: number | null, now: number,
+  firstSeenAt = now,
 ): void {
   getDb().insert(holdings).values({
     walletId, tokenId, balance, decimals,
-    firstSeenAt: now, lastSeenAt: now, monitored: 0, filterReason: null, belowSinceTs: null,
+    firstSeenAt, lastSeenAt: now, monitored: 0, filterReason: null, belowSinceTs: null,
   }).onConflictDoUpdate({
     target: [holdings.walletId, holdings.tokenId],
     // first_seen_at 与 monitored 保持不变：重扫不该重置发现时间，
@@ -123,6 +126,65 @@ export function upsertHolding(
 export function removeHolding(walletId: string, tokenId: string): void {
   getDb().delete(holdings)
     .where(and(eq(holdings.walletId, walletId), eq(holdings.tokenId, tokenId))).run();
+}
+
+export interface WalletTokenCandidate {
+  tokenId: string;
+  discoveredAt: number;
+  attemptCount: number;
+  nextRetryAt: number | null;
+}
+
+/** 发现后先落候选，再允许扫描水位前进。重复发现只保留原始发现时刻。 */
+export function rememberWalletTokenCandidates(
+  walletId: string, tokenIds: string[], now: number,
+): void {
+  if (tokenIds.length === 0) return;
+  const insert = getDb().insert(walletTokenCandidates);
+  getRawDb().transaction(() => {
+    for (const tokenId of tokenIds) {
+      insert.values({
+        walletId, tokenId, discoveredAt: now, lastAttemptAt: null,
+        attemptCount: 0, nextRetryAt: null, lastError: null,
+      }).onConflictDoNothing().run();
+    }
+  })();
+}
+
+/** 到期候选；NULL 表示从未尝试，必须立刻处理。 */
+export function dueWalletTokenCandidates(
+  walletId: string, now: number, limit = 50,
+): WalletTokenCandidate[] {
+  return getDb().select({
+    tokenId: walletTokenCandidates.tokenId,
+    discoveredAt: walletTokenCandidates.discoveredAt,
+    attemptCount: walletTokenCandidates.attemptCount,
+    nextRetryAt: walletTokenCandidates.nextRetryAt,
+  }).from(walletTokenCandidates).where(and(
+    eq(walletTokenCandidates.walletId, walletId),
+    sql`${walletTokenCandidates.nextRetryAt} IS NULL OR ${walletTokenCandidates.nextRetryAt} <= ${now}`,
+  )).orderBy(walletTokenCandidates.discoveredAt).limit(limit).all();
+}
+
+export function markWalletTokenCandidateFailed(
+  walletId: string, tokenId: string, now: number, nextRetryAt: number, error: string,
+): void {
+  getDb().update(walletTokenCandidates).set({
+    lastAttemptAt: now,
+    attemptCount: sql`${walletTokenCandidates.attemptCount} + 1`,
+    nextRetryAt,
+    lastError: error.slice(0, 240),
+  }).where(and(
+    eq(walletTokenCandidates.walletId, walletId),
+    eq(walletTokenCandidates.tokenId, tokenId),
+  )).run();
+}
+
+export function removeWalletTokenCandidate(walletId: string, tokenId: string): void {
+  getDb().delete(walletTokenCandidates).where(and(
+    eq(walletTokenCandidates.walletId, walletId),
+    eq(walletTokenCandidates.tokenId, tokenId),
+  )).run();
 }
 
 export function listHoldings(userId: string): HoldingRow[] {

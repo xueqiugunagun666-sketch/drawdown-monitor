@@ -89,6 +89,22 @@ test('余额是字符串存取，超过 2^53 不失真', () => {
   assert.equal(wr.listHoldings(a.id)[0]?.balance, huge);
 });
 
+test('钱包代币候选可持久重试、失败退避并在成功后移除', () => {
+  const a = mkUser();
+  const w = wr.addWallet(a.id, 'bsc', `0xcandidate${++seq}`, null)!;
+  const id = `bsc:0xcandidate${seq}`;
+  wr.rememberWalletTokenCandidates(w.id, [id], 100);
+  assert.deepEqual(wr.dueWalletTokenCandidates(w.id, 100).map((x) => x.tokenId), [id]);
+  assert.equal(wr.dueWalletTokenCandidates(w.id, 100)[0]?.discoveredAt, 100);
+
+  wr.markWalletTokenCandidateFailed(w.id, id, 110, 830, '临时 RPC 失败');
+  assert.equal(wr.dueWalletTokenCandidates(w.id, 829).length, 0);
+  assert.equal(wr.dueWalletTokenCandidates(w.id, 830)[0]?.attemptCount, 1);
+
+  wr.removeWalletTokenCandidate(w.id, id);
+  assert.equal(wr.dueWalletTokenCandidates(w.id, 999999).length, 0);
+});
+
 test('usersHoldingToken 找出所有持有者，供报警扇出', () => {
   const a = mkUser(), b = mkUser(), c = mkUser();
   const wa = wr.addWallet(a.id, 'bsc', '0xfa', null)!;
