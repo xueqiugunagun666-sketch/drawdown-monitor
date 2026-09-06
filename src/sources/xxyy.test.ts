@@ -1,8 +1,75 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseXxyyPrices, supportsChain, BATCH_SIZE, normalizeMint } from './xxyy.ts';
+import {
+  parseXxyyPrices,
+  supportsChain,
+  BATCH_SIZE,
+  normalizeMint,
+  fetchXxyyPrices,
+  fetchXxyyPricesDetailed,
+} from './xxyy.ts';
 
 const ok = (rows: unknown[]) => JSON.stringify({ code: 0, msg: null, data: rows });
+
+test('详细 API：后续批次故障不丢此前成功报价，旧 API 仍返回 Map', async () => {
+  const addresses = Array.from({ length: BATCH_SIZE + 1 }, (_, i) => `0x${i.toString(16)}`);
+  const firstAddress = addresses[0]!;
+  const failedAddress = addresses[BATCH_SIZE]!;
+  const firstBatchBody = ok(addresses.slice(0, BATCH_SIZE).map((mint, i) => ({
+    mint, priceUSD: `${i + 1}.25`, marketCap: i + 1, pairAddress: `0xpair${i}`,
+  })));
+  type StubResponse = { status: number; body: string };
+  const scripted = (items: Array<StubResponse | Error>) => async (): Promise<StubResponse> => {
+    const next = items.shift();
+    if (next === undefined) throw new Error('测试响应已耗尽');
+    if (next instanceof Error) throw next;
+    return next;
+  };
+
+  // 旧函数仍只给成功 Map，且不能因为第二批失败而丢第一批。
+  const compatible = await fetchXxyyPrices('bsc', addresses, {
+    request: scripted([{ status: 200, body: firstBatchBody }, { status: 503, body: 'busy' }]),
+  });
+  assert.equal(compatible.size, BATCH_SIZE);
+  assert.equal(compatible.get(firstAddress)?.priceUsd, '1.25');
+
+  const cases: Array<{
+    label: string;
+    failed: StubResponse | Error;
+    kind: string;
+    reason: RegExp;
+    status?: number;
+  }> = [
+    {
+      label: '网络异常', failed: new Error('ECONNRESET'), kind: 'network', reason: /ECONNRESET/,
+    },
+    {
+      label: '坏 JSON', failed: { status: 200, body: '<html>502</html>' },
+      kind: 'malformed', reason: /非 JSON/, status: undefined,
+    },
+    {
+      label: '非 200', failed: { status: 502, body: 'bad gateway' },
+      kind: 'http_error', reason: /HTTP 502/, status: 502,
+    },
+    {
+      label: '429', failed: { status: 429, body: '' },
+      kind: 'rate_limited', reason: /429/, status: 429,
+    },
+  ];
+
+  for (const c of cases) {
+    const result = await fetchXxyyPricesDetailed('bsc', addresses, {
+      request: scripted([{ status: 200, body: firstBatchBody }, c.failed]),
+    });
+    assert.equal(result.quotes.size, BATCH_SIZE, `${c.label} 不能抹掉第一批成功报价`);
+    assert.equal(result.quotes.get(firstAddress)?.priceUsd, '1.25');
+    assert.equal(result.failures.length, 1);
+    assert.deepEqual(result.failures[0]?.addresses, [failedAddress]);
+    assert.equal(result.failures[0]?.kind, c.kind);
+    assert.match(result.failures[0]?.reason ?? '', c.reason);
+    assert.equal(result.failures[0]?.status, c.status);
+  }
+});
 
 test('解析出价格、市值与池子地址', () => {
   const m = parseXxyyPrices(ok([{

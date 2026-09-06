@@ -18,7 +18,7 @@
  */
 import PQueue from 'p-queue';
 import { httpPostJson } from '../lib/http.ts';
-import { SourceError } from '../lib/errors.ts';
+import { SourceError, type SourceFailureKind } from '../lib/errors.ts';
 import { makeLogger } from '../lib/log.ts';
 import { Decimal } from '../lib/decimal.ts';
 
@@ -65,6 +65,31 @@ export interface XxyyQuote {
   priceUsd: string;
   marketCapUsd: number | null;
   pairAddress: string | null;
+}
+
+export interface XxyyBatchFailure {
+  /** 本批没有成功报价的地址；保留调用方传入的原始大小写。 */
+  addresses: string[];
+  kind: SourceFailureKind;
+  reason: string;
+  status?: number;
+}
+
+export interface XxyyPricesDetailedResult {
+  quotes: Map<string, XxyyQuote>;
+  failures: XxyyBatchFailure[];
+}
+
+type BatchRequest = (
+  url: string,
+  body: unknown,
+  timeoutMs: number,
+  headers: Record<string, string>,
+) => Promise<{ status: number; body: string }>;
+
+export interface FetchXxyyPricesOptions {
+  /** 测试/回放注入请求器；省略时使用生产 httpPostJson。 */
+  request?: BatchRequest;
 }
 
 interface RawRow {
@@ -130,33 +155,85 @@ export function parseXxyyPrices(body: string, chain: string): Map<string, XxyyQu
 }
 
 export async function fetchXxyyPrices(
-  chain: string, addresses: string[],
+  chain: string, addresses: string[], options?: FetchXxyyPricesOptions,
 ): Promise<Map<string, XxyyQuote>> {
+  return (await fetchXxyyPricesDetailed(chain, addresses, options)).quotes;
+}
+
+function failureFromError(error: unknown, addresses: string[]): XxyyBatchFailure {
+  const sourceError = error instanceof SourceError ? error : null;
+  const reason = error instanceof Error ? error.message : String(error);
+  return {
+    addresses: [...addresses],
+    kind: sourceError?.kind ?? 'network',
+    reason: reason.slice(0, 240),
+  };
+}
+
+/**
+ * 拉取全部 XXYY 批次并保留每批结果。
+ *
+ * 一个批次的 429、网络异常、非 200 或坏 JSON 只会记录该批失败并继续；
+ * `quotes` 永远保留此前已经成功的批次，`failures` 则明确列出地址和原因，
+ * 供主线程稍后接入健康和调度。
+ */
+export async function fetchXxyyPricesDetailed(
+  chain: string, addresses: string[], options: FetchXxyyPricesOptions = {},
+): Promise<XxyyPricesDetailedResult> {
   const xchain = CHAIN[chain];
   if (!xchain) {
     throw new SourceError({ sourceId: SOURCE_ID, kind: 'malformed', chain, message: `不支持链 ${chain}` });
   }
   const merged = new Map<string, XxyyQuote>();
+  const failures: XxyyBatchFailure[] = [];
+  const request = options.request ?? ((url: string, body: unknown, timeoutMs: number, headers: Record<string, string>) =>
+    httpPostJson(url, body, timeoutMs, headers));
 
   for (let i = 0; i < addresses.length; i += BATCH_SIZE) {
     const batch = addresses.slice(i, i + BATCH_SIZE);
-    const res = await queue.add(
-      () => httpPostJson(URL, { tokenMints: batch }, 25_000,
-        { 'X-CHAIN': xchain, 'X-VERSION': '1' }),
-      { throwOnTimeout: true },
-    );
+    let res;
+    try {
+      res = await queue.add(
+        () => request(URL, { tokenMints: batch }, 25_000,
+          { 'X-CHAIN': xchain, 'X-VERSION': '1' }),
+        { throwOnTimeout: true },
+      );
+    } catch (error) {
+      const failure = failureFromError(error, batch);
+      failures.push(failure);
+      log.warn(`${chain} XXYY 批量报价请求失败，本批 ${batch.length} 个地址跳过: ${failure.reason}`);
+      continue;
+    }
     if (res.status === 429) {
-      throw new SourceError({
-        sourceId: SOURCE_ID, kind: 'rate_limited', chain, message: '429 限流', missing: batch,
-      });
+      failures.push({ addresses: [...batch], kind: 'rate_limited', reason: '429 限流', status: 429 });
+      continue;
     }
     if (res.status !== 200) {
-      throw new SourceError({
-        sourceId: SOURCE_ID, kind: 'http_error', chain,
-        message: `HTTP ${res.status}`, missing: batch,
+      failures.push({
+        addresses: [...batch], kind: 'http_error', reason: `HTTP ${res.status}`, status: res.status,
+      });
+      continue;
+    }
+    let parsed: Map<string, XxyyQuote>;
+    try {
+      parsed = parseXxyyPrices(res.body, chain);
+    } catch (error) {
+      const failure = failureFromError(error, batch);
+      failures.push(failure);
+      log.warn(`${chain} XXYY 批量报价响应解析失败，本批 ${batch.length} 个地址跳过: ${failure.reason}`);
+      continue;
+    }
+    for (const [k, v] of parsed) merged.set(k, v);
+
+    const missing = batch.filter((address) => !parsed.has(normalizeMint(chain, address)));
+    if (missing.length > 0) {
+      failures.push({
+        addresses: missing,
+        kind: parsed.size === 0 ? 'empty_response' : 'partial_response',
+        reason: parsed.size === 0 ? 'HTTP 200 返回空报价' : '响应未包含这些地址的有效报价',
+        status: 200,
       });
     }
-    for (const [k, v] of parseXxyyPrices(res.body, chain)) merged.set(k, v);
   }
-  return merged;
+  return { quotes: merged, failures };
 }

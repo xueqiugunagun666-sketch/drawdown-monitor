@@ -18,7 +18,7 @@ import { httpGet } from '../lib/http.ts';
 import { Decimal } from '../lib/decimal.ts';
 import { isMajorQuote, correctPrice, scaleMarketCap } from './quotePrice.ts';
 import { getConfig } from '../lib/config.ts';
-import { SourceError } from '../lib/errors.ts';
+import { SourceError, type SourceFailureKind } from '../lib/errors.ts';
 import { makeLogger } from '../lib/log.ts';
 
 const log = makeLogger('ds-batch');
@@ -116,7 +116,7 @@ export interface BatchQuote {
 
 interface RawPair {
   baseToken?: { address?: string; symbol?: string };
-  priceUsd?: string;
+  priceUsd?: unknown;
   liquidity?: { usd?: number };
   volume?: { h24?: number; h1?: number };
   marketCap?: number;
@@ -177,6 +177,17 @@ export function chunkAddresses(addrs: string[], size = MAX_BATCH): string[][] {
 /** 地址归一：EVM 大小写不敏感 */
 const norm = (a: string) => (a.startsWith('0x') ? a.toLowerCase() : a);
 
+function positivePriceText(raw: unknown): string | null {
+  if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+  try {
+    const price = new Decimal(String(raw));
+    if (!price.isFinite() || price.lte(0)) return null;
+    return price.toString();
+  } catch {
+    return null;
+  }
+}
+
 export function parseBatchQuotes(body: string, requested: string[]): Map<string, BatchQuote> {
   let parsed: unknown;
   try {
@@ -197,13 +208,14 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
   for (const p of parsed as RawPair[]) {
     const addr = p.baseToken?.address ? norm(p.baseToken.address) : null;
     if (!addr || !want.has(addr)) continue;      // 没请求过的忽略
-    if (!p.priceUsd) continue;                   // 没价格等于没报价
+    const priceUsd = positivePriceText(p.priceUsd);
+    if (priceUsd === null) continue;             // 没价格等于没报价
     const liq = p.liquidity?.usd ?? 0;
     const prev = out.get(addr);
     // 同一代币多个池时取流动性最高的
     if (prev && prev.liquidityUsd >= liq) continue;
     out.set(addr, {
-      priceUsd: p.priceUsd,
+      priceUsd,
       priceSource: 'dexscreener',
       liquidityUsd: liq,
       volume24hUsd: p.volume?.h24 ?? 0,
@@ -227,35 +239,97 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
   return out;
 }
 
+export interface QuoteBatchFailure {
+  /** 本批没有成功报价的地址；保留调用方传入的原始大小写。 */
+  addresses: string[];
+  kind: SourceFailureKind;
+  reason: string;
+  status?: number;
+}
+
+export interface BatchQuotesDetailedResult {
+  quotes: Map<string, BatchQuote>;
+  failures: QuoteBatchFailure[];
+}
+
+type BatchRequest = (url: string, timeoutMs: number) => Promise<{ status: number; body: string }>;
+
+export interface FetchBatchQuotesOptions {
+  /** 测试/回放注入请求器；省略时使用生产 httpGet。 */
+  request?: BatchRequest;
+}
+
+function failureFromError(error: unknown, addresses: string[]): QuoteBatchFailure {
+  const sourceError = error instanceof SourceError ? error : null;
+  const reason = error instanceof Error ? error.message : String(error);
+  return {
+    addresses: [...addresses],
+    kind: sourceError?.kind ?? 'network',
+    reason: reason.slice(0, 240),
+  };
+}
+
 /**
- * 拉一批报价。返回的 Map 只含拿到报价的地址；**缺的地址不在 Map 里**，
- * 调用方必须把它当作"报价缺失"而不是"流动性为 0"。
+ * 拉取全部批次并保留每批结果。
+ *
+ * 单个批次失败不会丢掉此前已经成功的报价。`failures` 是显式的批次级
+ * 失败记录：既包含 HTTP/网络/解析失败，也包含 HTTP 200 但响应没有覆盖的地址。
+ * 这让主线程稍后可以按失败原因接入健康度和调度，而不必从空 Map 猜测发生了什么。
  */
-export async function fetchBatchQuotes(
-  chain: string, addresses: string[],
-): Promise<Map<string, BatchQuote>> {
+export async function fetchBatchQuotesDetailed(
+  chain: string, addresses: string[], options: FetchBatchQuotesOptions = {},
+): Promise<BatchQuotesDetailedResult> {
   const chainCfg = getConfig().chains[chain as keyof ReturnType<typeof getConfig>['chains']];
   if (!chainCfg) {
     throw new SourceError({ sourceId: SOURCE_ID, kind: 'malformed', chain, message: `未知链 ${chain}` });
   }
   const merged = new Map<string, BatchQuote>();
+  const failures: QuoteBatchFailure[] = [];
+  const request = options.request ?? ((url: string, timeoutMs: number) => httpGet(url, timeoutMs));
 
   for (const batch of chunkAddresses(addresses)) {
     const url = `https://api.dexscreener.com/tokens/v1/${chainCfg.dexscreenerId}/${batch.join(',')}`;
-    const res = await queue.add(() => httpGet(url, 20_000), { throwOnTimeout: true });
-    if (res.status === 429) {
-      backOffOnRateLimit();
-      throw new SourceError({
-        sourceId: SOURCE_ID, kind: 'rate_limited', chain,
-        message: '429 限流', missing: batch,
-      });
-    }
-    if (res.status !== 200) {
-      // 单批失败不拖垮整轮：记下来继续下一批，拿到的先用
-      log.warn(`${chain} 批量报价 HTTP ${res.status}，本批 ${batch.length} 个地址跳过`);
+    let res;
+    try {
+      res = await queue.add(() => request(url, 20_000), { throwOnTimeout: true });
+    } catch (error) {
+      const failure = failureFromError(error, batch);
+      failures.push(failure);
+      log.warn(`${chain} 批量报价请求失败，本批 ${batch.length} 个地址跳过: ${failure.reason}`);
       continue;
     }
-    for (const [k, v] of parseBatchQuotes(res.body, batch)) merged.set(k, v);
+    if (res.status === 429) {
+      backOffOnRateLimit();
+      failures.push({ addresses: [...batch], kind: 'rate_limited', reason: '429 限流', status: 429 });
+      continue;
+    }
+    if (res.status !== 200) {
+      log.warn(`${chain} 批量报价 HTTP ${res.status}，本批 ${batch.length} 个地址跳过`);
+      failures.push({
+        addresses: [...batch], kind: 'http_error', reason: `HTTP ${res.status}`, status: res.status,
+      });
+      continue;
+    }
+    let parsed: Map<string, BatchQuote>;
+    try {
+      parsed = parseBatchQuotes(res.body, batch);
+    } catch (error) {
+      const failure = failureFromError(error, batch);
+      failures.push(failure);
+      log.warn(`${chain} 批量报价响应解析失败，本批 ${batch.length} 个地址跳过: ${failure.reason}`);
+      continue;
+    }
+    for (const [k, v] of parsed) merged.set(k, v);
+
+    const missing = batch.filter((address) => !parsed.has(norm(address)));
+    if (missing.length > 0) {
+      failures.push({
+        addresses: missing,
+        kind: parsed.size === 0 ? 'empty_response' : 'partial_response',
+        reason: parsed.size === 0 ? 'HTTP 200 返回空报价' : '响应未包含这些地址的有效报价',
+        status: 200,
+      });
+    }
   }
 
   await applyQuoteCorrections(chain, chainCfg.dexscreenerId, merged);
@@ -264,7 +338,17 @@ export async function fetchBatchQuotes(
   if (missing.length > 0) {
     log.debug(`${chain} 有 ${missing.length}/${addresses.length} 个地址没拿到报价`);
   }
-  return merged;
+  return { quotes: merged, failures };
+}
+
+/**
+ * 兼容旧调用方：仍只返回成功报价的 Map。
+ * 需要健康和调度信息时使用 fetchBatchQuotesDetailed。
+ */
+export async function fetchBatchQuotes(
+  chain: string, addresses: string[], options?: FetchBatchQuotesOptions,
+): Promise<Map<string, BatchQuote>> {
+  return (await fetchBatchQuotesDetailed(chain, addresses, options)).quotes;
 }
 
 
@@ -320,11 +404,12 @@ async function resolveQuoteUsd(
     for (const p of pairs as RawPair[]) {
       const a = p.baseToken?.address ? norm(p.baseToken.address) : null;
       if (!a || !batch.includes(a)) continue;
-      if (!isMajorQuote(p.quoteToken?.symbol) || !p.priceUsd) continue;
+      const priceUsd = positivePriceText(p.priceUsd);
+      if (!isMajorQuote(p.quoteToken?.symbol) || priceUsd === null) continue;
       const liq = p.liquidity?.usd ?? 0;
       const prev = best.get(a);
       if (prev && prev.liq >= liq) continue;
-      try { best.set(a, { price: new Decimal(p.priceUsd), liq }); } catch { /* 跳过 */ }
+      try { best.set(a, { price: new Decimal(priceUsd), liq }); } catch { /* 跳过 */ }
     }
     for (const a of batch) {
       const price = best.get(a)?.price ?? null;

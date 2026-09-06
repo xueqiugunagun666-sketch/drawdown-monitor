@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBatchQuotes, chunkAddresses, MAX_BATCH } from './dexscreenerBatch.ts';
+import {
+  parseBatchQuotes,
+  chunkAddresses,
+  MAX_BATCH,
+  fetchBatchQuotes,
+  fetchBatchQuotesDetailed,
+} from './dexscreenerBatch.ts';
 
 const pair = (addr: string, price: string, liq: number, vol: number) => ({
   baseToken: { address: addr, symbol: 'X', name: 'X' },
@@ -20,6 +26,66 @@ test('chunkAddresses 按 30 切分', () => {
 
 test('空数组不产生空批次', () => {
   assert.deepEqual(chunkAddresses([]), []);
+});
+
+test('详细 API：后续批次故障不丢此前成功报价，旧 API 仍返回 Map', async () => {
+  const addresses = Array.from({ length: 31 }, (_, i) => `0x${i.toString(16).padStart(2, '0')}`);
+  const firstAddress = addresses[0]!;
+  const failedAddress = addresses[30]!;
+  const firstBatchBody = JSON.stringify(
+    addresses.slice(0, 30).map((address, i) => pair(address, String(i + 1), 1000 + i, 100 + i)),
+  );
+  type StubResponse = { status: number; body: string };
+  const scripted = (items: Array<StubResponse | Error>) => async (): Promise<StubResponse> => {
+    const next = items.shift();
+    if (next === undefined) throw new Error('测试响应已耗尽');
+    if (next instanceof Error) throw next;
+    return next;
+  };
+
+  // 旧函数仍只给成功 Map，且不能因为第二批失败而丢第一批。
+  const compatible = await fetchBatchQuotes('bsc', addresses, {
+    request: scripted([{ status: 200, body: firstBatchBody }, { status: 503, body: 'busy' }]),
+  });
+  assert.equal(compatible.size, 30);
+  assert.equal(compatible.get(firstAddress)?.priceUsd, '1');
+
+  const cases: Array<{
+    label: string;
+    failed: StubResponse | Error;
+    kind: string;
+    reason: RegExp;
+    status?: number;
+  }> = [
+    {
+      label: '网络异常', failed: new Error('ECONNRESET'), kind: 'network', reason: /ECONNRESET/,
+    },
+    {
+      label: '坏 JSON', failed: { status: 200, body: '<html>502</html>' },
+      kind: 'malformed', reason: /非 JSON/, status: undefined,
+    },
+    {
+      label: '非 200', failed: { status: 502, body: 'bad gateway' },
+      kind: 'http_error', reason: /HTTP 502/, status: 502,
+    },
+    {
+      label: '429', failed: { status: 429, body: '' },
+      kind: 'rate_limited', reason: /429/, status: 429,
+    },
+  ];
+
+  for (const c of cases) {
+    const result = await fetchBatchQuotesDetailed('bsc', addresses, {
+      request: scripted([{ status: 200, body: firstBatchBody }, c.failed]),
+    });
+    assert.equal(result.quotes.size, 30, `${c.label} 不能抹掉第一批成功报价`);
+    assert.equal(result.quotes.get(firstAddress)?.priceUsd, '1');
+    assert.equal(result.failures.length, 1);
+    assert.deepEqual(result.failures[0]?.addresses, [failedAddress]);
+    assert.equal(result.failures[0]?.kind, c.kind);
+    assert.match(result.failures[0]?.reason ?? '', c.reason);
+    assert.equal(result.failures[0]?.status, c.status);
+  }
 });
 
 test('按 baseToken.address 归位，大小写不敏感', () => {
