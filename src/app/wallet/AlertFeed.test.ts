@@ -28,10 +28,12 @@ test('同批系统与行情分开投递，系统不再吞掉行情', () => {
   assert.equal(batch.sound, 'system-and-market');
 
   const specs = buildNotificationSpecs(batch, (a) => a.symbol ?? a.id);
-  assert.deepEqual(specs.map((x) => x.channel), ['system', 'market']);
+  assert.deepEqual(specs.map((x) => x.channel), ['system', 'market', 'market']);
   assert.deepEqual(specs[0]?.alertIds, ['system']);
-  assert.deepEqual(specs[1]?.alertIds, ['pump', 'ath']);
-  assert.match(specs[1]?.body ?? '', /共|pump|ath/);
+  assert.deepEqual(specs[1]?.alertIds, ['pump']);
+  assert.deepEqual(specs[2]?.alertIds, ['ath']);
+  assert.match(specs[1]?.title ?? '', /pump.*BSC/);
+  assert.match(specs[2]?.title ?? '', /ath.*BSC/);
 });
 
 test('pump-ath 同时写出暴涨倍数、暴涨档位和新高', () => {
@@ -42,9 +44,9 @@ test('pump-ath 同时写出暴涨倍数、暴涨档位和新高', () => {
   assert.equal(isAthAlert('pump-ath'), true);
   assert.equal(isPumpAthAlert('pump-ath'), true);
   const spec = buildNotificationSpecs(batch, (a) => a.symbol ?? a.id)[0]!;
-  assert.match(spec.body, /暴涨 5\.3x/);
-  assert.match(spec.body, /5x档/);
-  assert.match(spec.body, /破90天新高/);
+  assert.match(spec.title, /暴涨 5\.3x/);
+  assert.match(spec.title, /5x档/);
+  assert.match(spec.title, /破90天新高/);
 });
 
 test('数据源故障文案覆盖请求失败、缺失和偏价，并说明已回退', () => {

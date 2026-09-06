@@ -120,11 +120,27 @@ function pumpText(a: AlertRow): string {
   return `${a.kind === 'advance' ? '又涨' : '暴涨'} ${multipleText}${tier}`;
 }
 
-function marketLabel(a: AlertRow, nameFor: (a: AlertRow) => string): string {
-  const name = alertName(a, nameFor);
-  if (a.kind === 'pump-ath') return `${name} ${pumpText(a)} · ${athText(a)}`;
-  if (isAthKind(a.kind)) return `${name} ${athText(a)}`;
-  return `${name} ${pumpText(a)}`;
+function marketAction(a: AlertRow): string {
+  if (a.kind === 'pump-ath') return `${pumpText(a)} · ${athText(a)}`;
+  if (isAthKind(a.kind)) return athText(a);
+  return pumpText(a);
+}
+
+function chainLabel(a: AlertRow): string {
+  const chain = (a.chain ?? a.tokenId.split(':')[0] ?? '').trim().toLowerCase();
+  const known: Record<string, string> = {
+    ethereum: 'Ethereum',
+    bsc: 'BSC',
+    base: 'Base',
+    robinhood: 'Robinhood',
+    solana: 'Solana',
+  };
+  return known[chain] ?? (chain ? chain.toUpperCase() : '未知链');
+}
+
+function marketTitle(a: AlertRow, nameFor: (a: AlertRow) => string): string {
+  const icon = a.kind === 'pump-ath' ? '🚀🏆' : isAthKind(a.kind) ? '🏆' : '🚀';
+  return `${icon} ${alertName(a, nameFor)}｜${chainLabel(a)}｜${marketAction(a)}`;
 }
 
 function marketDetails(a: AlertRow): string[] {
@@ -153,8 +169,9 @@ function sourceName(a: AlertRow): string {
 }
 
 /**
- * 最多两个浏览器通知：系统摘要与行情摘要各一条。页面的异动列表保存全部
- * 行；通知正文列出前几条并明确总数，避免几十条同批通知把用户轰炸掉。
+ * 一事件一条浏览器通知。声音仍按 SSE 批次合并，但 Chrome 横幅不能再把
+ * FLETCH 这种首次 2x 藏进“共 N 个异动”的摘要里。每条使用自己的事件
+ * id/seq 作为 tag，因此同批币互不替换，断线重放又不会制造重复横幅。
  */
 export function buildNotificationSpecs(
   batch: AlertBatch,
@@ -162,31 +179,26 @@ export function buildNotificationSpecs(
 ): NotificationSpec[] {
   const specs: NotificationSpec[] = [];
 
-  if (batch.system.length > 0) {
-    const sources = [...new Set(batch.system.map(sourceName))];
+  for (const alert of batch.system) {
+    const source = sourceName(alert);
     specs.push({
       channel: 'system',
-      title: `监控系统有情况（${batch.system.length} 条）`,
-      body: `报价源 ${sources.join('、')} 出现连续失败、缺失或偏价。`
-        + `本批 ${batch.system.length} 条系统事件已保留在页面异动记录。`,
-      tag: stableNotificationTag('system', batch.system),
-      alertIds: batch.system.map((a) => a.id),
+      title: `⚠️ 报价源 ${source} 已自动回退`,
+      body: `${source} 连续多轮请求失败、缺失或偏价，系统已自动回退 DexScreener。`
+        + '可在设置页查看数据源状态。',
+      tag: stableNotificationTag('system', [alert]),
+      alertIds: [alert.id],
     });
   }
 
-  if (batch.market.length > 0) {
-    const preview = batch.market.slice(0, 5).map((a) => {
-      const details = marketDetails(a);
-      return `${marketLabel(a, nameFor)}${details.length > 0 ? `｜${details.join(' · ')}` : ''}`;
-    });
-    const rest = batch.market.length - preview.length;
-    const suffix = rest > 0 ? `；另外 ${rest} 条已保留在页面异动记录` : '';
+  for (const alert of batch.market) {
+    const details = marketDetails(alert);
     specs.push({
       channel: 'market',
-      title: `共 ${batch.market.length} 个行情异动`,
-      body: `${preview.join('\n')}${suffix}`,
-      tag: stableNotificationTag('market', batch.market),
-      alertIds: batch.market.map((a) => a.id),
+      title: marketTitle(alert, nameFor),
+      body: details.length > 0 ? details.join(' · ') : '点击查看异动详情',
+      tag: stableNotificationTag('market', [alert]),
+      alertIds: [alert.id],
     });
   }
 

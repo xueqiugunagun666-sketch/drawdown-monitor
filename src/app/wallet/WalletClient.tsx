@@ -205,7 +205,8 @@ export default function WalletClient() {
         const phrase = soundPhrase(batch.sound);
         if (phrase) playPumpSound({ phrase });
 
-        // 声音只响一次；系统与行情各有一条独立摘要，系统故障不能把行情盖掉。
+        // 声音只响一次；Chrome 通知按事件逐条弹，系统故障不能把行情盖掉，
+        // 同批多个币也不能再被藏进一条摘要。
         for (const spec of buildNotificationSpecs(
           batch, (a) => a.symbol ?? a.address ?? alertName(a),
         )) {
