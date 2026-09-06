@@ -20,6 +20,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: 'v4.12',
+    date: '2026-09-06',
+    headline: 'Chrome 行情通知改回一币一条，并显示所在链',
+    changes: [
+      {
+        kind: 'change',
+        title: '每个币独立弹出通知',
+        detail: '不再用“共 N 个行情异动”的摘要藏住具体币；同批每个事件都有独立通知和稳定身份，不会互相替换，断线重放也不会重复弹出。声音仍按同批只播放一次，避免连续叠音。',
+      },
+      {
+        kind: 'new',
+        title: '标题直接显示所在链',
+        detail: '通知标题调整为“图标｜币名｜链｜暴涨或新高”，支持 Ethereum、BSC、Base、Robinhood 和 Solana；正文继续显示市值变化、窗口、持仓价值和钱包地址备注。',
+      },
+    ],
+  },
+  {
     version: 'v4.11',
     date: '2026-09-06',
     headline: '暴涨报警第二、第三轮可靠性升级完成',
