@@ -15,8 +15,11 @@
  */
 import { Decimal } from '../lib/decimal.ts';
 import { scaleMarketCap } from '../sources/quotePrice.ts';
-import { fetchXxyyPrices, supportsChain as xxyySupportsChain } from '../sources/xxyy.ts';
-import { compareQuotes, judge } from './sourceAgreement.ts';
+import {
+  fetchXxyyPrices, normalizeMint, supportsChain as xxyySupportsChain,
+  type XxyyQuote,
+} from '../sources/xxyy.ts';
+import { compareQuotes, judge, PRICE_TOLERANCE, type HealthVerdict } from './sourceAgreement.ts';
 import { recordVerdict } from './sourceWatch.ts';
 import * as athRepo from '../db/athRepo.ts';
 import {
@@ -91,11 +94,10 @@ export interface PumpDeps {
   /** 取代币元信息（持有人数）。返回 null 表示查不到 */
   fetchTokenInfo?: (chain: string, address: string) => Promise<TokenInfo | null>;
   /**
-   * 影子报价源，用来与主源交叉核对。
-   * 传 null 表示**关掉影子核对** —— 测试要用这个，否则每个用例都会真的
-   * 去打一次外部接口。
+   * XXYY 候选报价源。候选价只有通过 DexScreener 同轮确认才会被采用。
+   * 传 null 表示关闭 —— 单元测试默认关闭，避免真的请求外部接口。
    */
-  fetchShadowPrices?: typeof fetchXxyyPrices | null;
+  fetchCandidatePrices?: typeof fetchXxyyPrices | null;
 }
 
 export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes, fetchTokenInfo };
@@ -231,6 +233,12 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   }
 
   const t0 = Date.now();
+  // XXYY 与 DexScreener 同时开跑。前者通常更快，等 DS 元数据回来时它也已经
+  // 就绪，不再像影子阶段那样串在判定前面白白增加几秒报警延迟。
+  const xxyyPromise = deps.fetchCandidatePrices === null
+    ? null
+    : fetchXxyyRound(byChain, deps.fetchCandidatePrices ?? fetchXxyyPrices);
+
   const quotes = new Map<string, BatchQuote>();
   for (const [chain, addrs] of byChain) {
     try {
@@ -240,24 +248,17 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       log.warn(`${chain} 批量报价失败: ${safeErrorMessage(err)}`);
     }
   }
-  const quoteMs = Date.now() - t0;
-
-  /**
-   * XXYY 影子核对：**只比对、不参与判定**。
-   *
-   * 它一次能带 500 个地址（DexScreener 是 30），真接上去能把报价阶段
-   * 从二十几秒压到几秒。但它是没有公开文档的私有接口，而今天已经被
-   * 数据源坑过三次 —— 三次都是"返回 200、字段齐全、只是数字错了"。
-   * 所以先影子跑一段：每轮拿重叠部分对一次，连续多轮不合格就报给管理员。
-   * 确认可信之后再切换成主报价源。
-   */
-  if (deps.fetchShadowPrices !== null) {
-    await shadowCheckXxyy(byChain, quotes, now, deps.fetchShadowPrices ?? fetchXxyyPrices);
+  let effectiveQuotes = quotes;
+  if (xxyyPromise) {
+    const xxyy = await xxyyPromise;
+    const verdict = assessXxyy(byChain, quotes, xxyy, now);
+    effectiveQuotes = applyGuardedXxyy(quotes, xxyy.quotes, verdict.ok);
   }
+  const quoteMs = Date.now() - t0;
 
   for (const tokenId of tokenIds) {
     try {
-      const q = quotes.get(tokenId) ?? null;
+      const q = effectiveQuotes.get(tokenId) ?? null;
       await evaluateToken(tokenId, q, now,
         deps.backfill ?? realBackfillDeps, deps.fetchTokenInfo);
       // 流动性一起记下 —— 下一轮靠它决定这个币走快车道还是慢车道
@@ -383,7 +384,12 @@ async function evaluateToken(
   // 两边都写会互相覆盖 h/l 与 liquidity_total（一个是主池、一个是全池口径），
   // 让 source 列反复翻转。让位给它。
   if (!fromWatchlist) {
-    wr.upsertWalletCandle(tokenId, quote.priceUsd, quote.liquidityUsd, now, marketCapUsd);
+    const candleSource = quote.priceSource === 'xxyy'
+      ? 'wallet-xxyy' : quote.priceSource === 'dexscreener'
+        ? 'wallet-dexscreener' : 'wallet-batch';
+    wr.upsertWalletCandle(
+      tokenId, quote.priceUsd, quote.liquidityUsd, now, marketCapUsd, candleSource,
+    );
 
     /**
      * 历史不足时补 24 小时的 5m K 线。必须在算窗口与 seed 之前做完 ——
@@ -468,7 +474,7 @@ async function evaluateToken(
    */
   const ath = evaluateAthFor(tokenId, price, now);
   if (ath) {
-    await fanout(tokenId, holders, quote, price, ath.winner, ath.kind,
+    await fanout(tokenId, holders, price, ath.winner, ath.kind,
       ath.basePrice, now, ath.baseTs, ath.windowKey, marketCapUsd);
     return;
   }
@@ -509,7 +515,7 @@ async function evaluateToken(
 
   // ---- 扇出：每个持有者一行，带各自的余额与持仓价值 ----
   const base = windows.find((w) => w.timeframe === winner.timeframe && w.basis === winner.basis)?.base ?? null;
-  await fanout(tokenId, holders, quote, price, winner, kind, base, now, null, null, marketCapUsd);
+  await fanout(tokenId, holders, price, winner, kind, base, now, null, null, marketCapUsd);
 }
 
 /**
@@ -604,7 +610,6 @@ function evaluateAthFor(tokenId: string, price: Decimal, now: number): {
 async function fanout(
   tokenId: string,
   holders: ReturnType<typeof wr.usersHoldingToken>,
-  quote: BatchQuote,
   price: Decimal,
   winner: PendingFire,
   kind: 'level' | 'advance' | 'ath' | 'ath-advance',
@@ -647,7 +652,8 @@ async function fanout(
       basis: winner.basis,
       level: winner.level,
       multiple: winner.multiple.toString(),
-      priceUsd: quote.priceUsd,
+      // 必须写实际用于判定的价格：看板价或通过确认的 XXYY 候选价。
+      priceUsd: price.toString(),
       basePriceUsd: base ? base.toString() : null,
       baseTs,
       athWindow,
@@ -671,51 +677,153 @@ async function fanout(
 }
 
 
-/* ---------------- XXYY 影子核对 ---------------- */
+/* ---------------- XXYY 受保护报价 ---------------- */
+
+interface XxyyRound {
+  quotes: Map<string, XxyyQuote>;
+  failures: Map<string, string>;
+}
+
+/** 少于这个样本时只看全局结果，避免某条小链 1 个缺失就拖垮整轮。 */
+const MIN_PER_CHAIN_HEALTH_SAMPLES = 20;
 
 /**
- * 拿 XXYY 的批量报价与本轮 DexScreener 的结果对一遍。
- *
- * 失败一律吞掉（只记日志）—— 影子源出问题绝不能影响正常判定，
- * 这是"先用着"阶段最要紧的一条。
+ * 各链同时提交，真正的节流仍由 xxyy.ts 的全局队列负责。
+ * 单链失败保留下来交给健康判定；不能像影子阶段那样从分母里消失。
  */
-async function shadowCheckXxyy(
-  byChain: Map<string, string[]>, quotes: Map<string, BatchQuote>, now: number,
-  fetchPrices: typeof fetchXxyyPrices,
-): Promise<void> {
+async function fetchXxyyRound(
+  byChain: Map<string, string[]>, fetchPrices: typeof fetchXxyyPrices,
+): Promise<XxyyRound> {
+  const quotes = new Map<string, XxyyQuote>();
+  const failures = new Map<string, string>();
+  await Promise.all([...byChain].map(async ([chain, addrs]) => {
+    if (!xxyySupportsChain(chain)) return;
+    try {
+      const got = await fetchPrices(chain, addrs);
+      for (const [mint, q] of got) {
+        quotes.set(`${chain}:${normalizeMint(chain, mint)}`, q);
+      }
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      failures.set(chain, message);
+      log.warn(`xxyy ${chain} 取价失败，当前轮自动回退 DexScreener：${message}`);
+    }
+  }));
+  return { quotes, failures };
+}
+
+/**
+ * 整体与逐链都要过关。只看整体会让一条小链完全断供时被其它链的样本稀释；
+ * 只看逐链又会在样本很少时太敏感，因此连续 5 轮才真正通知。
+ */
+function assessXxyy(
+  byChain: Map<string, string[]>, dsQuotes: Map<string, BatchQuote>,
+  xxyy: XxyyRound, now: number,
+): HealthVerdict {
   const mine = new Map<string, { priceUsd: string }>();
   const theirs = new Map<string, { priceUsd: string }>();
+  const bad: string[] = [];
 
   for (const [chain, addrs] of byChain) {
     if (!xxyySupportsChain(chain)) continue;
-    let got;
-    try {
-      got = await fetchPrices(chain, addrs);
-    } catch (err) {
-      log.debug(`xxyy ${chain} 取价失败（影子模式，不影响判定）: ${safeErrorMessage(err)}`);
+    const chainMine = new Map<string, { priceUsd: string }>();
+    const chainTheirs = new Map<string, { priceUsd: string }>();
+    for (const address of addrs) {
+      const key = `${chain}:${normalizeMint(chain, address)}`;
+      const ds = dsQuotes.get(key);
+      if (ds) {
+        const p = { priceUsd: ds.priceUsd };
+        mine.set(key, p);
+        chainMine.set(key, p);
+      }
+      const candidate = xxyy.quotes.get(key);
+      if (candidate) {
+        const p = { priceUsd: candidate.priceUsd };
+        theirs.set(key, p);
+        chainTheirs.set(key, p);
+      }
+    }
+
+    const failure = xxyy.failures.get(chain);
+    if (failure) {
+      bad.push(`${chain} 请求失败`);
       continue;
     }
-    for (const a of addrs) {
-      const key = `${chain}:${a}`;
-      const ds = quotes.get(key);
-      if (ds) mine.set(key, { priceUsd: ds.priceUsd });
-      const x = got.get(a.toLowerCase());
-      if (x) theirs.set(key, { priceUsd: x.priceUsd });
+    if (chainMine.size >= MIN_PER_CHAIN_HEALTH_SAMPLES) {
+      const chainVerdict = judge(compareQuotes(chainMine, chainTheirs), chainMine.size);
+      if (!chainVerdict.ok) bad.push(`${chain} ${chainVerdict.reason}`);
     }
   }
 
-  if (mine.size === 0) return;
   const report = compareQuotes(mine, theirs);
-  const verdict = judge(report, mine.size);
-  recordVerdict('xxyy', verdict, now,
-    `重叠 ${report.compared}/${mine.size}，一致 ${report.agreed}`);
-
-  if (report.compared > 0) {
-    log.info(
-      `xxyy 影子核对：重叠 ${report.compared}/${mine.size}，`
-      + `一致率 ${report.rate === null ? '—' : (report.rate * 100).toFixed(1) + '%'}`
-      + (report.worst.length > 0
-        ? `，最大偏离 ${report.worst[0]!.ratio} 倍（${report.worst[0]!.key}）` : ''),
-    );
+  if (mine.size === 0 && xxyy.failures.size === 0) {
+    // DS 本轮也没有可比报价时，既不能证明 XXYY 正常，也不能证明它坏了。
+    // 保留上次健康状态，并且本轮不采用候选价。
+    log.warn('xxyy 本轮没有 DexScreener 可比样本，保持原健康状态并回退');
+    return { ok: false, reason: '没有可比样本' };
   }
+  let verdict: HealthVerdict;
+  if (bad.length > 0) verdict = { ok: false, reason: bad.join('；') };
+  else verdict = judge(report, mine.size);
+
+  const detail = `重叠 ${report.compared}/${mine.size}，一致 ${report.agreed}`
+    + (xxyy.failures.size > 0 ? `，失败链 ${[...xxyy.failures.keys()].join(',')}` : '');
+  recordVerdict('xxyy', verdict, now, detail);
+
+  log.info(
+    `xxyy 核对：重叠 ${report.compared}/${mine.size}，`
+    + `一致率 ${report.rate === null ? '—' : (report.rate * 100).toFixed(1) + '%'}`
+    + (report.worst.length > 0
+      ? `，最大偏离 ${report.worst[0]!.ratio} 倍（${report.worst[0]!.key}）` : '')
+    + (verdict.ok ? '' : '，本轮全部回退 DexScreener'),
+  );
+  return verdict;
+}
+
+/**
+ * XXYY 是候选价，DexScreener 是确认价：两者相差不超过 10% 才进入共识。
+ * 共识后取两者较低值，这样任何向上的 2x/ATH 都天然得到双源确认；任一缺失、
+ * 无法解析、偏离过大，或者本轮整体健康不合格，均保留 DS 原价。
+ */
+function applyGuardedXxyy(
+  dsQuotes: Map<string, BatchQuote>, xxyyQuotes: Map<string, XxyyQuote>, healthy: boolean,
+): Map<string, BatchQuote> {
+  const out = new Map(dsQuotes);
+  let confirmed = 0, xxyyLower = 0, missing = 0, diverged = 0;
+  const tolerance = new Decimal(PRICE_TOLERANCE.toString());
+
+  for (const [key, ds] of dsQuotes) {
+    const candidate = xxyyQuotes.get(key);
+    if (!candidate) { missing++; continue; }
+    let dsPrice: Decimal, candidatePrice: Decimal;
+    try {
+      dsPrice = new Decimal(ds.priceUsd);
+      candidatePrice = new Decimal(candidate.priceUsd);
+    } catch {
+      diverged++;
+      continue;
+    }
+    if (dsPrice.lte(0) || candidatePrice.lte(0)) { diverged++; continue; }
+    const ratio = Decimal.max(dsPrice.div(candidatePrice), candidatePrice.div(dsPrice));
+    if (!healthy || ratio.gt(tolerance)) { diverged++; continue; }
+
+    const acceptedPrice = Decimal.min(dsPrice, candidatePrice);
+    if (candidatePrice.lt(dsPrice)) xxyyLower++;
+    out.set(key, {
+      ...ds,
+      priceUsd: acceptedPrice.toString(),
+      priceSource: candidatePrice.lt(dsPrice) ? 'xxyy' : 'dexscreener',
+      // DS 已校正过计价池，按共识价格同比例换算最稳；DS 没市值才用 XXYY 的。
+      marketCapUsd: scaleMarketCap(ds.marketCapUsd, ds.priceUsd, acceptedPrice.toString())
+        ?? candidate.marketCapUsd,
+    });
+    confirmed++;
+  }
+
+  log.info(
+    `xxyy 受保护报价：双源确认 ${confirmed}/${dsQuotes.size}`
+    + `，取 XXYY 较低价 ${xxyyLower}`
+    + `，缺失 ${missing}，偏离或健康回退 ${diverged}`,
+  );
+  return out;
 }

@@ -61,6 +61,8 @@ function backOffOnRateLimit(): void {
 
 export interface BatchQuote {
   priceUsd: string;          // 保持字符串 —— 中途不许过 Number
+  /** 最终价格来自哪里；其它流动性/成交量字段仍来自 DexScreener。 */
+  priceSource?: 'dexscreener' | 'xxyy';
   liquidityUsd: number;
   volume24hUsd: number;
   /**
@@ -202,6 +204,7 @@ export function parseBatchQuotes(body: string, requested: string[]): Map<string,
     if (prev && prev.liquidityUsd >= liq) continue;
     out.set(addr, {
       priceUsd: p.priceUsd,
+      priceSource: 'dexscreener',
       liquidityUsd: liq,
       volume24hUsd: p.volume?.h24 ?? 0,
       volume1hUsd: p.volume?.h1 ?? 0,

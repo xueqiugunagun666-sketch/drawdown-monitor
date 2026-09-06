@@ -9,7 +9,8 @@
  *
  * **它不能全盘替代 DexScreener**：只回 priceUSD / marketCap / pairAddress，
  * 没有流动性和成交量 —— 而过滤层（一个币要不要进监控）正是靠那两个。
- * 所以分工是：价格走这里，流动性与成交量仍走 DexScreener（可以低频）。
+ * 第一阶段仍同轮请求 DexScreener，只把 XXYY 当候选价；两边相差不超过
+ * 10% 时才取较低价。等真实运行证明稳定后，才有资格讨论降低 DS 取价频率。
  *
  * **这是没有公开文档的接口。** 对方随时可能改路径、改字段、加鉴权，
  * 而最危险的是**静默地改** —— 比如某天开始给所有币回 0。所以调用方必须
@@ -19,6 +20,7 @@ import PQueue from 'p-queue';
 import { httpPostJson } from '../lib/http.ts';
 import { SourceError } from '../lib/errors.ts';
 import { makeLogger } from '../lib/log.ts';
+import { Decimal } from '../lib/decimal.ts';
 
 export const SOURCE_ID = 'xxyy';
 const log = makeLogger(SOURCE_ID);
@@ -40,6 +42,11 @@ const CHAIN: Record<string, string> = {
 
 export function supportsChain(chain: string): boolean {
   return CHAIN[chain] !== undefined;
+}
+
+/** EVM 地址大小写不敏感；Solana mint 大小写敏感，绝不能统一转小写。 */
+export function normalizeMint(chain: string, mint: string): string {
+  return /^0x/i.test(mint) && chain !== 'solana' ? mint.toLowerCase() : mint;
 }
 
 /**
@@ -74,7 +81,7 @@ interface RawRow {
  * （USDT / WBNB / USDC）一律回 0，它显然不是真的不值钱 —— 把 0 当价格
  * 会算出无穷大的倍数。
  */
-export function parseXxyyPrices(body: string): Map<string, XxyyQuote> {
+export function parseXxyyPrices(body: string, chain: string): Map<string, XxyyQuote> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -83,6 +90,9 @@ export function parseXxyyPrices(body: string): Map<string, XxyyQuote> {
       sourceId: SOURCE_ID, kind: 'malformed',
       message: `非 JSON 响应: ${body.slice(0, 120)}`,
     });
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new SourceError({ sourceId: SOURCE_ID, kind: 'malformed', message: '响应根节点不是对象' });
   }
   const root = parsed as { code?: unknown; msg?: unknown; data?: unknown };
   if (root.code !== 0) {
@@ -97,15 +107,21 @@ export function parseXxyyPrices(body: string): Map<string, XxyyQuote> {
 
   const out = new Map<string, XxyyQuote>();
   for (const r of root.data as RawRow[]) {
-    const mint = typeof r.mint === 'string' ? r.mint.toLowerCase() : null;
+    if (typeof r !== 'object' || r === null) continue;
+    const mint = typeof r.mint === 'string' ? normalizeMint(chain, r.mint) : null;
     if (!mint) continue;
-    const price = typeof r.priceUSD === 'number' ? r.priceUSD : Number(r.priceUSD);
-    if (!Number.isFinite(price) || price <= 0) continue;      // 0 = 没数据
+    let price: Decimal;
+    try {
+      price = new Decimal(String(r.priceUSD));
+    } catch {
+      continue;
+    }
+    if (!price.isFinite() || price.lte(0)) continue;          // 0 = 没数据
     const mc = typeof r.marketCap === 'number' && Number.isFinite(r.marketCap) && r.marketCap > 0
       ? r.marketCap : null;
     out.set(mint, {
-      // 价格转字符串保精度 —— 后续一律走 Decimal，绝不让它停留在 number 上
-      priceUsd: String(r.priceUSD),
+      // 后续一律走 Decimal；这里也不使用 Number 做价格校验或算术。
+      priceUsd: price.toString(),
       marketCapUsd: mc,
       pairAddress: typeof r.pairAddress === 'string' ? r.pairAddress : null,
     });
@@ -135,10 +151,12 @@ export async function fetchXxyyPrices(
       });
     }
     if (res.status !== 200) {
-      log.warn(`${chain} HTTP ${res.status}，本批 ${batch.length} 个地址跳过`);
-      continue;
+      throw new SourceError({
+        sourceId: SOURCE_ID, kind: 'http_error', chain,
+        message: `HTTP ${res.status}`, missing: batch,
+      });
     }
-    for (const [k, v] of parseXxyyPrices(res.body)) merged.set(k, v);
+    for (const [k, v] of parseXxyyPrices(res.body, chain)) merged.set(k, v);
   }
   return merged;
 }

@@ -4,18 +4,21 @@ process.env.ADMIN_ACCOUNT = 'pananiu';
 import { test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { runMigrations } from '../db/migrate.ts';
+import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
 import {
   recordVerdict, resetWatchState, FAIL_STREAK_BEFORE_ALERT, REALERT_SECONDS,
+  SOURCE_ALERT_ACCOUNT,
 } from './sourceWatch.ts';
 
 before(() => { runMigrations(); });
 
-let admin = '', normal = '';
+let admin = '', retend = '', normal = '';
 beforeEach(() => {
   resetWatchState();
   if (!admin) {
     admin = wr.createUser('pananiu', 'h')!.id;
+    retend = wr.createUser('retend666', 'h')!.id;
     normal = wr.createUser('someoneelse', 'h')!.id;
   }
 });
@@ -40,9 +43,30 @@ test('连续多轮不合格才报给管理员', () => {
   assert.equal(alerts(admin).length, before0 + 1, `第 ${FAIL_STREAK_BEFORE_ALERT} 轮才报`);
 });
 
-test('只发给管理员，普通用户收不到', () => {
+test('只发给用户指定的 pananiu，其他管理员和普通用户都收不到', () => {
   for (let i = 0; i < FAIL_STREAK_BEFORE_ALERT; i++) recordVerdict('xxyy', bad, NOW + i, 'x');
+  assert.equal(SOURCE_ALERT_ACCOUNT, 'pananiu');
+  assert.equal(alerts(retend).length, 0);
   assert.equal(alerts(normal).length, 0);
+});
+
+test('连续失败次数写进 source_health，恢复后清零', () => {
+  recordVerdict('xxyy', bad, NOW, '第一次');
+  recordVerdict('xxyy', bad, NOW + 1, '第二次');
+  const failed = getRawDb().prepare(
+    `SELECT consecutive_failures AS n, last_fail_message AS message
+     FROM source_health WHERE source_id = 'xxyy'`,
+  ).get() as { n: number; message: string };
+  assert.equal(failed.n, 2);
+  assert.match(failed.message, /第二次/);
+
+  recordVerdict('xxyy', good, NOW + 2, '恢复');
+  const recovered = getRawDb().prepare(
+    `SELECT consecutive_failures AS n, last_ok_at AS at
+     FROM source_health WHERE source_id = 'xxyy'`,
+  ).get() as { n: number; at: number };
+  assert.equal(recovered.n, 0);
+  assert.equal(recovered.at, NOW + 2);
 });
 
 test('中间恢复一次就重新计数', () => {

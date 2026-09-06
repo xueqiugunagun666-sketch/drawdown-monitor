@@ -13,9 +13,8 @@
  */
 import * as wr from '../db/walletRepo.ts';
 import { getRawDb } from '../db/index.ts';
-import { getSecrets } from '../lib/config.ts';
-import { isAdminName } from '../lib/adminAuth.ts';
 import { makeLogger } from '../lib/log.ts';
+import { scrubSecrets } from '../lib/mask.ts';
 import { randomUUID } from 'node:crypto';
 import type { HealthVerdict } from './sourceAgreement.ts';
 
@@ -33,16 +32,54 @@ export const FAIL_STREAK_BEFORE_ALERT = 5;
 /** 报过之后隔这么久才再报一次，避免一直坏着一直吵 */
 export const REALERT_SECONDS = 6 * 3600;
 
-const streaks = new Map<string, number>();
-const lastAlertAt = new Map<string, number>();
+/** 用户明确指定：报价源故障只通知这个账号。 */
+export const SOURCE_ALERT_ACCOUNT = 'pananiu';
 
-/** 管理员账号。没配 ADMIN_ACCOUNT 时返回空 —— 那种情况下无人可报，只留日志 */
-function adminUserIds(): string[] {
-  const configured = getSecrets().adminAccount;
-  if (!configured) return [];
-  const rows = getRawDb().prepare(`SELECT id, name FROM users`).all() as
-    Array<{ id: string; name: string }>;
-  return rows.filter((u) => isAdminName(u.name, configured)).map((u) => u.id);
+function alertUserId(): string | null {
+  const row = getRawDb().prepare(
+    `SELECT id FROM users WHERE name = ? LIMIT 1`,
+  ).get(SOURCE_ALERT_ACCOUNT) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+function currentFailureStreak(sourceId: string): number {
+  const row = getRawDb().prepare(
+    `SELECT consecutive_failures AS n FROM source_health WHERE source_id = ?`,
+  ).get(sourceId) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+function recordHealthy(sourceId: string, now: number): void {
+  getRawDb().prepare(
+    `INSERT INTO source_health (source_id, last_ok_at, consecutive_failures)
+     VALUES (?, ?, 0)
+     ON CONFLICT(source_id) DO UPDATE SET
+       last_ok_at = excluded.last_ok_at,
+       consecutive_failures = 0`,
+  ).run(sourceId, now);
+}
+
+function recordFailure(sourceId: string, now: number, message: string): number {
+  const next = currentFailureStreak(sourceId) + 1;
+  getRawDb().prepare(
+    `INSERT INTO source_health
+       (source_id, last_fail_at, last_fail_kind, last_fail_message, consecutive_failures)
+     VALUES (?, ?, 'agreement', ?, ?)
+     ON CONFLICT(source_id) DO UPDATE SET
+       last_fail_at = excluded.last_fail_at,
+       last_fail_kind = excluded.last_fail_kind,
+       last_fail_message = excluded.last_fail_message,
+       consecutive_failures = excluded.consecutive_failures`,
+  ).run(sourceId, now, scrubSecrets(message), next);
+  return next;
+}
+
+function lastAlertTime(userId: string, sourceId: string): number {
+  const row = getRawDb().prepare(
+    `SELECT MAX(fired_at) AS at FROM pump_alerts
+     WHERE user_id = ? AND token_id = ? AND kind = 'source-down'`,
+  ).get(userId, `system:${sourceId}`) as { at: number | null } | undefined;
+  return row?.at ?? 0;
 }
 
 /**
@@ -50,60 +87,56 @@ function adminUserIds(): string[] {
  *
  * @param sourceId 被看护的源
  * @param verdict  本轮判定
- * @param detail   给人看的一句话，直接进报警正文
+ * @param detail   给人看的一句话，写进健康状态与服务器日志，便于排查
  */
 export function recordVerdict(
   sourceId: string, verdict: HealthVerdict, now: number, detail: string,
 ): void {
   if (verdict.ok) {
-    if ((streaks.get(sourceId) ?? 0) > 0) {
+    if (currentFailureStreak(sourceId) > 0) {
       log.info(`${sourceId} 恢复正常（${detail}）`);
     }
-    streaks.set(sourceId, 0);
+    recordHealthy(sourceId, now);
     return;
   }
 
-  const streak = (streaks.get(sourceId) ?? 0) + 1;
-  streaks.set(sourceId, streak);
+  const message = `${verdict.reason ?? '未知故障'}（${detail}）`;
+  const streak = recordFailure(sourceId, now, message);
   log.warn(`${sourceId} 第 ${streak} 轮不合格：${verdict.reason}（${detail}）`);
   if (streak < FAIL_STREAK_BEFORE_ALERT) return;
 
-  const last = lastAlertAt.get(sourceId) ?? 0;
-  if (now - last < REALERT_SECONDS) return;
-
-  const admins = adminUserIds();
-  if (admins.length === 0) {
-    log.warn(`${sourceId} 已连续 ${streak} 轮不合格，但没有配置管理员账号，无人可报`);
+  const userId = alertUserId();
+  if (!userId) {
+    log.warn(`${sourceId} 已连续 ${streak} 轮不合格，但找不到账号 ${SOURCE_ALERT_ACCOUNT}`);
     return;
   }
-  lastAlertAt.set(sourceId, now);
+  if (now - lastAlertTime(userId, sourceId) < REALERT_SECONDS) return;
 
-  for (const userId of admins) {
-    wr.insertPumpAlert({
-      id: randomUUID(),
-      userId,
-      // 用一个不存在的 token_id 承载：报警通道是现成的，
-      // 而 kind 让前端知道这不是行情、是系统消息
-      tokenId: `system:${sourceId}`,
-      firedAt: now,
-      timeframe: '24h',
-      basis: 'low',
-      level: 0,
-      multiple: '1',
-      priceUsd: null,
-      basePriceUsd: null,
-      balance: null,
-      valueUsd: null,
-      kind: 'source-down',
-      athWindow: null,
-      marketCapUsd: null,
-    });
-  }
-  log.warn(`${sourceId} 连续 ${streak} 轮不合格，已通知 ${admins.length} 位管理员：${verdict.reason}`);
+  wr.insertPumpAlert({
+    id: randomUUID(),
+    userId,
+    // 用一个不存在的 token_id 承载：报警通道是现成的，
+    // 而 kind 让前端知道这不是行情、是系统消息
+    tokenId: `system:${sourceId}`,
+    firedAt: now,
+    timeframe: '24h',
+    basis: 'low',
+    level: 0,
+    multiple: '1',
+    priceUsd: null,
+    basePriceUsd: null,
+    balance: null,
+    valueUsd: null,
+    kind: 'source-down',
+    athWindow: null,
+    marketCapUsd: null,
+  });
+  log.warn(`${sourceId} 连续 ${streak} 轮不合格，已通知 ${SOURCE_ALERT_ACCOUNT}：${verdict.reason}`);
 }
 
-/** 供测试重置内存状态 */
+/** 供测试隔离状态；生产代码不会调用。 */
 export function resetWatchState(): void {
-  streaks.clear();
-  lastAlertAt.clear();
+  const db = getRawDb();
+  db.prepare(`DELETE FROM source_health WHERE source_id = 'xxyy'`).run();
+  db.prepare(`DELETE FROM pump_alerts WHERE token_id = 'system:xxyy' AND kind = 'source-down'`).run();
 }

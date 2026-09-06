@@ -311,6 +311,7 @@ export function upsertWalletCandle(
   tokenId: string, priceUsd: string, liquidityUsd: number, fetchedAt: number,
   /** 与 priceUsd 同源的市值。持仓列表要显示它，不记就只能显示价格 */
   marketCapUsd: number | null = null,
+  source: 'wallet-batch' | 'wallet-dexscreener' | 'wallet-xxyy' = 'wallet-batch',
 ): boolean {
   const ts = Math.floor(fetchedAt / 300) * 300;
   const db = getRawDb();
@@ -335,8 +336,8 @@ export function upsertWalletCandle(
     db.prepare(
       `INSERT INTO candles
          (token_id, timeframe, ts, o, h, l, c, liquidity_total, market_cap_usd, source)
-       VALUES (?, '5m', ?, ?, ?, ?, ?, ?, ?, 'wallet-batch')`,
-    ).run(tokenId, ts, priceUsd, priceUsd, priceUsd, priceUsd, liquidityUsd, marketCapUsd);
+       VALUES (?, '5m', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(tokenId, ts, priceUsd, priceUsd, priceUsd, priceUsd, liquidityUsd, marketCapUsd, source);
     return true;
   }
 
@@ -345,9 +346,9 @@ export function upsertWalletCandle(
   const lo = existing.l ? Decimal.min(new Decimal(existing.l), p) : p;
   db.prepare(
     `UPDATE candles SET h = ?, l = ?, c = ?, liquidity_total = ?,
-       market_cap_usd = COALESCE(?, market_cap_usd)
+       market_cap_usd = COALESCE(?, market_cap_usd), source = ?
      WHERE token_id = ? AND timeframe = '5m' AND ts = ?`,
-  ).run(hi.toString(), lo.toString(), priceUsd, liquidityUsd, marketCapUsd, tokenId, ts);
+  ).run(hi.toString(), lo.toString(), priceUsd, liquidityUsd, marketCapUsd, source, tokenId, ts);
   return true;
 }
 

@@ -8,6 +8,7 @@ import * as wr from '../db/walletRepo.ts';
 import { runPumpTick, type PumpDeps } from './pumpEngine.ts';
 import { Decimal } from '../lib/decimal.ts';
 import type { BatchQuote } from '../sources/dexscreenerBatch.ts';
+import type { XxyyQuote } from '../sources/xxyy.ts';
 
 before(() => { runMigrations(); });
 
@@ -41,8 +42,8 @@ function history(tokenId: string, base: string) {
 }
 
 const deps = (quotes: Record<string, Partial<BatchQuote>>): PumpDeps => ({
-  // 关掉影子核对：测试不该真的去打外部接口
-  fetchShadowPrices: null,
+  // 关掉 XXYY 候选源：普通测试不该真的去打外部接口
+  fetchCandidatePrices: null,
   fetchQuotes: async (_chain, addrs) => {
     const m = new Map<string, BatchQuote>();
     for (const a of addrs) {
@@ -55,6 +56,26 @@ const deps = (quotes: Record<string, Partial<BatchQuote>>): PumpDeps => ({
     return m;
   },
 });
+
+function guardedDeps(
+  dsQuotes: Record<string, Partial<BatchQuote>>, candidates: Record<string, string>,
+): PumpDeps {
+  return {
+    ...deps(dsQuotes),
+    fetchCandidatePrices: async (_chain, addrs) => {
+      const out = new Map<string, XxyyQuote>();
+      for (const address of addrs) {
+        const priceUsd = candidates[address];
+        if (priceUsd) out.set(address, { priceUsd, marketCapUsd: null, pairAddress: null });
+      }
+      return out;
+    },
+  };
+}
+
+function clearXxyyHealth(): void {
+  getRawDb().prepare(`DELETE FROM source_health WHERE source_id = 'xxyy'`).run();
+}
 
 test('新币首次进入监控当轮不产生报警，即使已经在 6 倍', async () => {
   const id = 'bsc:0xseed';
@@ -959,4 +980,87 @@ test('醒来补报之后，继续涨到更高档位照常报', async () => {
   const a = wr.listPumpAlerts(u.id, 0);
   assert.equal(a.length, 2);
   assert.equal(a[0]!.level, 10, '醒来那条不该把后面的档位吃掉');
+});
+
+/* ---------------- XXYY 受保护报价 ---------------- */
+
+test('XXYY 与 DS 同轮一致时取较低价，向上报警天然得到双源确认', async () => {
+  clearXxyyHealth();
+  const id = 'bsc:0xxxyyok';
+  const h = holder(id, '1000000000000000000000000');
+  history(id, '1');
+
+  await runPumpTick(NOW, guardedDeps(
+    { '0xxxyyok': { priceUsd: '1.05' } }, { '0xxxyyok': '1' },
+  ));
+  await runPumpTick(NOW + 60, guardedDeps(
+    { '0xxxyyok': { priceUsd: '3.1' } }, { '0xxxyyok': '3' },
+  ));
+
+  const alert = wr.listPumpAlerts(h.userId, 0)[0]!;
+  assert.equal(alert.priceUsd, '3', '报警必须记录双源都达到的较低价格');
+  const candle = getRawDb().prepare(
+    `SELECT c, source FROM candles WHERE token_id = ? AND timeframe = '5m' ORDER BY ts DESC LIMIT 1`,
+  ).get(id) as { c: string; source: string };
+  assert.equal(candle.c, '3');
+  assert.equal(candle.source, 'wallet-xxyy');
+});
+
+test('XXYY 与 DS 偏离超过 10% 时整轮回退 DS，不让离群价触发假报警', async () => {
+  clearXxyyHealth();
+  const id = 'bsc:0xxxyybad';
+  const h = holder(id, '1000000000000000000000000');
+  history(id, '1');
+
+  await runPumpTick(NOW, guardedDeps(
+    { '0xxxyybad': { priceUsd: '1' } }, { '0xxxyybad': '1' },
+  ));
+  await runPumpTick(NOW + 60, guardedDeps(
+    { '0xxxyybad': { priceUsd: '3' } }, { '0xxxyybad': '300' },
+  ));
+
+  const alert = wr.listPumpAlerts(h.userId, 0)[0]!;
+  assert.equal(alert.priceUsd, '3');
+  assert.ok(new Decimal(alert.multiple).lt(10), '300 美元离群价不能进入倍数判断');
+  const health = getRawDb().prepare(
+    `SELECT consecutive_failures AS n FROM source_health WHERE source_id = 'xxyy'`,
+  ).get() as { n: number };
+  assert.equal(health.n, 1);
+});
+
+test('XXYY 请求完全失败也计入健康分母，行情继续使用 DS', async () => {
+  clearXxyyHealth();
+  const id = 'bsc:0xxxyydown';
+  holder(id);
+  history(id, '1');
+  const d = deps({ '0xxxyydown': { priceUsd: '1' } });
+  d.fetchCandidatePrices = async () => { throw new Error('timeout'); };
+
+  await runPumpTick(NOW, d);
+
+  const health = getRawDb().prepare(
+    `SELECT consecutive_failures AS n, last_fail_message AS message
+     FROM source_health WHERE source_id = 'xxyy'`,
+  ).get() as { n: number; message: string };
+  assert.equal(health.n, 1);
+  assert.match(health.message, /bsc 请求失败/);
+});
+
+test('DS 也没有可比样本时不把旧故障误清零', async () => {
+  clearXxyyHealth();
+  const id = 'bsc:0xnosample';
+  holder(id);
+  getRawDb().prepare(
+    `INSERT INTO source_health (source_id, consecutive_failures, last_fail_at)
+     VALUES ('xxyy', 2, ?)`,
+  ).run(NOW - 1);
+  const d = deps({});
+  d.fetchCandidatePrices = async () => new Map<string, XxyyQuote>();
+
+  await runPumpTick(NOW, d);
+
+  const health = getRawDb().prepare(
+    `SELECT consecutive_failures AS n FROM source_health WHERE source_id = 'xxyy'`,
+  ).get() as { n: number };
+  assert.equal(health.n, 2);
 });
