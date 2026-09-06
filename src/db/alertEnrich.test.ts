@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { runMigrations } from './migrate.ts';
 import { getRawDb } from './index.ts';
 import * as wr from './walletRepo.ts';
-import { lookupSymbol, enrichAlerts } from './alertEnrich.ts';
+import { lookupSymbol, lookupWalletLabels, enrichAlerts } from './alertEnrich.ts';
 
 before(() => { runMigrations(); });
 
@@ -40,6 +40,25 @@ test('enrichAlerts 补出币名、地址与链', () => {
   assert.equal(e?.symbol, 'TESTCOIN');
   assert.equal(e?.address, '0xenrich');
   assert.equal(e?.chain, 'bsc');
+  assert.deepEqual(e?.walletLabels, []);
+});
+
+test('同一用户多个地址的备注进入通知，跨链重复备注去重且不泄露给别人', () => {
+  const a = wr.createUser(`labels-a-${++seq}`, 'h')!;
+  const b = wr.createUser(`labels-b-${++seq}`, 'h')!;
+  const tokenId = 'bsc:0xlabels';
+  const a1 = wr.addWallet(a.id, 'bsc', '0xlabels-a1', '自己1')!;
+  const a1Base = wr.addWallet(a.id, 'base', '0xlabels-a1', '自己1')!;
+  const a2 = wr.addWallet(a.id, 'bsc', '0xlabels-a2', '自己2')!;
+  const other = wr.addWallet(b.id, 'bsc', '0xlabels-b', '朋友')!;
+  for (const walletId of [a1.id, a1Base.id, a2.id, other.id]) {
+    wr.upsertHolding(walletId, tokenId, '1', 18, 100);
+  }
+  assert.deepEqual(lookupWalletLabels(a.id, tokenId), ['自己1', '自己2']);
+  assert.deepEqual(lookupWalletLabels(b.id, tokenId), ['朋友']);
+
+  const enriched = enrichAlerts([{ ...alert(tokenId), userId: a.id }])[0]!;
+  assert.deepEqual(enriched.walletLabels, ['自己1', '自己2']);
 });
 
 test('查不到币名时 symbol 为 null，其余字段照常', () => {

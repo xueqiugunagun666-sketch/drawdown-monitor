@@ -62,6 +62,39 @@ test('同一用户不能重复添加同链同地址', () => {
   assert.equal(wr.addWallet(a.id, 'bsc', '0xsame', null), null);
 });
 
+test('钱包备注添加时会 trim、限制 40 字，并把空串存成 null', () => {
+  const a = mkUser();
+  const trimmed = wr.addWallet(a.id, 'bsc', '0xlabel-trim', '  自己1  ')!;
+  const empty = wr.addWallet(a.id, 'base', '0xlabel-empty', '   ')!;
+  const long = wr.addWallet(a.id, 'ethereum', '0xlabel-long', 'x'.repeat(41))!;
+  const rows = wr.listWallets(a.id);
+  assert.equal(rows.find((x) => x.id === trimmed.id)?.label, '自己1');
+  assert.equal(rows.find((x) => x.id === empty.id)?.label, null);
+  assert.equal(rows.find((x) => x.id === long.id)?.label, 'x'.repeat(40));
+});
+
+test('用户只能修改自己地址的备注，且跨链行一起更新和清空', () => {
+  const a = mkUser(), b = mkUser();
+  const addr = '0xlabel-owned';
+  wr.addWallet(a.id, 'bsc', addr, '旧备注');
+  wr.addWallet(a.id, 'base', addr, '旧备注');
+  wr.addWallet(b.id, 'bsc', addr, '别人的备注');
+
+  assert.equal(wr.updateWalletLabelByAddress(b.id, addr, '不该成功'), 1);
+  assert.equal(wr.updateWalletLabelByAddress(a.id, addr, '  自己1  '), 2);
+  assert.deepEqual(
+    wr.listWallets(a.id).filter((x) => x.address === addr).map((x) => x.label),
+    ['自己1', '自己1'],
+  );
+  assert.equal(wr.listWallets(b.id).find((x) => x.address === addr)?.label, '不该成功');
+
+  assert.equal(wr.updateWalletLabelByAddress(a.id, addr, '   '), 2);
+  assert.deepEqual(
+    wr.listWallets(a.id).filter((x) => x.address === addr).map((x) => x.label),
+    [null, null],
+  );
+});
+
 test('不同用户可以各自添加同一个地址', () => {
   const a = mkUser(), b = mkUser();
   assert.ok(wr.addWallet(a.id, 'bsc', '0xshared', null));

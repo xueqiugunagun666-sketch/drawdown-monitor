@@ -8,13 +8,27 @@ export interface WalletRow {
   lastScannedBlock: number | null; lastScanAt: number | null; lastScanError: string | null;
 }
 
+export const WALLET_LABEL_MAX_LENGTH = 40;
+
+/** 列表编辑框的本地归一化；服务端还会再次校验，不能把前端当权限边界。 */
+export function normalizeWalletLabelDraft(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, WALLET_LABEL_MAX_LENGTH) : null;
+}
+
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 /**
  * 按地址归组。底层每条链一行（各链扫描水位必须分开存），
  * 但对人来说"同一个地址"就是一个钱包，不该显示成四个。
  */
-function groupByAddress(rows: WalletRow[]) {
+export interface WalletGroup {
+  address: string;
+  label: string | null;
+  chains: WalletRow[];
+}
+
+export function groupByAddress(rows: WalletRow[]): WalletGroup[] {
   const m = new Map<string, { address: string; label: string | null; chains: WalletRow[] }>();
   for (const r of rows) {
     const g = m.get(r.address) ?? { address: r.address, label: r.label, chains: [] };
@@ -46,6 +60,9 @@ export default function WalletList(
   const [label, setLabel] = useState('');
   const [msg, setMsg] = useState<{ kind: 'err' | 'ok'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editingAddress, setEditingAddress] = useState<string | null>(null);
+  const [draftLabel, setDraftLabel] = useState('');
+  const [labelBusy, setLabelBusy] = useState(false);
   const groups = groupByAddress(wallets);
 
   async function add(e: React.FormEvent) {
@@ -72,6 +89,32 @@ export default function WalletList(
   async function remove(addr: string) {
     await fetch(`/api/wallet/wallets?address=${encodeURIComponent(addr)}`, { method: 'DELETE' });
     onChange();
+  }
+
+  function startEdit(addr: string, current: string | null) {
+    setEditingAddress(addr);
+    setDraftLabel(current ?? '');
+    setMsg(null);
+  }
+
+  async function saveLabel(addr: string) {
+    setLabelBusy(true); setMsg(null);
+    try {
+      const res = await fetch('/api/wallet/wallets', {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: addr, label: normalizeWalletLabelDraft(draftLabel) ?? '' }),
+      });
+      const d = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        setMsg({ kind: 'err', text: d.error ?? '备注保存失败' });
+        return;
+      }
+      setEditingAddress(null);
+      setMsg({ kind: 'ok', text: draftLabel.trim() ? '备注已保存' : '备注已清空' });
+      onChange();
+    } catch {
+      setMsg({ kind: 'err', text: '备注保存失败，检查网络' });
+    } finally { setLabelBusy(false); }
   }
 
   return (
@@ -115,7 +158,39 @@ export default function WalletList(
                 }`}>
                 <div className="flex items-baseline gap-2">
                   <span className="font-mono text-neutral-300 shrink-0">{short(g.address)}</span>
-                  {g.label && <span className="text-xs text-neutral-500 truncate">{g.label}</span>}
+                  {editingAddress === g.address ? (
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <input
+                        value={draftLabel}
+                        maxLength={WALLET_LABEL_MAX_LENGTH}
+                        onChange={(e) => setDraftLabel(e.target.value.slice(0, WALLET_LABEL_MAX_LENGTH))}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void saveLabel(g.address);
+                          if (e.key === 'Escape') setEditingAddress(null);
+                        }}
+                        aria-label="钱包地址备注"
+                        autoFocus
+                        className="w-28 min-w-0 bg-neutral-950 border border-neutral-700 rounded px-1.5 py-0.5
+                                   text-xs text-neutral-200 outline-none focus:border-neutral-500"
+                      />
+                      <button type="button" disabled={labelBusy} onClick={() => void saveLabel(g.address)}
+                        className="text-xs text-[#3fbf7f] hover:text-[#7ef2b4] disabled:opacity-50 shrink-0">
+                        保存
+                      </button>
+                      <button type="button" disabled={labelBusy} onClick={() => setEditingAddress(null)}
+                        className="text-xs text-neutral-600 hover:text-neutral-400 disabled:opacity-50 shrink-0">
+                        取消
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      {g.label && <span className="text-xs text-neutral-500 truncate">备注：{g.label}</span>}
+                      <button type="button" onClick={() => startEdit(g.address, g.label)}
+                        className="text-xs text-neutral-600 hover:text-neutral-300 shrink-0">
+                        {g.label ? '编辑' : '添加备注'}
+                      </button>
+                    </>
+                  )}
                   <button type="button" onClick={() => void remove(g.address)}
                     className="ml-auto text-xs text-neutral-600 hover:text-[#d03b3b] shrink-0">删除</button>
                 </div>

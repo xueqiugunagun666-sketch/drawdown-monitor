@@ -55,3 +55,10 @@ test('行情摘要保留市值变化、判定窗口与持仓价值', () => {
   assert.match(spec.body, /5 分钟内从低点/);
   assert.match(spec.body, /持仓.*125/);
 });
+
+test('同一币由多个已备注地址持有时，合并通知列出全部备注', () => {
+  const pump = row('wallet-labels', 'level', '2.1', 2, 31);
+  pump.walletLabels = ['自己1', '自己2'];
+  const spec = buildNotificationSpecs(buildAlertBatch([pump]), (a) => a.symbol ?? a.id)[0]!;
+  assert.match(spec.body, /地址 自己1、自己2/);
+});

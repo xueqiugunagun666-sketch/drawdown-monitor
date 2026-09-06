@@ -17,6 +17,15 @@ export type WalletRow = typeof wallets.$inferSelect;
 export type HoldingRow = typeof holdings.$inferSelect;
 export type PumpAlertRow = typeof pumpAlerts.$inferSelect;
 
+export const WALLET_LABEL_MAX_LENGTH = 40;
+
+/** 钱包备注的唯一归一化规则：去首尾空白、空串视为清空、最多 40 个字符。 */
+export function normalizeWalletLabel(label: string | null | undefined): string | null {
+  if (label === null || label === undefined) return null;
+  const trimmed = label.trim();
+  return trimmed ? trimmed.slice(0, WALLET_LABEL_MAX_LENGTH) : null;
+}
+
 /* ---------------- 用户 ---------------- */
 
 export function createUser(name: string, passwordHash: string): { id: string; name: string } | null {
@@ -71,7 +80,7 @@ export function addWallet(
   const id = randomUUID();
   try {
     getDb().insert(wallets).values({
-      id, userId, chain, address: address.toLowerCase(), label,
+      id, userId, chain, address: address.toLowerCase(), label: normalizeWalletLabel(label),
       lastScannedBlock: null, lastScanAt: null, lastScanError: null,
       enabled: 1, createdAt: Math.floor(Date.now() / 1000),
     }).run();
@@ -84,6 +93,19 @@ export function addWallet(
 export function listWallets(userId: string): WalletRow[] {
   return getDb().select().from(wallets)
     .where(eq(wallets.userId, userId)).orderBy(wallets.createdAt).all();
+}
+
+/**
+ * 更新用户自己的地址备注。一个地址在底层按链有多行，列表按地址展示，
+ * 所以必须一次更新该用户的全部同地址行；userId 始终在 WHERE 中做隔离。
+ */
+export function updateWalletLabelByAddress(
+  userId: string, address: string, label: string | null,
+): number {
+  return getDb().update(wallets)
+    .set({ label: normalizeWalletLabel(label) })
+    .where(and(eq(wallets.userId, userId), eq(wallets.address, address.trim().toLowerCase())))
+    .run().changes;
 }
 
 /** worker 用，跨用户 —— 扫描是全局任务，不属于任何人 */

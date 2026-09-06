@@ -17,6 +17,7 @@ export interface AlertRow {
   level: number; multiple: string; priceUsd: string | null; basePriceUsd: string | null;
   valueUsd: string | null;
   symbol: string | null; address: string | null; chain: string | null;
+  walletLabels?: string[];
   /** 投递序号。历史快照与 SSE 都带，用它无缝合并而不是用时间戳猜顺序 */
   seq?: number;
   /** 'level' 穿档 | 'advance' 又涨了一截 | 'ath' 破新高 | 'ath-advance' 破新高后又涨 | 'pump-ath' 暴涨与新高同轮 */
@@ -151,6 +152,9 @@ export function LatestAlertBanner(
               .filter(Boolean).join(' · ')
             : describeBasis(a.timeframe, a.basis)}
         </span>
+        {a.walletLabels && a.walletLabels.length > 0 && (
+          <span className="text-sm text-neutral-400">地址：{a.walletLabels.join('、')}</span>
+        )}
         <span className="ml-auto text-xs text-neutral-500 shrink-0">{humanAgo(a.firedAt)}</span>
       </div>
 
@@ -257,6 +261,9 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
                 <span className="text-neutral-600 text-xs shrink-0 hidden md:inline">
                   前高立于 {humanAgo(a.baseTs)}
                 </span>
+              )}
+              {a.walletLabels && a.walletLabels.length > 0 && (
+                <span className="text-xs text-neutral-500">地址：{a.walletLabels.join('、')}</span>
               )}
               {!isSystemAlert(a.kind) && a.marketCapUsd != null && (
                 <span className="text-neutral-200 text-[13px] font-medium tabular-nums shrink-0">

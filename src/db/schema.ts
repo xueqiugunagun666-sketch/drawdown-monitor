@@ -259,6 +259,7 @@ export const wallets = sqliteTable('wallets', {
   userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   chain: text('chain').notNull(),
   address: text('address').notNull(),
+  /** 用户可编辑的地址备注；同一地址跨链的行保持同一个备注。 */
   label: text('label'),
   /** 增量扫描的水位。扫描成功后才推进 —— 中途失败必须能重来 */
   lastScannedBlock: integer('last_scanned_block'),

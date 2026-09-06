@@ -18,6 +18,8 @@ export interface EnrichedAlert extends PumpAlertRow {
   symbol: string | null;
   address: string | null;
   chain: string | null;
+  /** 当前用户持有该币的钱包备注；同地址跨链的重复备注已去重。 */
+  walletLabels: string[];
   /** ATH 报警专用：这个"新高"是多少天的口径。见 athHistory.describeAthScope */
   athScope: string | null;
 }
@@ -39,6 +41,23 @@ export function lookupSymbol(tokenId: string): string | null {
     }
   }
   return null;
+}
+
+export function lookupWalletLabels(userId: string, tokenId: string): string[] {
+  try {
+    const rows = getRawDb().prepare(
+      `SELECT DISTINCT TRIM(w.label) AS label
+         FROM holdings h
+         INNER JOIN wallets w ON w.id = h.wallet_id
+        WHERE w.user_id = ? AND h.token_id = ? AND w.enabled = 1
+          AND w.label IS NOT NULL AND TRIM(w.label) <> ''
+        ORDER BY label`,
+    ).all(userId, tokenId) as Array<{ label: string }>;
+    return rows.map((row) => row.label);
+  } catch {
+    // 备注是附加信息，查询失败不能阻断整批报警。
+    return [];
+  }
 }
 
 /**
@@ -73,16 +92,22 @@ export function enrichAlerts(rows: PumpAlertRow[]): EnrichedAlert[] {
   // 同一批里常有同一个币的多条，缓存一下省掉重复查询
   const cache = new Map<string, string | null>();
   const scopes = new Map<string, string | null>();
+  const walletLabels = new Map<string, string[]>();
   return rows.map((a) => {
     if (!cache.has(a.tokenId)) cache.set(a.tokenId, lookupSymbol(a.tokenId));
-    const isAth = a.kind === 'ath' || a.kind === 'ath-advance';
+    const isAth = a.kind === 'ath' || a.kind === 'ath-advance' || a.kind === 'pump-ath';
     const scopeKey = `${a.tokenId}|${a.athWindow ?? ''}`;
+    const walletKey = `${a.userId}|${a.tokenId}`;
     if (isAth && !scopes.has(scopeKey)) scopes.set(scopeKey, lookupAthScope(a.tokenId, a.athWindow));
+    if (!walletLabels.has(walletKey)) {
+      walletLabels.set(walletKey, lookupWalletLabels(a.userId, a.tokenId));
+    }
     return {
       ...a,
       symbol: cache.get(a.tokenId) ?? null,
       address: a.tokenId.split(':')[1] ?? null,
       chain: a.tokenId.split(':')[0] ?? null,
+      walletLabels: walletLabels.get(walletKey) ?? [],
       athScope: isAth ? scopes.get(scopeKey) ?? null : null,
     };
   });

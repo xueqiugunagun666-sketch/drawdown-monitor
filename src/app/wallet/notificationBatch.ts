@@ -129,6 +129,9 @@ function marketLabel(a: AlertRow, nameFor: (a: AlertRow) => string): string {
 
 function marketDetails(a: AlertRow): string[] {
   const details: string[] = [];
+  if (a.walletLabels && a.walletLabels.length > 0) {
+    details.push(`地址 ${a.walletLabels.join('、')}`);
+  }
   const marketCapUsd = a.marketCapUsd ?? null;
   const baseMc = baseMarketCap(marketCapUsd, a.priceUsd, a.basePriceUsd);
   if (marketCapUsd !== null) {
