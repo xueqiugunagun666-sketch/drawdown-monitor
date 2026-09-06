@@ -172,7 +172,8 @@ function pickBestWindow(
 function recentAlert(tokenId: string, now: number): RecentAlert | null {
   const rows = getRawDb().prepare(
     `SELECT fired_at, level, price_usd FROM pump_alerts
-     WHERE token_id = ? AND fired_at >= ?`,
+     WHERE token_id = ? AND fired_at >= ?
+       AND (kind IS NULL OR kind IN ('level', 'advance', 'pump-ath'))`,
   ).all(tokenId, now - DEDUP_WINDOW_SECONDS) as
     Array<{ fired_at: number; level: number; price_usd: string | null }>;
   if (rows.length === 0) return null;
@@ -501,14 +502,8 @@ async function evaluateToken(
       }
     }
 
-    /** ATH 与暴涨并行；同轮两者都触发时仍沿用现有规则，只落 ATH。 */
-    const ath = evaluateAthFor(tokenId, price, now);
-    if (ath) {
-      const delivered = fanout(tokenId, holders, price, ath.winner, ath.kind,
-        ath.basePrice, now, ath.baseTs, ath.windowKey, marketCapUsd);
-      return { winner: ath.winner, ...delivered };
-    }
-
+    // ATH 与暴涨分别判定。ATH 不能再提前 return 吞掉本轮已经跨过的暴涨档位，
+    // 也不能混进 recentAlert 后充当暴涨追加的价格锚点。
     const recent = recentAlert(tokenId, now);
     const crossed = pickWinner(fires);
     let winner: PendingFire | null = null;
@@ -526,14 +521,26 @@ async function evaluateToken(
     } else if (crossed) {
       log.debug(`${tokenId} 30 分钟内已报过同档或更高（${crossed.level}x 档），压制`);
     }
-    if (!winner) return null;
+
+    const ath = evaluateAthFor(tokenId, price, now);
+    if (!winner && !ath) return null;
+
+    if (!winner && ath) {
+      const delivered = fanout(tokenId, holders, price, ath.winner, ath.kind,
+        ath.basePrice, now, ath.baseTs, ath.windowKey, marketCapUsd);
+      return { winner: ath.winner, kind: ath.kind, ...delivered };
+    }
 
     const base = windows.find(
       (w) => w.timeframe === winner!.timeframe && w.basis === winner!.basis,
     )?.base ?? null;
-    const delivered = fanout(tokenId, holders, price, winner, kind, base, now,
-      null, null, marketCapUsd);
-    return { winner, ...delivered };
+    // 同轮两种事实合并成一行：只响一次，但 kind/athWindow/baseTs 足以让前端
+    // 同时写清“首次 2x”与“突破 N 天新高”。暴涨的 basePrice 仍保留，方便
+    // 显示真实市值起点；ATH 前高时间单独沿用 baseTs。
+    const persistedKind = ath ? 'pump-ath' : kind;
+    const delivered = fanout(tokenId, holders, price, winner!, persistedKind, base, now,
+      ath?.baseTs ?? null, ath?.windowKey ?? null, marketCapUsd);
+    return { winner: winner!, kind: persistedKind, ...delivered };
   });
 
   const persisted = persistDecision();
@@ -638,6 +645,7 @@ function evaluateAthFor(tokenId: string, price: Decimal, now: number): {
 
 interface PersistedAlert {
   winner: PendingFire;
+  kind: wr.AlertKind;
   notified: number;
   skipped: number;
 }
@@ -648,7 +656,7 @@ function fanout(
   holders: ReturnType<typeof wr.usersHoldingToken>,
   price: Decimal,
   winner: PendingFire,
-  kind: 'level' | 'advance' | 'ath' | 'ath-advance',
+  kind: 'level' | 'advance' | 'ath' | 'ath-advance' | 'pump-ath',
   base: Decimal | null,
   now: number,
   baseTs: number | null = null,
@@ -658,11 +666,27 @@ function fanout(
   marketCapUsd: number | null = null,
 ): { notified: number; skipped: number } {
   let notified = 0, skipped = 0;
+  const byUser = new Map<string, typeof holders>();
   for (const h of holders) {
     const row = wr.getHolding(h.walletId, tokenId);
     if (!row || row.monitored !== 1) continue;
-    const amount = toHumanAmount(h.balance, h.decimals);
-    const value = amount ? amount.mul(price) : null;
+    const group = byUser.get(h.userId) ?? [];
+    group.push(h);
+    byUser.set(h.userId, group);
+  }
+
+  for (const [userId, owned] of byUser) {
+    let totalAmount = new Decimal(0);
+    let amountKnown = true;
+    for (const h of owned) {
+      const amount = toHumanAmount(h.balance, h.decimals);
+      if (amount === null) {
+        amountKnown = false;
+        continue;
+      }
+      totalAmount = totalAmount.plus(amount);
+    }
+    const value = amountKnown ? totalAmount.mul(price) : null;
 
     /**
      * 仓位太小的不推。判定放在扇出这一步而不是过滤层，因为持仓价值
@@ -673,15 +697,15 @@ function fanout(
      * 价值算不出来时照常推送：那说明数据有问题，宁可多响一次也不要
      * 因为算不出而静默吞掉。
      */
-    const floor = h.minAlertValueUsd ?? MIN_ALERT_VALUE_USD;
-    if (value && value.lt(floor)) {
+    const floor = owned[0]!.minAlertValueUsd ?? MIN_ALERT_VALUE_USD;
+    if (value && value.lt(new Decimal(String(floor)))) {
       skipped++;
       continue;
     }
 
     wr.insertPumpAlert({
       id: randomUUID(),
-      userId: h.userId,
+      userId,
       tokenId,
       firedAt: now,
       timeframe: winner.timeframe,
@@ -694,7 +718,10 @@ function fanout(
       baseTs,
       athWindow,
       marketCapUsd,
-      balance: h.balance,
+      // 多钱包余额的 raw 整数只有 decimals 完全一致时才可直接相加；展示与
+      // 阈值实际依赖的是上面用 Decimal 算出的 valueUsd，所以多钱包留空，
+      // 避免把某一个钱包的余额冒充总余额。
+      balance: owned.length === 1 ? owned[0]!.balance : null,
       valueUsd: value ? value.toString() : null,
       ackedAt: null,
       kind,

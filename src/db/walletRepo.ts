@@ -184,7 +184,7 @@ export function usersHoldingToken(tokenId: string): Array<{
     .from(holdings)
     .innerJoin(wallets, eq(wallets.id, holdings.walletId))
     .innerJoin(users, eq(users.id, wallets.userId))
-    .where(eq(holdings.tokenId, tokenId))
+    .where(and(eq(holdings.tokenId, tokenId), eq(wallets.enabled, 1)))
     .all();
 }
 
@@ -212,7 +212,9 @@ export function setMinAlertValue(userId: string, v: number | null): boolean {
 /** 跨用户去重 —— 两人持有同一个币，价格只需要轮询一次 */
 export function monitoredTokenIds(): string[] {
   return getDb().selectDistinct({ tokenId: holdings.tokenId })
-    .from(holdings).where(eq(holdings.monitored, 1)).all()
+    .from(holdings)
+    .innerJoin(wallets, eq(wallets.id, holdings.walletId))
+    .where(and(eq(holdings.monitored, 1), eq(wallets.enabled, 1))).all()
     .map((r) => r.tokenId);
 }
 
@@ -226,6 +228,7 @@ export function monitoredTokenIds(): string[] {
 export type AlertKind =
   | 'level' | 'advance'          // 暴涨：穿档 / 未升档但又涨了一截
   | 'ath' | 'ath-advance'        // 破新高 / 破新高之后又涨了一截
+  | 'pump-ath'                   // 同一采样同时满足暴涨档位与 ATH，只通知一次但保留两个原因
   | 'source-down';               // 系统消息：某个报价源不可信了，只发给管理员
 
 export function insertPumpAlert(
@@ -521,6 +524,7 @@ export function tokenIdsDueForEval(now: number): string[] {
   const rows = getDb().all<{ token_id: string }>(sql`
     SELECT DISTINCT h.token_id AS token_id
     FROM holdings h
+    INNER JOIN wallets w ON w.id = h.wallet_id AND w.enabled = 1
     LEFT JOIN token_meta m ON m.token_id = h.token_id
     WHERE h.decimals IS NOT NULL
       AND (

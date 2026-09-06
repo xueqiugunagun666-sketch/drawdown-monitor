@@ -189,6 +189,34 @@ test('两个用户持有同一个币，各自收到一条，余额不串号', as
   assert.equal(bb[0]?.valueUsd, '20', '5 个 × $4');
 });
 
+test('同一用户多个启用钱包按价值合计过滤，每个事件只通知一次', async () => {
+  const id = 'bsc:0xaggregate';
+  const u = wr.createUser(`agg${++seq}`, 'h')!;
+  const a = wr.addWallet(u.id, 'bsc', `0xagga${seq}`, null)!;
+  const b = wr.addWallet(u.id, 'bsc', `0xaggb${seq}`, null)!;
+  // 每个钱包 30 个币；事件价 2.1 时各值 $63，单看都低于 $100，合计 $126。
+  for (const w of [a, b]) {
+    wr.upsertHolding(w.id, id, '30000000000000000000', 18, NOW);
+    wr.setHoldingMonitored(w.id, id, true, null, null);
+  }
+  wr.setMinAlertValue(u.id, 100);
+  history(id, '1');
+
+  await runPumpTick(NOW, deps({ '0xaggregate': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xaggregate': { priceUsd: '2.1' } }));
+  let alerts = wr.listPumpAlerts(u.id, 0);
+  assert.equal(alerts.length, 1, '两钱包合计过线，应只通知用户一次');
+  assert.equal(alerts[0]!.valueUsd, '126');
+  assert.equal(alerts[0]!.balance, null, '多钱包不能拿其中一个 raw 余额冒充总余额');
+
+  // 价格到 5：两个钱包各值 $150；仍然是一次 5x 事件，不是两条。
+  await runPumpTick(NOW + 120, deps({ '0xaggregate': { priceUsd: '5' } }));
+  alerts = wr.listPumpAlerts(u.id, 0);
+  assert.equal(alerts.length, 2);
+  assert.equal(alerts[0]!.level, 5);
+  assert.equal(alerts[0]!.valueUsd, '300');
+});
+
 test('第二个收件人落库失败时，状态与第一个人的报警一起回滚，重试不漏人', async () => {
   const id = 'bsc:0xatomicfanout';
   const a = holder(id);
@@ -809,7 +837,8 @@ test('按突破的最长窗口报 —— 分量不同的两件事不该说成一
   history(id, '1');
   withAth(id, '2');            // 400 天前有个 2 的高点，最近都很低
 
-  const athOnly = () => wr.listPumpAlerts(u.id, 0).filter((a) => a.kind?.startsWith('ath'));
+  const athOnly = () => wr.listPumpAlerts(u.id, 0)
+    .filter((a) => a.kind?.startsWith('ath') || a.kind === 'pump-ath');
 
   await runPumpTick(NOW, deps({ '0xathbreak': { priceUsd: '1' } }));          // seed
   await runPumpTick(NOW + 60, deps({ '0xathbreak': { priceUsd: '1.05' } }));  // 只比近期高点高 5%
@@ -863,7 +892,8 @@ test('单调上涨全程只报一次 —— 不是每根 K 线一条', async () 
     t += 60;
     await runPumpTick(t, deps({ '0xathgrind': { priceUsd: p } }));
   }
-  const ath = wr.listPumpAlerts(u.id, 0).filter((a) => a.kind === 'ath' || a.kind === 'ath-advance');
+  const ath = wr.listPumpAlerts(u.id, 0)
+    .filter((a) => a.kind === 'ath' || a.kind === 'ath-advance' || a.kind === 'pump-ath');
   assert.equal(ath.length, 1, `六轮新高只该报一次，实际 ${ath.length}`);
 });
 
@@ -895,7 +925,7 @@ test('冷启动已在高位的币不补报历史新高', async () => {
   assert.equal(ath.length, 0, '不为"它进来之前就破过新高"补报');
 });
 
-test('ATH 与暴涨同轮触发时只发 ATH —— 破新高本来就蕴含着在涨', async () => {
+test('ATH 与暴涨同轮触发时合并成一条，但两个原因都保留', async () => {
   const id = 'bsc:0xathboth';
   const u = wr.createUser(`ath${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
@@ -909,7 +939,29 @@ test('ATH 与暴涨同轮触发时只发 ATH —— 破新高本来就蕴含着�
   await runPumpTick(NOW + 60, deps({ '0xathboth': { priceUsd: '3' } }));
   const all = wr.listPumpAlerts(u.id, 0);
   assert.equal(all.length, 1, '同一件事只响一次');
-  assert.equal(all[0]!.kind, 'ath', 'ATH 是更强的说法，优先它');
+  assert.equal(all[0]!.kind, 'pump-ath');
+  assert.equal(all[0]!.level, 3, '首次暴涨档位不能被 ATH 吞掉');
+  assert.equal(all[0]!.athWindow, 'all', '同时保留突破的新高窗口');
+  assert.ok(all[0]!.baseTs, '同时保留前高时间');
+});
+
+test('纯 ATH 不进入暴涨追加基准，不会制造 0x advance', async () => {
+  const id = 'bsc:0xathnotpump';
+  const u = wr.createUser(`ath${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xath${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000000000', 18, NOW);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+  withAth(id, '99');
+
+  await runPumpTick(NOW, deps({ '0xathnotpump': { priceUsd: '1' } }));
+  await runPumpTick(NOW + 60, deps({ '0xathnotpump': { priceUsd: '1.2' } }));
+  await runPumpTick(NOW + 120, deps({ '0xathnotpump': { priceUsd: '1.8' } }));
+
+  const all = wr.listPumpAlerts(u.id, 0);
+  assert.ok(all.some((a) => a.kind === 'ath'));
+  assert.ok(!all.some((a) => a.kind === 'advance' && a.level === 0),
+    'ATH 的时间和价格不能被暴涨逻辑当成 0x 追加锚点');
 });
 
 test('ATH 报警记下前高是什么时候立的 —— 之后 ath_ts 会被覆盖，事后查不到', async () => {
@@ -933,7 +985,8 @@ test('ATH 报警记下前高是什么时候立的 —— 之后 ath_ts 会被覆
   await runPumpTick(NOW, deps({ '0xathbasets': { priceUsd: '1' } }));
   await runPumpTick(NOW + 60, deps({ '0xathbasets': { priceUsd: '2.5' } }));
 
-  const a = wr.listPumpAlerts(u.id, 0).find((x) => x.kind === 'ath')!;
+  const a = wr.listPumpAlerts(u.id, 0)
+    .find((x) => x.kind === 'ath' || x.kind === 'pump-ath')!;
   assert.equal(a.baseTs, oldHighTs, '记的是旧高点的时刻，不是现在');
   // 库里的 ath_ts 已经被推到现在了，正说明必须在报警时就记下来
   assert.equal(athRepo.getWalletAth(id)!.athTs, NOW + 60);

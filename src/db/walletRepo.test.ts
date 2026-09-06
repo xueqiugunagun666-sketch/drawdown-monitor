@@ -100,6 +100,19 @@ test('usersHoldingToken 找出所有持有者，供报警扇出', () => {
   assert.deepEqual(holders.map((h) => h.userId).sort(), [a.id, b.id].sort());
 });
 
+test('停用钱包不参与报警收件人和监控调度', () => {
+  const a = mkUser();
+  const w = wr.addWallet(a.id, 'bsc', `0xdisabled${++seq}`, null)!;
+  const id = `bsc:0xdisabled${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  getRawDb().prepare(`UPDATE wallets SET enabled = 0 WHERE id = ?`).run(w.id);
+
+  assert.equal(wr.usersHoldingToken(id).length, 0);
+  assert.ok(!wr.monitoredTokenIds().includes(id));
+  assert.ok(!wr.tokenIdsDueForEval(999999).includes(id));
+});
+
 test('monitoredTokenIds 跨用户去重 —— 两人持有同一个币只算一次', () => {
   const a = mkUser(), b = mkUser();
   const wa = wr.addWallet(a.id, 'bsc', '0xma', null)!;
