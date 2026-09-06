@@ -316,9 +316,11 @@ export type AlertKind =
   | 'source-down';               // 系统消息：某个报价源不可信了，只发给管理员
 
 export function insertPumpAlert(
-  row: Omit<PumpAlertRow, 'ackedAt' | 'kind' | 'baseTs' | 'athWindow' | 'marketCapUsd'>
+  row: Omit<PumpAlertRow,
+    'ackedAt' | 'kind' | 'baseTs' | 'athWindow' | 'marketCapUsd' | 'quoteFetchedAt' | 'evaluatedAt'>
      & { ackedAt?: number | null; kind?: AlertKind | null; baseTs?: number | null;
-         athWindow?: string | null; marketCapUsd?: number | null },
+         athWindow?: string | null; marketCapUsd?: number | null;
+         quoteFetchedAt?: number | null; evaluatedAt?: number | null },
 ): void {
   // kind 默认 'level'：调用方不关心时就是穿档，旧行也全是这么来的
   getDb().insert(pumpAlerts)
@@ -327,6 +329,8 @@ export function insertPumpAlert(
       kind: row.kind ?? 'level', baseTs: row.baseTs ?? null,
       athWindow: row.athWindow ?? null,
       marketCapUsd: row.marketCapUsd ?? null,
+      quoteFetchedAt: row.quoteFetchedAt ?? null,
+      evaluatedAt: row.evaluatedAt ?? null,
     }).run();
 }
 
@@ -595,6 +599,27 @@ export const WARM_RECHECK_SECONDS = 180;
  */
 const WARM_MIN_LIQUIDITY_USD = 1000;
 
+function stableTokenHash(tokenId: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < tokenId.length; i++) {
+    hash ^= tokenId.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+/** 技术失败 15 秒起步，指数退避到最多 5 分钟，并加 0–10 秒固定抖动。 */
+export function tokenRetryDelaySeconds(tokenId: string, failureCount: number): number {
+  const exponent = Math.min(Math.max(failureCount - 1, 0), 5);
+  const base = Math.min(15 * (2 ** exponent), 300);
+  return Math.min(base + (stableTokenHash(tokenId) % 11), 300);
+}
+
+function normalScheduleJitter(tokenId: string, interval: number): number {
+  const spread = interval === WARM_RECHECK_SECONDS ? 30 : 300;
+  return stableTokenHash(tokenId) % spread;
+}
+
 /**
  * 本轮该判定哪些币。
  *
@@ -605,24 +630,41 @@ const WARM_MIN_LIQUIDITY_USD = 1000;
  *
  * 从未判定过的（last_eval_at 为空）一律要判，否则新扫到的币进不来。
  */
-export function tokenIdsDueForEval(now: number): string[] {
-  const rows = getDb().all<{ token_id: string }>(sql`
-    SELECT DISTINCT h.token_id AS token_id
+export function tokenIdsDueForEval(now: number, limit = Number.POSITIVE_INFINITY): string[] {
+  const rows = getDb().all<{
+    token_id: string;
+    hot: number;
+    last_ok_at: number | null;
+    last_liquidity_usd: number | null;
+    next_retry_at: number | null;
+  }>(sql`
+    SELECT h.token_id AS token_id,
+           MAX(h.monitored) AS hot,
+           COALESCE(m.last_eval_ok_at, m.last_eval_at) AS last_ok_at,
+           m.last_liquidity_usd AS last_liquidity_usd,
+           m.next_retry_at AS next_retry_at
     FROM holdings h
     INNER JOIN wallets w ON w.id = h.wallet_id AND w.enabled = 1
     LEFT JOIN token_meta m ON m.token_id = h.token_id
     WHERE h.decimals IS NOT NULL
-      AND (
-        h.monitored = 1
-        OR m.last_eval_at IS NULL
-        OR m.last_eval_at <= ${now - REJECTED_RECHECK_SECONDS}
-        OR (
-          m.last_liquidity_usd >= ${WARM_MIN_LIQUIDITY_USD}
-          AND m.last_eval_at <= ${now - WARM_RECHECK_SECONDS}
-        )
-      )
+    GROUP BY h.token_id
   `);
-  return rows.map((r) => r.token_id);
+
+  const due = rows.map((row) => {
+    const lane = row.hot === 1 ? 0 : row.last_ok_at === null
+      ? 1 : (row.last_liquidity_usd ?? 0) >= WARM_MIN_LIQUIDITY_USD ? 2 : 3;
+    const interval = lane === 2 ? WARM_RECHECK_SECONDS : REJECTED_RECHECK_SECONDS;
+    const normalDueAt = row.last_ok_at === null
+      ? 0 : row.last_ok_at + interval + normalScheduleJitter(row.token_id, interval);
+    return { ...row, lane, dueAt: row.next_retry_at ?? normalDueAt };
+  }).filter((row) => {
+    if (row.next_retry_at !== null) return row.next_retry_at <= now;
+    return row.lane === 0 || row.dueAt <= now;
+  }).sort((a, b) => a.lane - b.lane || a.dueAt - b.dueAt
+    || a.token_id.localeCompare(b.token_id))
+    .map((row) => row.token_id);
+  const bounded = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : due.length;
+  return due.slice(0, bounded);
 }
 
 /**
@@ -705,13 +747,95 @@ export function listTokenLinks(): Map<string, TokenLinks> {
   return m;
 }
 
+export function markTokenAttempted(tokenId: string, now: number): void {
+  getDb().run(sql`
+    INSERT INTO token_meta (token_id, holder_count, symbol, fetched_at, last_attempt_at)
+    VALUES (${tokenId}, NULL, NULL, 0, ${now})
+    ON CONFLICT(token_id) DO UPDATE SET last_attempt_at = ${now}
+  `);
+}
+
+export function markTokensAttempted(tokenIds: readonly string[], now: number): void {
+  if (tokenIds.length === 0) return;
+  const db = getRawDb();
+  const statement = db.prepare(
+    `INSERT INTO token_meta (token_id, holder_count, symbol, fetched_at, last_attempt_at)
+     VALUES (?, NULL, NULL, 0, ?)
+     ON CONFLICT(token_id) DO UPDATE SET last_attempt_at=excluded.last_attempt_at`,
+  );
+  db.transaction((ids: readonly string[]) => {
+    for (const id of ids) statement.run(id, now);
+  })(tokenIds);
+}
+
+export function markTokenQuoteSucceeded(tokenId: string, now: number, liquidityUsd?: number): void {
+  const liq = liquidityUsd ?? null;
+  getDb().run(sql`
+    INSERT INTO token_meta
+      (token_id, holder_count, symbol, fetched_at, last_attempt_at, last_quote_ok_at,
+       last_liquidity_usd)
+    VALUES (${tokenId}, NULL, NULL, 0, ${now}, ${now}, ${liq})
+    ON CONFLICT(token_id) DO UPDATE SET
+      last_attempt_at = ${now},
+      last_quote_ok_at = ${now},
+      last_liquidity_usd = COALESCE(${liq}, last_liquidity_usd)
+  `);
+}
+
+/** 正常完成查询但上游明确表示没有可用池，不按技术故障高频重试。 */
+export function markTokenCheckedWithoutQuote(tokenId: string, now: number): void {
+  getDb().run(sql`
+    INSERT INTO token_meta
+      (token_id, holder_count, symbol, fetched_at, last_attempt_at, last_eval_at,
+       last_eval_ok_at, next_retry_at, eval_failure_count)
+    VALUES (${tokenId}, NULL, NULL, 0, ${now}, ${now}, ${now}, NULL, 0)
+    ON CONFLICT(token_id) DO UPDATE SET
+      last_attempt_at = ${now},
+      last_eval_at = ${now},
+      last_eval_ok_at = ${now},
+      next_retry_at = NULL,
+      eval_failure_count = 0
+  `);
+}
+
+/** 技术失败或判定异常：不推进成功水位，按确定性有界退避重试。 */
+export function markTokenEvaluationFailed(tokenId: string, now: number): number {
+  const tx = getRawDb().transaction(() => {
+    const row = getRawDb().prepare(
+      `SELECT eval_failure_count AS n FROM token_meta WHERE token_id = ?`,
+    ).get(tokenId) as { n: number } | undefined;
+    const failureCount = (row?.n ?? 0) + 1;
+    const nextRetryAt = now + tokenRetryDelaySeconds(tokenId, failureCount);
+    getRawDb().prepare(
+      `INSERT INTO token_meta
+         (token_id, holder_count, symbol, fetched_at, last_attempt_at,
+          next_retry_at, eval_failure_count)
+       VALUES (?, NULL, NULL, 0, ?, ?, ?)
+       ON CONFLICT(token_id) DO UPDATE SET
+         last_attempt_at=excluded.last_attempt_at,
+         next_retry_at=excluded.next_retry_at,
+         eval_failure_count=excluded.eval_failure_count`,
+    ).run(tokenId, now, nextRetryAt, failureCount);
+    return nextRetryAt;
+  });
+  return tx();
+}
+
 export function markTokenEvaluated(tokenId: string, now: number, liquidityUsd?: number): void {
   const liq = liquidityUsd ?? null;
   getDb().run(sql`
-    INSERT INTO token_meta (token_id, holder_count, symbol, fetched_at, last_eval_at, last_liquidity_usd)
-    VALUES (${tokenId}, NULL, NULL, ${now}, ${now}, ${liq})
+    INSERT INTO token_meta
+      (token_id, holder_count, symbol, fetched_at, last_attempt_at, last_quote_ok_at,
+       last_eval_at, last_eval_ok_at, next_retry_at, eval_failure_count,
+       last_liquidity_usd)
+    VALUES (${tokenId}, NULL, NULL, 0, ${now}, ${now}, ${now}, ${now}, NULL, 0, ${liq})
     ON CONFLICT(token_id) DO UPDATE SET
+      last_attempt_at = ${now},
+      last_quote_ok_at = ${now},
       last_eval_at = ${now},
+      last_eval_ok_at = ${now},
+      next_retry_at = NULL,
+      eval_failure_count = 0,
       last_liquidity_usd = COALESCE(${liq}, last_liquidity_usd)
   `);
 }

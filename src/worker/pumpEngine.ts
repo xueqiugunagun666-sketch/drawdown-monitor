@@ -55,6 +55,7 @@ import { safeErrorMessage } from '../lib/mask.ts';
 import { align5m, nowSec } from '../lib/time.ts';
 import { randomUUID } from 'node:crypto';
 import { decideQuote } from './quoteDecision.ts';
+import PQueue from 'p-queue';
 
 const log = makeLogger('pump-engine');
 
@@ -80,6 +81,8 @@ const log = makeLogger('pump-engine');
  * 假报警漏洞重新打开。
  */
 export const TICK_INTERVAL_SECONDS = 60;
+/** 200 req/min、每批 30 个的理论顶是 6000；留 25% 给校正与抖动。 */
+export const PUMP_TOKEN_BUDGET = 4500;
 
 /**
  * 持仓价值低于这个数就不推送 —— **每人可以自己改**，这里只是没设过时的默认值。
@@ -110,6 +113,8 @@ export interface PumpDeps {
   fetchCandidatePrices?: typeof fetchXxyyPrices | null;
   /** 生产环境用实际评估时间；测试省略时沿用 runPumpTick 传入的确定时刻。 */
   clock?: () => number;
+  /** 生产把持有人元数据与历史回填放入有界后台队列；测试默认仍同步等待。 */
+  deferSlowTasks?: boolean;
 }
 
 export const realPumpDeps: PumpDeps = {
@@ -117,10 +122,70 @@ export const realPumpDeps: PumpDeps = {
   fetchQuotesDetailed: fetchBatchQuotesDetailed,
   fetchTokenInfo,
   clock: nowSec,
+  deferSlowTasks: true,
 };
 
 function isTechnicalQuoteFailure(f: QuoteBatchFailure): boolean {
   return f.kind !== 'empty_response' && f.kind !== 'partial_response';
+}
+
+/** HTTP 200 空数组通常只是无池粉尘；其它失败（含部分缺失）应短退避重试。 */
+function isRetryableQuoteFailure(f: QuoteBatchFailure): boolean {
+  return f.kind !== 'empty_response';
+}
+
+const metadataQueue = new PQueue({ concurrency: 4 });
+const backfillQueue = new PQueue({ concurrency: 2 });
+const pendingMetadata = new Set<string>();
+const pendingBackfills = new Set<string>();
+const completedBackfills = new Set<string>();
+
+function deferMetadata(
+  tokenId: string, chain: string, address: string, now: number,
+  getInfo: NonNullable<PumpDeps['fetchTokenInfo']>,
+): void {
+  if (pendingMetadata.has(tokenId)) return;
+  pendingMetadata.add(tokenId);
+  void metadataQueue.add(async () => {
+    try {
+      const info = await getInfo(chain, address);
+      wr.setTokenMeta(tokenId, info?.holderCount ?? null, info?.symbol ?? null, now);
+    } catch (err) {
+      log.warn(`${tokenId} 后台元数据刷新失败: ${safeErrorMessage(err)}`);
+    } finally {
+      pendingMetadata.delete(tokenId);
+    }
+  }).catch((err) => {
+    pendingMetadata.delete(tokenId);
+    log.warn(`${tokenId} 元数据队列失败: ${safeErrorMessage(err)}`);
+  });
+}
+
+function deferBackfill(
+  tokenId: string, now: number, deps: BackfillDeps, livePrice: Decimal,
+): void {
+  if (pendingBackfills.has(tokenId)) return;
+  pendingBackfills.add(tokenId);
+  void backfillQueue.add(async () => {
+    try {
+      await backfillWalletToken(tokenId, now, deps, livePrice);
+    } catch (err) {
+      log.warn(`${tokenId} 后台历史回填失败: ${safeErrorMessage(err)}`);
+    } finally {
+      pendingBackfills.delete(tokenId);
+      // 下一轮可以基于回填结果（即使上游明确返回空）继续；绝不在任务未完成时 seed。
+      completedBackfills.add(tokenId);
+    }
+  }).catch((err) => {
+    pendingBackfills.delete(tokenId);
+    completedBackfills.add(tokenId);
+    log.warn(`${tokenId} 回填队列失败: ${safeErrorMessage(err)}`);
+  });
+}
+
+/** 测试与优雅停机可显式等待后台慢任务；正常报价轮次不等待。 */
+export async function waitForPumpSlowTasks(): Promise<void> {
+  await Promise.all([metadataQueue.onIdle(), backfillQueue.onIdle()]);
 }
 
 /* ---------- pump_states 的读写。放在这里而不是 walletRepo，
@@ -209,7 +274,7 @@ function recentAlert(tokenId: string, now: number): RecentAlert | null {
 
 type WatchlistQuote =
   | { kind: 'wallet' }
-  | { kind: 'ready'; price: Decimal }
+  | { kind: 'ready'; price: Decimal; fetchedAt: number }
   | { kind: 'paused'; reason: string };
 
 /**
@@ -252,7 +317,7 @@ function watchlistQuote(tokenId: string, evaluatedAt: number): WatchlistQuote {
     if (!price.isFinite() || price.lte(0)) {
       return { kind: 'paused', reason: '共享看板价格不是有限正数' };
     }
-    return { kind: 'ready', price };
+    return { kind: 'ready', price, fetchedAt: token.last_quote_at };
   } catch {
     return { kind: 'paused', reason: '共享看板价格格式无效' };
   }
@@ -264,6 +329,17 @@ function load5mCandles(tokenId: string, sinceTs: number) {
   ).all(tokenId, sinceTs) as Array<{ ts: number; o: string | null; l: string | null }>;
 }
 
+function noteQuoteMissing(tokenId: string): void {
+  for (const holder of wr.usersHoldingToken(tokenId)) {
+    const row = wr.getHolding(holder.walletId, tokenId);
+    if (!row) continue;
+    wr.setHoldingMonitored(
+      holder.walletId, tokenId, row.monitored === 1,
+      '报价缺失，判定暂缓', row.belowSinceTs,
+    );
+  }
+}
+
 export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): Promise<void> {
   // 必须取**全部**持仓而不是只取已监控的：新持仓写入时 monitored=0，
   // 只看 monitored=1 会死锁 —— 过滤层永远不执行，币永远不会被提升。
@@ -271,7 +347,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   // 成本可接受：批量接口一次 30 个地址，450 个币也只要 15 次请求。
   // 监控中的每轮都判；已被挡掉的每 30 分钟重查一次 ——
   // 一千多个粉尘币每轮都拉报价，光请求就占掉 20 秒
-  const tokenIds = wr.tokenIdsDueForEval(now);
+  const tokenIds = wr.tokenIdsDueForEval(now, PUMP_TOKEN_BUDGET);
   const runId = now;
   pumpHealth.beginPumpRun(runId, now, tokenIds.length);
   let totalCovered = 0;
@@ -291,28 +367,37 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   }
 
   const t0 = Date.now();
-  // XXYY 与 DexScreener 同时开跑。前者通常更快，等 DS 元数据回来时它也已经
-  // 就绪，不再像影子阶段那样串在判定前面白白增加几秒报警延迟。
-  const xxyyPromise = deps.fetchCandidatePrices === null
-    ? null
-    : fetchXxyyRound(byChain, deps.fetchCandidatePrices ?? fetchXxyyPrices);
-
+  wr.markTokensAttempted(tokenIds, now);
   const quotes = new Map<string, BatchQuote>();
+  const xxyyRound: XxyyRound = { quotes: new Map(), failures: new Map() };
   const monitored = new Set(wr.monitoredTokenIds());
-  for (const [chain, addrs] of byChain) {
+  const priority = new Map(tokenIds.map((id, i) => [id, tokenIds.length - i]));
+  const evalQueue = new PQueue({ concurrency: 8 });
+
+  // 每条链各自等本链的 DS + XXYY；快链拿到结果后立即进入判定队列，
+  // 不再等其它慢链。单币的元数据/回填在生产又由更小的后台队列承接。
+  const chainTasks = [...byChain].map(async ([chain, addrs]) => {
+    const candidatePromise = deps.fetchCandidatePrices === null
+      ? Promise.resolve<XxyyRound>({ quotes: new Map(), failures: new Map() })
+      : fetchXxyyRound(
+        new Map([[chain, addrs]]),
+        deps.fetchCandidatePrices ?? fetchXxyyPrices,
+      );
+
     let covered = 0;
     let technicalFailures = 0;
     let missingMonitored = 0;
     let healthMessage: string | null = null;
+    let result: BatchQuotesDetailedResult;
     try {
-      const result = deps.fetchQuotesDetailed
+      result = deps.fetchQuotesDetailed
         ? await deps.fetchQuotesDetailed(chain, addrs)
         : { quotes: await deps.fetchQuotes(chain, addrs), failures: [] };
-      for (const [a, q] of result.quotes) quotes.set(`${chain}:${a}`, q);
       covered = result.quotes.size;
       technicalFailures = result.failures.filter(isTechnicalQuoteFailure).length;
       missingMonitored = result.failures.reduce((count, failure) => count
-        + failure.addresses.filter((address) => monitored.has(`${chain}:${address.toLowerCase()}`)).length, 0);
+        + failure.addresses.filter((address) =>
+          monitored.has(`${chain}:${normalizeMint(chain, address)}`)).length, 0);
       if (technicalFailures > 0) {
         healthMessage = `${technicalFailures} 个报价批次发生技术失败`;
       } else if (missingMonitored > 0) {
@@ -323,8 +408,20 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       healthMessage = safeErrorMessage(err);
       technicalFailures = 1;
       log.warn(`${chain} 批量报价失败: ${healthMessage}`);
+      result = {
+        quotes: new Map(),
+        failures: [{ addresses: [...addrs], kind: 'network', reason: healthMessage }],
+      };
     }
-    const criticalRequested = addrs.filter((a) => monitored.has(`${chain}:${a}`)).length;
+    const chainQuotes = new Map<string, BatchQuote>();
+    for (const [address, quote] of result.quotes) {
+      const key = `${chain}:${normalizeMint(chain, address)}`;
+      chainQuotes.set(key, quote);
+      quotes.set(key, quote);
+    }
+
+    const criticalRequested = addrs.filter((a) =>
+      monitored.has(`${chain}:${normalizeMint(chain, a)}`)).length;
     const errorKind = technicalFailures > 0
       ? 'batch-failure'
       : missingMonitored > 0 ? 'missing-monitored-quote'
@@ -343,46 +440,84 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
     );
     totalCovered += covered;
     failedBatches += technicalFailures;
-  }
-  let effectiveQuotes = quotes;
-  let xxyyRound: XxyyRound | null = null;
-  let xxyyHealthy = false;
-  if (xxyyPromise) {
-    xxyyRound = await xxyyPromise;
-    const verdict = assessXxyy(byChain, quotes, xxyyRound, now);
-    xxyyHealthy = verdict.ok;
-    effectiveQuotes = applyGuardedXxyy(quotes, xxyyRound.quotes, verdict.ok);
-  }
-  const quoteMs = Date.now() - t0;
 
-  // 整轮影子观察一次事务落库。正式报价与状态机完全不读取这张表。
-  try {
-    recordQuoteShadows(tokenIds.map((tokenId) => {
-      const ds = quotes.get(tokenId) ?? null;
-      const xxyy = xxyyRound?.quotes.get(tokenId) ?? null;
-      const observedAt = Math.max(ds?.fetchedAt ?? now, xxyy?.fetchedAt ?? now);
-      return {
-        tokenId, observedAt, ds, xxyy,
-        decision: decideQuote(ds, xxyy, xxyyHealthy),
-      };
-    }));
-  } catch (err) {
-    log.warn(`影子报价批量落库失败: ${safeErrorMessage(err)}`);
-  }
+    const chainXxyy = await candidatePromise;
+    for (const [key, quote] of chainXxyy.quotes) xxyyRound.quotes.set(key, quote);
+    for (const [key, message] of chainXxyy.failures) xxyyRound.failures.set(key, message);
 
-  for (const tokenId of tokenIds) {
-    try {
-      const q = effectiveQuotes.get(tokenId) ?? null;
-      const evaluatedAt = deps.clock?.() ?? now;
-      await evaluateToken(tokenId, q, evaluatedAt,
-        deps.backfill ?? realBackfillDeps, deps.fetchTokenInfo);
-      // 流动性一起记下 —— 下一轮靠它决定这个币走快车道还是慢车道
-      wr.markTokenEvaluated(tokenId, evaluatedAt, q?.liquidityUsd);
-    } catch (err) {
-      evalErrors++;
-      log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
+    // 正式采用仍要求本链整体健康；一条慢/坏链不再让其它链放弃已确认候选价。
+    let localXxyyHealthy = false;
+    if (deps.fetchCandidatePrices !== null && xxyySupportsChain(chain)
+        && !chainXxyy.failures.has(chain) && chainQuotes.size > 0) {
+      const report = compareQuotes(chainQuotes, chainXxyy.quotes);
+      localXxyyHealthy = judge(report, chainQuotes.size).ok;
     }
-  }
+    const effectiveQuotes = deps.fetchCandidatePrices === null
+      ? chainQuotes
+      : applyGuardedXxyy(chainQuotes, chainXxyy.quotes, localXxyyHealthy);
+
+    const chainTokenIds = addrs.map((address) => `${chain}:${normalizeMint(chain, address)}`);
+    try {
+      recordQuoteShadows(chainTokenIds.map((tokenId) => {
+        const ds = chainQuotes.get(tokenId) ?? null;
+        const xxyy = chainXxyy.quotes.get(tokenId) ?? null;
+        const observedAt = Math.max(ds?.fetchedAt ?? now, xxyy?.fetchedAt ?? now);
+        return {
+          tokenId, observedAt, ds, xxyy,
+          decision: decideQuote(ds, xxyy, localXxyyHealthy),
+        };
+      }));
+    } catch (err) {
+      log.warn(`${chain} 影子报价批量落库失败: ${safeErrorMessage(err)}`);
+    }
+
+    const retryIds = new Set<string>();
+    for (const failure of result.failures) {
+      if (!isRetryableQuoteFailure(failure)) continue;
+      for (const address of failure.addresses) {
+        retryIds.add(`${chain}:${normalizeMint(chain, address)}`);
+      }
+    }
+
+    const evaluations = chainTokenIds.map((tokenId) => {
+      const quote = effectiveQuotes.get(tokenId) ?? null;
+      if (!quote) {
+        noteQuoteMissing(tokenId);
+        if (retryIds.has(tokenId)) wr.markTokenEvaluationFailed(tokenId, deps.clock?.() ?? now);
+        else wr.markTokenCheckedWithoutQuote(tokenId, deps.clock?.() ?? now);
+        return Promise.resolve();
+      }
+
+      const quotedAt = deps.clock?.() ?? now;
+      wr.markTokenQuoteSucceeded(tokenId, quotedAt, quote.liquidityUsd);
+      return evalQueue.add(async () => {
+        const evaluatedAt = deps.clock?.() ?? now;
+        try {
+          const outcome = await evaluateToken(
+            tokenId, quote, evaluatedAt,
+            deps.backfill ?? realBackfillDeps, deps.fetchTokenInfo,
+            deps.deferSlowTasks ?? false,
+          );
+          if (outcome.status === 'ok') {
+            wr.markTokenEvaluated(tokenId, evaluatedAt, quote.liquidityUsd);
+          } else {
+            if (outcome.status === 'failed') evalErrors++;
+            wr.markTokenEvaluationFailed(tokenId, evaluatedAt);
+            log.debug(`${tokenId} 判定${outcome.status === 'failed' ? '失败' : '延后'}: ${outcome.reason}`);
+          }
+        } catch (err) {
+          evalErrors++;
+          wr.markTokenEvaluationFailed(tokenId, evaluatedAt);
+          log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
+        }
+      }, { priority: priority.get(tokenId) ?? 0 }).then(() => undefined);
+    });
+    await Promise.all(evaluations);
+  });
+
+  await Promise.all(chainTasks);
+  const parallelMs = Date.now() - t0;
+  if (deps.fetchCandidatePrices !== null) assessXxyy(byChain, quotes, xxyyRound, now);
 
   // 每小时清一次七天前的观察。条件使用轮次时间，重启后也无需额外定时器。
   if (now % 3600 < TICK_INTERVAL_SECONDS) {
@@ -398,9 +533,8 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
    * 有分段数字就不用猜。超预算才打 INFO，正常时打 DEBUG，不刷屏。
    */
   const totalMs = Date.now() - t0;
-  const line = `轮次 ${tokenIds.length} 个币：报价 ${(quoteMs / 1000).toFixed(1)}s`
-    + `（${byChain.size} 条链），判定 ${((totalMs - quoteMs) / 1000).toFixed(1)}s，`
-    + `共 ${(totalMs / 1000).toFixed(1)}s`;
+  const line = `轮次 ${tokenIds.length} 个币：${byChain.size} 条链并行报价与判定 `
+    + `${(parallelMs / 1000).toFixed(1)}s，共 ${(totalMs / 1000).toFixed(1)}s`;
   if (totalMs > TICK_INTERVAL_SECONDS * 1000) log.info(`${line} —— 超出 ${TICK_INTERVAL_SECONDS}s 预算`);
   else log.debug(line);
   } catch (err) {
@@ -418,13 +552,20 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   }
 }
 
+type TokenEvalOutcome =
+  | { status: 'ok' }
+  | { status: 'deferred'; reason: string }
+  | { status: 'failed'; reason: string };
+
 async function evaluateToken(
   tokenId: string, quote: BatchQuote | null, now: number,
   backfillDeps: BackfillDeps = realBackfillDeps,
   getInfo: PumpDeps['fetchTokenInfo'] = fetchTokenInfo,
-): Promise<void> {
+  deferSlowTasks = false,
+): Promise<TokenEvalOutcome> {
   const [chain, addr] = tokenId.split(':');
-  let holderCount = wr.getTokenMeta(tokenId)?.holderCount ?? null;
+  const cachedMeta = wr.getTokenMeta(tokenId);
+  let holderCount = cachedMeta?.holderCount ?? null;
   // ---- 过滤：每个持有者各自维护滞回状态（below_since_ts 在 holdings 上）----
   const holders = wr.usersHoldingToken(tokenId);
   const rows = holders.map((h) => ({
@@ -451,13 +592,17 @@ async function evaluateToken(
   ).monitored);
 
   if (wouldPass && chain && addr && getInfo && wr.isTokenMetaStale(tokenId, now)) {
-    try {
-      const info = await getInfo(chain, addr);
-      // 查不到也写一条，避免每轮都重试同一个查不到的币
-      wr.setTokenMeta(tokenId, info?.holderCount ?? null, info?.symbol ?? null, now);
-      holderCount = info?.holderCount ?? null;
-    } catch {
-      // 限流之类的失败不影响本轮判定，下一轮再说
+    if (deferSlowTasks) {
+      deferMetadata(tokenId, chain, addr, now, getInfo);
+    } else {
+      try {
+        const info = await getInfo(chain, addr);
+        // 查不到也写一条，避免每轮都重试同一个查不到的币
+        wr.setTokenMeta(tokenId, info?.holderCount ?? null, info?.symbol ?? null, now);
+        holderCount = info?.holderCount ?? null;
+      } catch {
+        // 限流之类的失败不影响本轮判定，下一轮再说
+      }
     }
   }
 
@@ -468,7 +613,11 @@ async function evaluateToken(
     wr.setHoldingMonitored(h.walletId, tokenId, r.monitored, r.reason, r.belowSinceTs);
     if (r.monitored) stillMonitored = true;
   }
-  if (!stillMonitored || !quote) return;
+  if (!stillMonitored || !quote) return { status: 'ok' };
+  // 第一次缺少持有人元数据时先等有界后台刷新；旧缓存存在则可继续使用。
+  if (deferSlowTasks && cachedMeta === null && wouldPass && chain && addr) {
+    return { status: 'deferred', reason: '元数据待刷新' };
+  }
 
   // 报价里带着符号，第一次拿到就存下来 —— 否则页面上永远只有合约地址
   if (quote.symbol) wr.setHoldingSymbol(tokenId, quote.symbol);
@@ -480,7 +629,7 @@ async function evaluateToken(
   const fromWatchlist = boardQuote.kind !== 'wallet';
   if (boardQuote.kind === 'paused') {
     log.warn(`${tokenId} 钱包行情判定暂停：${boardQuote.reason}`);
-    return;
+    return { status: 'deferred', reason: boardQuote.reason };
   }
   /**
    * 这个币的 K 线如果是**共享看板**那条流水线写的，判定就得用它的价，
@@ -497,15 +646,16 @@ async function evaluateToken(
    * 是**两个数不是同一种测量**，所以只在跨流水线时换用对方的价。
    */
   let price: Decimal;
+  let quoteFetchedAt = quote.fetchedAt ?? now;
   try {
     price = new Decimal(quote.priceUsd);
   } catch {
     log.warn(`${tokenId} 报价隔离：价格不是合法十进制数`);
-    return;
+    return { status: 'failed', reason: '价格不是合法十进制数' };
   }
   if (!price.isFinite() || price.lte(0)) {
     log.warn(`${tokenId} 报价隔离：价格不是有限正数`);
-    return;
+    return { status: 'failed', reason: '价格不是有限正数' };
   }
   if (boardQuote.kind === 'ready') {
     if (Decimal.max(price.div(boardQuote.price), boardQuote.price.div(price)).gt(2)) {
@@ -515,6 +665,7 @@ async function evaluateToken(
       );
     }
     price = boardQuote.price;
+    quoteFetchedAt = boardQuote.fetchedAt;
   }
   /**
    * 市值跟着实际用的价走。看板的价来自跨池中位数，而批量报价的市值
@@ -522,7 +673,7 @@ async function evaluateToken(
    * 报市值 $5,054 万，正常池 $142 万，差 36 倍）。
    */
   const marketCapUsd = scaleMarketCap(quote.marketCapUsd, quote.priceUsd, price.toString());
-  if (!price.isFinite() || price.lte(0)) return;
+  if (!price.isFinite() || price.lte(0)) return { status: 'failed', reason: '实际判定价无效' };
 
   // 先把本轮价格并进当前 5m candle，历史就是这样一轮轮攒起来的。
   //
@@ -539,7 +690,7 @@ async function evaluateToken(
     );
     if (candleWrite.status === 'quarantined') {
       log.warn(`${tokenId} 报价隔离：${candleWrite.reason}`);
-      return;
+      return { status: 'failed', reason: candleWrite.reason };
     }
 
     /**
@@ -555,11 +706,19 @@ async function evaluateToken(
      */
     if (needsBackfill(tokenId, now) && wr.shouldTryBackfill(tokenId, now)) {
       wr.markBackfillAttempted(tokenId, now);      // 先记再打：失败的也要计入冷却
+      if (deferSlowTasks) {
+        deferBackfill(tokenId, now, backfillDeps, price);
+        return { status: 'deferred', reason: '历史回填进行中' };
+      }
       await backfillWalletToken(tokenId, now, backfillDeps, price);
+    } else if (deferSlowTasks && pendingBackfills.has(tokenId)) {
+      return { status: 'deferred', reason: '历史回填进行中' };
+    } else if (deferSlowTasks && completedBackfills.has(tokenId)) {
+      completedBackfills.delete(tokenId);
     }
   }
   const windows = computeMultiples(load5mCandles(tokenId, now - 86400 - 600), price, now);
-  if (windows.length === 0) return;
+  if (windows.length === 0) return { status: 'deferred', reason: '尚未建立有效窗口基准' };
 
   /**
    * 从状态机开始到所有用户的报警行，必须是一个原子决定。
@@ -628,7 +787,7 @@ async function evaluateToken(
 
     if (!winner && ath) {
       const delivered = fanout(tokenId, holders, price, ath.winner, ath.kind,
-        ath.basePrice, now, ath.baseTs, ath.windowKey, marketCapUsd);
+        ath.basePrice, now, ath.baseTs, ath.windowKey, marketCapUsd, quoteFetchedAt);
       return { winner: ath.winner, kind: ath.kind, ...delivered };
     }
 
@@ -640,7 +799,7 @@ async function evaluateToken(
     // 显示真实市值起点；ATH 前高时间单独沿用 baseTs。
     const persistedKind = ath ? 'pump-ath' : kind;
     const delivered = fanout(tokenId, holders, price, winner!, persistedKind, base, now,
-      ath?.baseTs ?? null, ath?.windowKey ?? null, marketCapUsd);
+      ath?.baseTs ?? null, ath?.windowKey ?? null, marketCapUsd, quoteFetchedAt);
     return { winner: winner!, kind: persistedKind, ...delivered };
   });
 
@@ -654,6 +813,7 @@ async function evaluateToken(
         ? `（${persisted.skipped} 人仓位低于各自的阈值，已跳过）` : ''),
     );
   }
+  return { status: 'ok' };
 }
 
 /**
@@ -765,6 +925,8 @@ function fanout(
   athWindow: string | null = null,
   /** 与本行 priceUsd 同源的市值 */
   marketCapUsd: number | null = null,
+  /** 实际判定价可用的时刻；双源共识取两者较晚，看板价取看板水位。 */
+  quoteFetchedAt: number | null = null,
 ): { notified: number; skipped: number } {
   let notified = 0, skipped = 0;
   const byUser = new Map<string, typeof holders>();
@@ -819,6 +981,8 @@ function fanout(
       baseTs,
       athWindow,
       marketCapUsd,
+      quoteFetchedAt,
+      evaluatedAt: now,
       // 多钱包余额的 raw 整数只有 decimals 完全一致时才可直接相加；展示与
       // 阈值实际依赖的是上面用 Decimal 算出的 valueUsd，所以多钱包留空，
       // 避免把某一个钱包的余额冒充总余额。
@@ -932,7 +1096,7 @@ function assessXxyy(
     + `一致率 ${report.rate === null ? '—' : (report.rate * 100).toFixed(1) + '%'}`
     + (report.worst.length > 0
       ? `，最大偏离 ${report.worst[0]!.ratio} 倍（${report.worst[0]!.key}）` : '')
-    + (verdict.ok ? '' : '，本轮全部回退 DexScreener'),
+    + (verdict.ok ? '' : '，异常链或不一致币已回退 DexScreener'),
   );
   return verdict;
 }
@@ -970,6 +1134,8 @@ function applyGuardedXxyy(
       ...ds,
       priceUsd: acceptedPrice.toString(),
       priceSource: candidatePrice.lt(dsPrice) ? 'xxyy' : 'dexscreener',
+      // 共识要等两个源都返回才成立，因此采用两者较晚的采样时刻。
+      fetchedAt: Math.max(ds.fetchedAt ?? 0, candidate.fetchedAt ?? 0) || undefined,
       // DS 已校正过计价池，按共识价格同比例换算最稳；DS 没市值才用 XXYY 的。
       marketCapUsd: scaleMarketCap(ds.marketCapUsd, ds.priceUsd, acceptedPrice.toString())
         ?? candidate.marketCapUsd,

@@ -370,7 +370,8 @@ test('被挡掉的币 30 分钟内不重复判', () => {
   wr.setHoldingMonitored(w.id, id, false, '流动性不足', null);
   wr.markTokenEvaluated(id, 1000);
   assert.ok(!wr.tokenIdsDueForEval(1000 + 60).includes(id), '刚判过不该重判');
-  assert.ok(wr.tokenIdsDueForEval(1000 + wr.REJECTED_RECHECK_SECONDS).includes(id), '满 30 分钟要重判');
+  assert.ok(wr.tokenIdsDueForEval(1000 + wr.REJECTED_RECHECK_SECONDS + 300).includes(id),
+    '30 分钟后加最多 5 分钟固定抖动，必须重判');
 });
 
 test('流动性够、只差成交量的币走 3 分钟快车道', () => {
@@ -381,8 +382,8 @@ test('流动性够、只差成交量的币走 3 分钟快车道', () => {
   wr.setHoldingMonitored(w.id, id, false, '24h 成交 $3,000 < $10,000', null);
   wr.markTokenEvaluated(id, 1000, 32457);          // FLETCH 的真实流动性
   assert.ok(!wr.tokenIdsDueForEval(1000 + 60).includes(id), '3 分钟没到不该重判');
-  assert.ok(wr.tokenIdsDueForEval(1000 + wr.WARM_RECHECK_SECONDS).includes(id),
-    '满 3 分钟就要重判，不必等 30 分钟');
+  assert.ok(wr.tokenIdsDueForEval(1000 + wr.WARM_RECHECK_SECONDS + 30).includes(id),
+    '3 分钟后加最多 30 秒固定抖动，必须重判，不必等 30 分钟');
 });
 
 test('流动性不够的币仍然走 30 分钟慢车道', () => {
@@ -394,7 +395,7 @@ test('流动性不够的币仍然走 30 分钟慢车道', () => {
   wr.markTokenEvaluated(id, 1000, 12);
   assert.ok(!wr.tokenIdsDueForEval(1000 + wr.WARM_RECHECK_SECONDS).includes(id),
     '流动性不够的不该进快车道');
-  assert.ok(wr.tokenIdsDueForEval(1000 + wr.REJECTED_RECHECK_SECONDS).includes(id));
+  assert.ok(wr.tokenIdsDueForEval(1000 + wr.REJECTED_RECHECK_SECONDS + 300).includes(id));
 });
 
 test('报价缺失时保留上次的流动性 —— 一次接口抖动不该把币踢出快车道', () => {
@@ -405,7 +406,7 @@ test('报价缺失时保留上次的流动性 —— 一次接口抖动不该把
   wr.setHoldingMonitored(w.id, id, false, '24h 成交不足', null);
   wr.markTokenEvaluated(id, 1000, 32457);
   wr.markTokenEvaluated(id, 1100);                 // 这一轮没报价
-  assert.ok(wr.tokenIdsDueForEval(1100 + wr.WARM_RECHECK_SECONDS).includes(id),
+  assert.ok(wr.tokenIdsDueForEval(1100 + wr.WARM_RECHECK_SECONDS + 30).includes(id),
     '流动性被抹成 NULL 的话这里就会掉到慢车道');
 });
 
@@ -415,6 +416,76 @@ test('从未判定过的币一定要判 —— 否则新扫到的币永远进不
   const id = `bsc:0xfresh${seq}`;
   wr.upsertHolding(w.id, id, '1', 18, 100);
   assert.ok(wr.tokenIdsDueForEval(999999).includes(id));
+});
+
+test('调度顺序固定为热币、首次币、温币、冷币', () => {
+  const u = wr.createUser(`priority${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xpriority${seq}`, null)!;
+  const hot = `bsc:0xpriority-hot${seq}`;
+  const fresh = `bsc:0xpriority-fresh${seq}`;
+  const warm = `bsc:0xpriority-warm${seq}`;
+  const cold = `bsc:0xpriority-cold${seq}`;
+  for (const id of [hot, fresh, warm, cold]) wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, hot, true, null, null);
+  wr.markTokenEvaluated(hot, 9_990, 50_000);
+  wr.markTokenEvaluated(warm, 1_000, 50_000);
+  wr.markTokenEvaluated(cold, 1_000, 10);
+
+  const due = wr.tokenIdsDueForEval(10_000);
+  const positions = [hot, fresh, warm, cold].map((id) => due.indexOf(id));
+  assert.ok(positions.every((i) => i >= 0));
+  assert.ok(positions[0]! < positions[1]!);
+  assert.ok(positions[1]! < positions[2]!);
+  assert.ok(positions[2]! < positions[3]!);
+});
+
+test('技术失败不推进成功水位，并按 15 秒起的有界退避重试', () => {
+  const u = wr.createUser(`retry${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xretry${seq}`, null)!;
+  const id = `bsc:0xretry${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  wr.markTokenEvaluated(id, 1_000, 50_000);
+  wr.markTokenAttempted(id, 2_000);
+  wr.markTokenQuoteSucceeded(id, 2_000, 50_000);
+  const next = wr.markTokenEvaluationFailed(id, 2_001);
+  const row = getRawDb().prepare(
+    `SELECT last_eval_ok_at, last_quote_ok_at, next_retry_at, eval_failure_count
+       FROM token_meta WHERE token_id=?`,
+  ).get(id) as Record<string, number>;
+  assert.equal(row.last_eval_ok_at, 1_000, '失败不能冒充判定成功');
+  assert.equal(row.last_quote_ok_at, 2_000, '有效报价水位要独立保留');
+  assert.equal(row.next_retry_at, next);
+  assert.equal(row.eval_failure_count, 1);
+  assert.ok(next >= 2_016 && next <= 2_026);
+  assert.equal(wr.tokenRetryDelaySeconds(id, 100), 300, '退避连抖动在内也不能超过 5 分钟');
+  assert.ok(!wr.tokenIdsDueForEval(next - 1).includes(id));
+  assert.ok(wr.tokenIdsDueForEval(next).includes(id));
+
+  wr.markTokenEvaluated(id, next, 50_000);
+  const recovered = getRawDb().prepare(
+    `SELECT last_eval_ok_at, next_retry_at, eval_failure_count
+       FROM token_meta WHERE token_id=?`,
+  ).get(id) as { last_eval_ok_at: number; next_retry_at: number | null; eval_failure_count: number };
+  assert.equal(recovered.last_eval_ok_at, next);
+  assert.equal(recovered.next_retry_at, null);
+  assert.equal(recovered.eval_failure_count, 0);
+});
+
+test('明确无池是正常冷检查，不误记成技术故障', () => {
+  const id = `bsc:0xno-pool${++seq}`;
+  wr.markTokenCheckedWithoutQuote(id, 3_000);
+  const row = getRawDb().prepare(
+    `SELECT last_eval_ok_at, last_quote_ok_at, next_retry_at, eval_failure_count
+       FROM token_meta WHERE token_id=?`,
+  ).get(id) as {
+    last_eval_ok_at: number; last_quote_ok_at: number | null;
+    next_retry_at: number | null; eval_failure_count: number;
+  };
+  assert.equal(row.last_eval_ok_at, 3_000);
+  assert.equal(row.last_quote_ok_at, null);
+  assert.equal(row.next_retry_at, null);
+  assert.equal(row.eval_failure_count, 0);
 });
 
 test('markTokenEvaluated 不会抹掉已有的持有人数', () => {

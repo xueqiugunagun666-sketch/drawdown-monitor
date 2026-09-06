@@ -14,7 +14,8 @@ let seq = 0;
 const alert = (tokenId: string): wr.PumpAlertRow => ({
   id: `a${++seq}`, userId: 'u', tokenId, firedAt: 100, timeframe: '1h', basis: 'low',
   level: 2, multiple: '2.4', priceUsd: '1', basePriceUsd: '0.4',
-  balance: '100', valueUsd: '100', ackedAt: null, kind: 'level', baseTs: null, athWindow: null, marketCapUsd: null,
+  balance: '100', valueUsd: '100', ackedAt: null, kind: 'level', baseTs: null,
+  athWindow: null, marketCapUsd: null, quoteFetchedAt: null, evaluatedAt: null,
 });
 
 test('优先从 holdings 取币名', () => {

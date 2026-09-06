@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { runMigrations } from '../db/migrate.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
-import { runPumpTick, type PumpDeps } from './pumpEngine.ts';
+import { runPumpTick, waitForPumpSlowTasks, type PumpDeps } from './pumpEngine.ts';
 import { Decimal } from '../lib/decimal.ts';
 import type { BatchQuote } from '../sources/dexscreenerBatch.ts';
 import type { XxyyQuote } from '../sources/xxyy.ts';
@@ -104,11 +104,15 @@ test('从平稳涨到 2 倍会报，且带上倍数与基准价', async () => {
   const h = holder(id);
   history(id, '1');
   await runPumpTick(NOW, deps({ '0xrise': { priceUsd: '1' } }));        // seed 在 1 倍
-  await runPumpTick(NOW + 60, deps({ '0xrise': { priceUsd: '2.5' } }));
+  await runPumpTick(NOW + 60, deps({
+    '0xrise': { priceUsd: '2.5', fetchedAt: NOW + 42 },
+  }));
   const a = wr.listPumpAlerts(h.userId, 0)[0];
   assert.ok(a, '应产生报警');
   assert.equal(a!.level, 2);
   assert.equal(a!.priceUsd, '2.5');
+  assert.equal(a!.quoteFetchedAt, NOW + 42);
+  assert.equal(a!.evaluatedAt, NOW + 60);
   assert.ok(Number(a!.multiple) >= 2);
 });
 
@@ -275,7 +279,10 @@ test('第二个收件人落库失败时，状态与第一个人的报警一起�
 
   db.exec(`DROP TRIGGER test_fail_second_pump_insert`);
   db.prepare(`DELETE FROM test_fail_pump_user`).run();
-  await runPumpTick(NOW + 60, deps({ '0xatomicfanout': { priceUsd: '3' } }));
+  const retryAt = (db.prepare(
+    `SELECT next_retry_at AS t FROM token_meta WHERE token_id=?`,
+  ).get(id) as { t: number }).t;
+  await runPumpTick(retryAt, deps({ '0xatomicfanout': { priceUsd: '3' } }));
   assert.equal(wr.listPumpAlerts(a.userId, 0).length, 1);
   assert.equal(wr.listPumpAlerts(b.userId, 0).length, 1);
 });
@@ -1282,4 +1289,115 @@ test('DS 也没有可比样本时不把旧故障误清零', async () => {
     `SELECT consecutive_failures AS n FROM source_health WHERE source_id = 'xxyy'`,
   ).get() as { n: number };
   assert.equal(health.n, 2);
+});
+
+/* ---------------- A05 有界调度 ---------------- */
+
+test('HTTP 200 部分缺失只让缺失币短退避，成功币正常推进', async () => {
+  const missing = 'bsc:0xpartial-missing';
+  const ok = 'bsc:0xpartial-ok';
+  holder(missing);
+  holder(ok);
+  history(missing, '1');
+  history(ok, '1');
+  wr.markTokenEvaluated(missing, NOW - 1_000, 50_000);
+  wr.markTokenEvaluated(ok, NOW - 1_000, 50_000);
+
+  const d = deps({});
+  d.fetchQuotesDetailed = async (chain, addrs) => ({
+    quotes: await deps({ '0xpartial-ok': { priceUsd: '1' } }).fetchQuotes(chain, addrs),
+    failures: addrs.includes('0xpartial-missing') ? [{
+      addresses: ['0xpartial-missing'], kind: 'partial_response',
+      reason: '响应未覆盖该地址', status: 200,
+    }] : [],
+  });
+  await runPumpTick(NOW, d);
+
+  const rows = getRawDb().prepare(
+    `SELECT token_id, last_eval_ok_at, next_retry_at
+       FROM token_meta WHERE token_id IN (?, ?) ORDER BY token_id`,
+  ).all(missing, ok) as Array<{
+    token_id: string; last_eval_ok_at: number | null; next_retry_at: number | null;
+  }>;
+  const failed = rows.find((r) => r.token_id === missing)!;
+  const succeeded = rows.find((r) => r.token_id === ok)!;
+  assert.equal(failed.last_eval_ok_at, NOW - 1_000);
+  assert.ok(failed.next_retry_at !== null && failed.next_retry_at <= NOW + 25);
+  assert.equal(succeeded.last_eval_ok_at, NOW);
+  assert.equal(succeeded.next_retry_at, null);
+});
+
+test('慢链未返回时，快链的热币已经完成报警', async () => {
+  const slowId = 'bsc:0xa05-slow-chain';
+  const fastId = 'base:0xa05-fast-chain';
+  holder(slowId);
+  const fastHolder = holder(fastId);
+  history(slowId, '1');
+  history(fastId, '1');
+  await runPumpTick(NOW, deps({
+    '0xa05-slow-chain': { priceUsd: '1' },
+    '0xa05-fast-chain': { priceUsd: '1' },
+  }));
+
+  let releaseSlow!: (value: Map<string, BatchQuote>) => void;
+  const slow = new Promise<Map<string, BatchQuote>>((resolve) => { releaseSlow = resolve; });
+  const d = deps({});
+  d.fetchQuotes = async (chain, addrs) => {
+    if (chain === 'bsc') return slow;
+    return deps({ '0xa05-fast-chain': { priceUsd: '3' } }).fetchQuotes(chain, addrs);
+  };
+  const tick = runPumpTick(NOW + 60, d);
+  let finished = false;
+  void tick.finally(() => { finished = true; });
+
+  for (let i = 0; i < 100 && wr.listPumpAlerts(fastHolder.userId, 0).length === 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  assert.equal(wr.listPumpAlerts(fastHolder.userId, 0).length, 1,
+    'Base 报警不能等 BSC 慢请求');
+  assert.equal(finished, false, '此时慢链仍未完成，证明两条链没有串行等待');
+
+  releaseSlow(await deps({ '0xa05-slow-chain': { priceUsd: '1' } }).fetchQuotes(
+    'bsc', ['0xa05-slow-chain'],
+  ));
+  await tick;
+});
+
+test('后台回填未完成前不 seed，完成后下一轮再建立状态', async () => {
+  const at = NOW + 20_000;
+  const currentBucket = Math.floor(at / 300) * 300;
+  const id = 'bsc:0xa05-deferred-backfill';
+  holder(id);
+  wr.setTokenMeta(id, 10, 'A05', at - 10);
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const rows = Array.from({ length: 288 }, (_, i) => {
+    const p = new Decimal('1');
+    return { ts: currentBucket - (i + 1) * 300, o: p, h: p, l: p, c: p, volumeUsd: 1 };
+  });
+  const d: PumpDeps = {
+    ...deps({ '0xa05-deferred-backfill': { priceUsd: '1' } }),
+    deferSlowTasks: true,
+    backfill: {
+      isConfigured: () => true,
+      supportsChain: () => true,
+      fetchKline: async () => { await gate; return rows; },
+    },
+  };
+
+  await runPumpTick(at, d);
+  assert.equal((getRawDb().prepare(
+    `SELECT count(*) AS n FROM pump_states WHERE token_id=?`,
+  ).get(id) as { n: number }).n, 0, '回填未完成不能先消费档位');
+
+  release();
+  await waitForPumpSlowTasks();
+  const retryAt = (getRawDb().prepare(
+    `SELECT next_retry_at AS t FROM token_meta WHERE token_id=?`,
+  ).get(id) as { t: number }).t;
+  await runPumpTick(retryAt, d);
+  assert.ok((getRawDb().prepare(
+    `SELECT count(*) AS n FROM pump_states WHERE token_id=?`,
+  ).get(id) as { n: number }).n > 0, '历史就绪后的下一轮才 seed');
 });

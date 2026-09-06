@@ -213,7 +213,22 @@ CREATE TABLE IF NOT EXISTS trash_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_trash_triggered ON trash_signals(triggered_at DESC);
 CREATE TABLE IF NOT EXISTS token_meta (
-  token_id TEXT PRIMARY KEY, holder_count INTEGER, symbol TEXT, fetched_at INTEGER NOT NULL
+  token_id TEXT PRIMARY KEY,
+  holder_count INTEGER,
+  symbol TEXT,
+  fetched_at INTEGER NOT NULL,
+  last_eval_at INTEGER,
+  last_attempt_at INTEGER,
+  last_quote_ok_at INTEGER,
+  last_eval_ok_at INTEGER,
+  next_retry_at INTEGER,
+  eval_failure_count INTEGER NOT NULL DEFAULT 0,
+  last_liquidity_usd REAL,
+  last_backfill_at INTEGER,
+  image_url TEXT,
+  website_url TEXT,
+  twitter_url TEXT,
+  telegram_url TEXT
 );
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -262,12 +277,19 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['tokens', 'visibility', "TEXT NOT NULL DEFAULT 'public'"],
   ['holdings', 'symbol', 'TEXT'],
   ['token_meta', 'last_eval_at', 'INTEGER'],
+  ['token_meta', 'last_attempt_at', 'INTEGER'],
+  ['token_meta', 'last_quote_ok_at', 'INTEGER'],
+  ['token_meta', 'last_eval_ok_at', 'INTEGER'],
+  ['token_meta', 'next_retry_at', 'INTEGER'],
+  ['token_meta', 'eval_failure_count', 'INTEGER NOT NULL DEFAULT 0'],
   ['token_meta', 'last_liquidity_usd', 'REAL'],
   ['token_meta', 'last_backfill_at', 'INTEGER'],
   ['pump_alerts', 'kind', 'TEXT'],
   ['pump_alerts', 'base_ts', 'INTEGER'],
   ['pump_alerts', 'ath_window', 'TEXT'],
   ['pump_alerts', 'market_cap_usd', 'REAL'],
+  ['pump_alerts', 'quote_fetched_at', 'INTEGER'],
+  ['pump_alerts', 'evaluated_at', 'INTEGER'],
   ['wallet_ath', 'state', "TEXT NOT NULL DEFAULT 'ARMED'"],
   ['wallet_ath', 'last_alert_price', 'TEXT'],
   ['wallet_ath', 'last_alert_at', 'INTEGER'],
@@ -295,6 +317,16 @@ export function runMigrations(): void {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
     log.info(`已补列 ${table}.${column}`);
   }
+
+  // 老版本只有 last_eval_at。首次升级时把它作为成功水位继承，避免所有冷币
+  // 同时被当成“从未检查”打满报价队列；后续新字段会独立推进。
+  db.exec(`
+    UPDATE token_meta
+       SET last_quote_ok_at = COALESCE(last_quote_ok_at, last_eval_at),
+           last_eval_ok_at = COALESCE(last_eval_ok_at, last_eval_at)
+     WHERE last_eval_at IS NOT NULL
+       AND (last_quote_ok_at IS NULL OR last_eval_ok_at IS NULL)
+  `);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

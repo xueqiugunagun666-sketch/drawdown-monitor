@@ -378,6 +378,9 @@ export const pumpAlerts = sqliteTable('pump_alerts', {
    * （校正计价代币、或改用看板中位价）就得按比例缩放，否则两个数互相矛盾。
    */
   marketCapUsd: real('market_cap_usd'),
+  /** A05/A17：用这两个时间直接计算“可信报价 → 事件落库”延迟。 */
+  quoteFetchedAt: integer('quote_fetched_at'),
+  evaluatedAt: integer('evaluated_at'),
 });
 
 /**
@@ -394,6 +397,12 @@ export const tokenMeta = sqliteTable('token_meta', {
   fetchedAt: integer('fetched_at').notNull(),
   /** 上次跑过判定的时刻。已被挡掉的币不必每轮重查报价 */
   lastEvalAt: integer('last_eval_at'),
+  /** A05 调度水位：尝试、成功取价、成功判定必须分开，失败不能冒充成功。 */
+  lastAttemptAt: integer('last_attempt_at'),
+  lastQuoteOkAt: integer('last_quote_ok_at'),
+  lastEvalOkAt: integer('last_eval_ok_at'),
+  nextRetryAt: integer('next_retry_at'),
+  evalFailureCount: integer('eval_failure_count').default(0).notNull(),
   /**
    * 上次看到的流动性。用来把「被挡掉的币」分成两拨：
    * 流动性够、只差成交量的走快车道（3 分钟复查），其余走慢车道（30 分钟）。
