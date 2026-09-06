@@ -189,6 +189,45 @@ test('两个用户持有同一个币，各自收到一条，余额不串号', as
   assert.equal(bb[0]?.valueUsd, '20', '5 个 × $4');
 });
 
+test('第二个收件人落库失败时，状态与第一个人的报警一起回滚，重试不漏人', async () => {
+  const id = 'bsc:0xatomicfanout';
+  const a = holder(id);
+  const b = holder(id);
+  history(id, '1');
+  await runPumpTick(NOW, deps({ '0xatomicfanout': { priceUsd: '1' } }));
+  const beforeStates = getRawDb().prepare(
+    `SELECT timeframe, basis, level, state, last_fired_at
+       FROM pump_states WHERE token_id=? ORDER BY timeframe, basis, level`,
+  ).all(id);
+
+  const db = getRawDb();
+  db.exec(`CREATE TEMP TABLE IF NOT EXISTS test_fail_pump_user (user_id TEXT PRIMARY KEY)`);
+  db.prepare(`DELETE FROM test_fail_pump_user`).run();
+  db.prepare(`INSERT INTO test_fail_pump_user (user_id) VALUES (?)`).run(b.userId);
+  db.exec(`
+    CREATE TEMP TRIGGER test_fail_second_pump_insert
+    BEFORE INSERT ON pump_alerts
+    WHEN EXISTS (SELECT 1 FROM test_fail_pump_user WHERE user_id = NEW.user_id)
+    BEGIN
+      SELECT RAISE(ABORT, 'injected second-recipient failure');
+    END
+  `);
+
+  await runPumpTick(NOW + 60, deps({ '0xatomicfanout': { priceUsd: '3' } }));
+  assert.equal(wr.listPumpAlerts(a.userId, 0).length, 0, '第一个人的行也必须回滚');
+  assert.equal(wr.listPumpAlerts(b.userId, 0).length, 0);
+  assert.deepEqual(db.prepare(
+    `SELECT timeframe, basis, level, state, last_fired_at
+       FROM pump_states WHERE token_id=? ORDER BY timeframe, basis, level`,
+  ).all(id), beforeStates, 'FIRED 状态不能越过失败的报警事务');
+
+  db.exec(`DROP TRIGGER test_fail_second_pump_insert`);
+  db.prepare(`DELETE FROM test_fail_pump_user`).run();
+  await runPumpTick(NOW + 60, deps({ '0xatomicfanout': { priceUsd: '3' } }));
+  assert.equal(wr.listPumpAlerts(a.userId, 0).length, 1);
+  assert.equal(wr.listPumpAlerts(b.userId, 0).length, 1);
+});
+
 test('报价缺失时不报警且不把币踢出监控', async () => {
   const id = 'bsc:0xgap';
   const h = holder(id);

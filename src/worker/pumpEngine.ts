@@ -459,112 +459,93 @@ async function evaluateToken(
   const windows = computeMultiples(load5mCandles(tokenId, now - 86400 - 600), price, now);
   if (windows.length === 0) return;
 
-  // ---- 状态机 ----
-  const states = loadStates(tokenId);
-  const fires: PendingFire[] = [];
-
   /**
-   * 冷启动时该不该补一条"它已经涨了多少"。
-   *
-   * 一刀切地静默对**新加的钱包**是对的（里面一堆早就涨过的币，不该炸一串
-   * 历史报警），但对**沉睡的币醒了**是错的，而那正是最该报的一种：币早就
-   * 在钱包里，只是一直是粉尘没进监控，行情启动后才被纳入 —— "进入监控
-   * 之前涨的那一段"恰恰是用户最想知道的事。
-   *
-   * KANSO（2026-09-06）：持仓自 8-30 就在，02:55 被纳入时已经 3.55 倍，
-   * 2/3 倍档被静默吃掉，等到 5 倍才响 —— 那时已经 8.64 倍、市值 5.6K→63K。
-   *
-   * 区分信号：这个持仓在钱包里多久了。取最早的那个（多人持有时）。
+   * 从状态机开始到所有用户的报警行，必须是一个原子决定。
+   * 以前先把状态写成 FIRED，再逐个 INSERT pump_alerts；第二个人写入失败时，
+   * 第一个人有记录、第二个人没有，而状态已经阻止重试，形成永久漏报。
+   * 这里没有网络 I/O，只有本地 SQLite 读写，适合放进一个短事务。
    */
-  const earliestSeen = holders.length > 0
-    ? Math.min(...holders.map((h) => h.firstSeenAt))
-    : null;
-  const wokeUp = isWakeUp(earliestSeen, now);
+  const persistDecision = getRawDb().transaction((): PersistedAlert | null => {
+    const states = loadStates(tokenId);
+    const fires: PendingFire[] = [];
 
-  for (const w of windows) {
-    for (const level of LEVELS) {
-      const key = `${w.timeframe}|${w.basis}|${level}`;
-      const prev = states.get(key);
-      if (!prev) {
-        /**
-         * 首次见到这个组合：seed 而不是判定。
-         *
-         * 沉睡的币醒了时，把**已达到的最高档**当成一次真触发放进 fires ——
-         * 报最高档而不是最低档：一个进来就 3.55 倍的币，说它"涨了 2 倍"
-         * 是把信息说小了。低于它的档位仍然静默置 FIRED。
-         */
-        saveState({ tokenId, timeframe: w.timeframe, basis: w.basis, level },
-          seedPumpState(w.multiple, level));
-        if (wokeUp && wakeUpLevel(w.multiple, LEVELS) === level) {
+    /**
+     * 冷启动时该不该补一条"它已经涨了多少"。
+     * 一刀切地静默对新加钱包是对的，但沉睡的币醒来时应该补报。
+     */
+    const earliestSeen = holders.length > 0
+      ? Math.min(...holders.map((h) => h.firstSeenAt))
+      : null;
+    const wokeUp = isWakeUp(earliestSeen, now);
+
+    for (const w of windows) {
+      for (const level of LEVELS) {
+        const key = `${w.timeframe}|${w.basis}|${level}`;
+        const prev = states.get(key);
+        if (!prev) {
+          saveState({ tokenId, timeframe: w.timeframe, basis: w.basis, level },
+            seedPumpState(w.multiple, level));
+          if (wokeUp && wakeUpLevel(w.multiple, LEVELS) === level) {
+            fires.push({ tokenId, timeframe: w.timeframe, basis: w.basis, level,
+              multiple: w.multiple, at: now });
+          }
+          continue;
+        }
+        const r = evaluatePump(prev, { multiple: w.multiple, level, now });
+        // 无论是否被选中发出，状态一律写回；否则去重窗口一过会全部重放。
+        saveState({ tokenId, timeframe: w.timeframe, basis: w.basis, level }, r.next);
+        if (r.fire) {
           fires.push({ tokenId, timeframe: w.timeframe, basis: w.basis, level,
             multiple: w.multiple, at: now });
         }
-        continue;
-      }
-      const r = evaluatePump(prev, { multiple: w.multiple, level, now });
-      // 无论是否被选中发出，状态一律写回 ——
-      // 不写的话，去重窗口一过就会全部重放
-      saveState({ tokenId, timeframe: w.timeframe, basis: w.basis, level }, r.next);
-      if (r.fire) {
-        fires.push({ tokenId, timeframe: w.timeframe, basis: w.basis, level, multiple: w.multiple, at: now });
       }
     }
-  }
 
-  /**
-   * ATH 判定走**独立的状态机**，与暴涨那套并行。
-   *
-   * 两者说的不是一回事：暴涨是"从最近低点涨了 N 倍"，ATH 是"进入价格
-   * 发现区、头上没有套牢盘"。一个币可以涨 5 倍还远在高点之下，也可以
-   * 只涨 15% 就破新高。
-   *
-   * 但同一轮里两个都触发时**只发 ATH 那条** —— 破新高本来就蕴含着在涨，
-   * 为同一件事响两次是纯粹的噪音。
-   */
-  const ath = evaluateAthFor(tokenId, price, now);
-  if (ath) {
-    await fanout(tokenId, holders, price, ath.winner, ath.kind,
-      ath.basePrice, now, ath.baseTs, ath.windowKey, marketCapUsd);
-    return;
-  }
-
-  const recent = recentAlert(tokenId, now);
-  const crossed = pickWinner(fires);
-
-  /**
-   * 两条触发路径：
-   *   1. 穿过一个新档位（且没被同档压制）
-   *   2. 没升档，但价格比"已经告诉过你的最高价"又涨了 ADVANCE_RATIO 倍
-   *
-   * 第 2 条**必须独立判断**，不能只写成"放松第 1 条的压制"：所有档都已
-   * FIRED 时根本产生不出 pendingFire，连 pickWinner 都是空的。哈夫币那波
-   * 能靠别的窗口各自穿档蹭出机会纯属侥幸（各窗口基准不同，碰巧错开了）。
-   */
-  let winner: PendingFire | null = null;
-  let kind: 'level' | 'advance' = 'level';
-
-  if (crossed && !suppressedByRecent(recent, now, crossed.level)) {
-    winner = crossed;
-  } else if (shouldFireOnAdvance(recent, now, price)) {
-    /**
-     * 补报用倍数最高的那个窗口来描述，档位**沿用窗口内已报过的最高档**
-     * —— 不能记成更高的档，否则随后真正穿那一档时会被压制掉，等于把
-     * 那一档吃掉了（PICKLES 就是这么丢的，不能再犯）。
-     */
-    const best = pickBestWindow(windows, now);
-    if (best) {
-      winner = { ...best, level: recent!.level };
-      kind = 'advance';
-      log.debug(`${tokenId} 未升档，但比上次报警价又涨 ${ADVANCE_RATIO} 倍，补报`);
+    /** ATH 与暴涨并行；同轮两者都触发时仍沿用现有规则，只落 ATH。 */
+    const ath = evaluateAthFor(tokenId, price, now);
+    if (ath) {
+      const delivered = fanout(tokenId, holders, price, ath.winner, ath.kind,
+        ath.basePrice, now, ath.baseTs, ath.windowKey, marketCapUsd);
+      return { winner: ath.winner, ...delivered };
     }
-  } else if (crossed) {
-    log.debug(`${tokenId} 30 分钟内已报过同档或更高（${crossed.level}x 档），压制`);
-  }
-  if (!winner) return;
 
-  // ---- 扇出：每个持有者一行，带各自的余额与持仓价值 ----
-  const base = windows.find((w) => w.timeframe === winner.timeframe && w.basis === winner.basis)?.base ?? null;
-  await fanout(tokenId, holders, price, winner, kind, base, now, null, null, marketCapUsd);
+    const recent = recentAlert(tokenId, now);
+    const crossed = pickWinner(fires);
+    let winner: PendingFire | null = null;
+    let kind: 'level' | 'advance' = 'level';
+
+    if (crossed && !suppressedByRecent(recent, now, crossed.level)) {
+      winner = crossed;
+    } else if (shouldFireOnAdvance(recent, now, price)) {
+      const best = pickBestWindow(windows, now);
+      if (best) {
+        winner = { ...best, level: recent!.level };
+        kind = 'advance';
+        log.debug(`${tokenId} 未升档，但比上次报警价又涨 ${ADVANCE_RATIO} 倍，补报`);
+      }
+    } else if (crossed) {
+      log.debug(`${tokenId} 30 分钟内已报过同档或更高（${crossed.level}x 档），压制`);
+    }
+    if (!winner) return null;
+
+    const base = windows.find(
+      (w) => w.timeframe === winner!.timeframe && w.basis === winner!.basis,
+    )?.base ?? null;
+    const delivered = fanout(tokenId, holders, price, winner, kind, base, now,
+      null, null, marketCapUsd);
+    return { winner, ...delivered };
+  });
+
+  const persisted = persistDecision();
+  if (persisted && persisted.notified > 0) {
+    log.info(
+      `${tokenId} 暴涨 ${persisted.winner.multiple.toFixed(2)}x `
+      + `(${persisted.winner.timeframe}/${persisted.winner.basis}, `
+      + `${persisted.winner.level}x 档)，通知 ${persisted.notified} 人`
+      + (persisted.skipped > 0
+        ? `（${persisted.skipped} 人仓位低于各自的阈值，已跳过）` : ''),
+    );
+  }
 }
 
 /**
@@ -655,8 +636,14 @@ function evaluateAthFor(tokenId: string, price: Decimal, now: number): {
   };
 }
 
+interface PersistedAlert {
+  winner: PendingFire;
+  notified: number;
+  skipped: number;
+}
+
 /** 把一条报警发给每个持有人，各自带自己的余额与持仓价值 */
-async function fanout(
+function fanout(
   tokenId: string,
   holders: ReturnType<typeof wr.usersHoldingToken>,
   price: Decimal,
@@ -669,7 +656,7 @@ async function fanout(
   athWindow: string | null = null,
   /** 与本行 priceUsd 同源的市值 */
   marketCapUsd: number | null = null,
-): Promise<void> {
+): { notified: number; skipped: number } {
   let notified = 0, skipped = 0;
   for (const h of holders) {
     const row = wr.getHolding(h.walletId, tokenId);
@@ -715,14 +702,7 @@ async function fanout(
     notified++;
   }
 
-  // 一个人都没通知就别记这条日志了，否则日志里全是"通知 0 人"
-  if (notified > 0) {
-    log.info(
-      `${tokenId} 暴涨 ${winner.multiple.toFixed(2)}x ` +
-      `(${winner.timeframe}/${winner.basis}, ${winner.level}x 档)，通知 ${notified} 人` +
-      (skipped > 0 ? `（${skipped} 人仓位低于各自的阈值，已跳过）` : ''),
-    );
-  }
+  return { notified, skipped };
 }
 
 
