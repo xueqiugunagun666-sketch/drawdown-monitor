@@ -3,6 +3,8 @@ import { requireActor, isDenied } from '../../../lib/accountAuthServer.ts';
 import { getConfig } from '../../../lib/config.ts';
 import { nowSec } from '../../../lib/time.ts';
 import * as repo from '../../../db/repo.ts';
+import { pumpHealthRows } from '../../../db/pumpHealthRepo.ts';
+import { pumpHealthSnapshot } from '../../../lib/pumpHealthStatus.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,5 +39,6 @@ export function GET(req: Request) {
           errors: lastRun.errors ? JSON.parse(lastRun.errors) : [] }
       : null,
     sources: repo.listSourceHealth(),
+    pumpHealth: pumpHealthSnapshot(pumpHealthRows(), nowSec()),
   });
 }

@@ -338,13 +338,14 @@ export interface PumpAlertSnapshot {
 
 const ROWID = sql<number>`rowid`;
 
-export function pumpAlertsAfterSeq(userId: string, seq: number): PumpAlertWithSeq[] {
+export function pumpAlertsAfterSeq(userId: string, seq: number, limit = 100): PumpAlertWithSeq[] {
   // 走 drizzle 的 select 而不是裸 SQL：裸 SQL 的 `*` 回的是 snake_case 列名，
   // 与 PumpAlertRow 的 camelCase 对不上，enrichAlerts 会拿到一堆 undefined
   return getDb().select({ ...getTableColumns(pumpAlerts), seq: ROWID })
     .from(pumpAlerts)
     .where(and(eq(pumpAlerts.userId, userId), sql`rowid > ${seq}`))
     .orderBy(asc(ROWID))
+    .limit(Math.max(1, Math.min(100, Math.floor(limit))))
     .all();
 }
 

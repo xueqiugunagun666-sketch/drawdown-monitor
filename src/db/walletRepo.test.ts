@@ -570,6 +570,17 @@ test('返回顺序是写入顺序（升序），不是 fired_at 顺序', () => {
   assert.deepEqual(got.map((r) => r.tokenId), ['bsc:0xlater', 'bsc:0xearlier']);
 });
 
+test('SSE 增量按上限分页，下一页仍可从最后 seq 续取', () => {
+  const u = wr.createUser(`page${++seq}`, 'h')!;
+  const start = wr.maxPumpAlertSeq();
+  for (let i = 0; i < 5; i++) alertRow(u.id, `bsc:0xpage${i}`, 200 + i);
+  const first = wr.pumpAlertsAfterSeq(u.id, start, 2);
+  assert.equal(first.length, 2);
+  const second = wr.pumpAlertsAfterSeq(u.id, first[1]!.seq, 2);
+  assert.equal(second.length, 2);
+  assert.ok(second[0]!.seq > first[1]!.seq);
+});
+
 /* ---------- 单个持仓的主键查找 ---------- */
 
 test('getHolding 只取指定的那一行', () => {

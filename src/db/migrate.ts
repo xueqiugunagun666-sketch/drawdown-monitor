@@ -89,6 +89,22 @@ CREATE TABLE IF NOT EXISTS source_health (
   last_fail_kind TEXT, last_fail_message TEXT,
   consecutive_failures INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS pump_health (
+  component TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  last_run_id INTEGER,
+  last_started_at INTEGER,
+  last_completed_at INTEGER,
+  last_valid_quote_at INTEGER,
+  requested_count INTEGER NOT NULL DEFAULT 0,
+  covered_count INTEGER NOT NULL DEFAULT 0,
+  failed_batch_count INTEGER NOT NULL DEFAULT 0,
+  eval_error_count INTEGER NOT NULL DEFAULT 0,
+  last_error_kind TEXT,
+  last_error_message TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (component, scope)
+);
 CREATE TABLE IF NOT EXISTS poll_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, started_at INTEGER NOT NULL, finished_at INTEGER,
   tokens_requested INTEGER NOT NULL DEFAULT 0, tokens_covered INTEGER NOT NULL DEFAULT 0,

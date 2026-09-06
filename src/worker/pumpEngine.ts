@@ -31,7 +31,11 @@ import {
 import { windowHighs, historyStart } from '../db/athDailyRepo.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
-import { fetchBatchQuotes, type BatchQuote } from '../sources/dexscreenerBatch.ts';
+import * as pumpHealth from '../db/pumpHealthRepo.ts';
+import {
+  fetchBatchQuotes, fetchBatchQuotesDetailed, type BatchQuote, type BatchQuotesDetailedResult,
+  type QuoteBatchFailure,
+} from '../sources/dexscreenerBatch.ts';
 import {
   computeMultiples, WINDOW_SECONDS, type PumpTimeframe, type PumpBasis,
 } from './pumpWindows.ts';
@@ -92,6 +96,8 @@ export const WATCHLIST_QUOTE_TTL_SECONDS = 120;
 
 export interface PumpDeps {
   fetchQuotes: (chain: string, addrs: string[]) => Promise<Map<string, BatchQuote>>;
+  /** 生产环境使用详细接口，以批次失败与有效覆盖计算真实健康状态。 */
+  fetchQuotesDetailed?: (chain: string, addrs: string[]) => Promise<BatchQuotesDetailedResult>;
   backfill?: BackfillDeps;
   /** 取代币元信息（持有人数）。返回 null 表示查不到 */
   fetchTokenInfo?: (chain: string, address: string) => Promise<TokenInfo | null>;
@@ -104,7 +110,16 @@ export interface PumpDeps {
   clock?: () => number;
 }
 
-export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes, fetchTokenInfo, clock: nowSec };
+export const realPumpDeps: PumpDeps = {
+  fetchQuotes: fetchBatchQuotes,
+  fetchQuotesDetailed: fetchBatchQuotesDetailed,
+  fetchTokenInfo,
+  clock: nowSec,
+};
+
+function isTechnicalQuoteFailure(f: QuoteBatchFailure): boolean {
+  return f.kind !== 'empty_response' && f.kind !== 'partial_response';
+}
 
 /* ---------- pump_states 的读写。放在这里而不是 walletRepo，
               因为它只被引擎用，且是引擎语义的一部分 ---------- */
@@ -255,7 +270,15 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   // 监控中的每轮都判；已被挡掉的每 30 分钟重查一次 ——
   // 一千多个粉尘币每轮都拉报价，光请求就占掉 20 秒
   const tokenIds = wr.tokenIdsDueForEval(now);
-  if (tokenIds.length === 0) return;
+  const runId = now;
+  pumpHealth.beginPumpRun(runId, now, tokenIds.length);
+  let totalCovered = 0;
+  let failedBatches = 0;
+  let evalErrors = 0;
+  let fatalMessage: string | null = null;
+
+  try {
+    if (tokenIds.length === 0) return;
 
   // 按链分组，每条链一次批量报价
   const byChain = new Map<string, string[]>();
@@ -273,13 +296,51 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
     : fetchXxyyRound(byChain, deps.fetchCandidatePrices ?? fetchXxyyPrices);
 
   const quotes = new Map<string, BatchQuote>();
+  const monitored = new Set(wr.monitoredTokenIds());
   for (const [chain, addrs] of byChain) {
+    let covered = 0;
+    let technicalFailures = 0;
+    let missingMonitored = 0;
+    let healthMessage: string | null = null;
     try {
-      for (const [a, q] of await deps.fetchQuotes(chain, addrs)) quotes.set(`${chain}:${a}`, q);
+      const result = deps.fetchQuotesDetailed
+        ? await deps.fetchQuotesDetailed(chain, addrs)
+        : { quotes: await deps.fetchQuotes(chain, addrs), failures: [] };
+      for (const [a, q] of result.quotes) quotes.set(`${chain}:${a}`, q);
+      covered = result.quotes.size;
+      technicalFailures = result.failures.filter(isTechnicalQuoteFailure).length;
+      missingMonitored = result.failures.reduce((count, failure) => count
+        + failure.addresses.filter((address) => monitored.has(`${chain}:${address.toLowerCase()}`)).length, 0);
+      if (technicalFailures > 0) {
+        healthMessage = `${technicalFailures} 个报价批次发生技术失败`;
+      } else if (missingMonitored > 0) {
+        healthMessage = `${missingMonitored} 个监控中代币缺少有效报价`;
+      }
     } catch (err) {
       // 一条链失败不拖垮其它链；缺的地址会走"报价缺失"分支保持原状态
-      log.warn(`${chain} 批量报价失败: ${safeErrorMessage(err)}`);
+      healthMessage = safeErrorMessage(err);
+      technicalFailures = 1;
+      log.warn(`${chain} 批量报价失败: ${healthMessage}`);
     }
+    const criticalRequested = addrs.filter((a) => monitored.has(`${chain}:${a}`)).length;
+    const errorKind = technicalFailures > 0
+      ? 'batch-failure'
+      : missingMonitored > 0 ? 'missing-monitored-quote'
+      : covered === 0 && criticalRequested > 0 ? 'no-valid-price' : null;
+    pumpHealth.recordQuoteHealth({
+      runId, chain, now: deps.clock?.() ?? now, requested: addrs.length, covered,
+      failedBatches: technicalFailures, errorKind,
+      errorMessage: healthMessage ?? (errorKind === 'no-valid-price'
+        ? `${criticalRequested} 个监控中代币全部缺少有效报价` : null),
+    });
+    recordVerdict(
+      `dexscreener:${chain}`,
+      errorKind ? { ok: false, reason: healthMessage ?? '监控中代币无有效报价' } : { ok: true, reason: null },
+      deps.clock?.() ?? now,
+      `请求 ${addrs.length}，有效 ${covered}，技术失败批次 ${technicalFailures}`,
+    );
+    totalCovered += covered;
+    failedBatches += technicalFailures;
   }
   let effectiveQuotes = quotes;
   if (xxyyPromise) {
@@ -298,6 +359,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       // 流动性一起记下 —— 下一轮靠它决定这个币走快车道还是慢车道
       wr.markTokenEvaluated(tokenId, evaluatedAt, q?.liquidityUsd);
     } catch (err) {
+      evalErrors++;
       log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
     }
   }
@@ -315,6 +377,19 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
     + `共 ${(totalMs / 1000).toFixed(1)}s`;
   if (totalMs > TICK_INTERVAL_SECONDS * 1000) log.info(`${line} —— 超出 ${TICK_INTERVAL_SECONDS}s 预算`);
   else log.debug(line);
+  } catch (err) {
+    fatalMessage = safeErrorMessage(err);
+    throw err;
+  } finally {
+    const completedAt = deps.clock?.() ?? now;
+    pumpHealth.completePumpRun({
+      runId, now: completedAt, requested: tokenIds.length, covered: totalCovered,
+      failedBatches, evalErrors,
+      errorKind: fatalMessage ? 'fatal' : failedBatches > 0 ? 'quote-degraded'
+        : evalErrors > 0 ? 'eval-errors' : null,
+      errorMessage: fatalMessage,
+    });
+  }
 }
 
 async function evaluateToken(

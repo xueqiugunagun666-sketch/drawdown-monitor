@@ -194,6 +194,23 @@ export const sourceHealth = sqliteTable('source_health', {
   consecutiveFailures: integer('consecutive_failures').default(0).notNull(),
 });
 
+/** 钱包暴涨生产链的持久心跳。状态不落库，由 Web 按时间动态计算。 */
+export const pumpHealth = sqliteTable('pump_health', {
+  component: text('component').notNull(),            // pump | quote
+  scope: text('scope').notNull(),                    // all | dexscreener:bsc ...
+  lastRunId: integer('last_run_id'),
+  lastStartedAt: integer('last_started_at'),
+  lastCompletedAt: integer('last_completed_at'),
+  lastValidQuoteAt: integer('last_valid_quote_at'),
+  requestedCount: integer('requested_count').default(0).notNull(),
+  coveredCount: integer('covered_count').default(0).notNull(),
+  failedBatchCount: integer('failed_batch_count').default(0).notNull(),
+  evalErrorCount: integer('eval_error_count').default(0).notNull(),
+  lastErrorKind: text('last_error_kind'),
+  lastErrorMessage: text('last_error_message'),
+  updatedAt: integer('updated_at').notNull(),
+}, (t) => [primaryKey({ columns: [t.component, t.scope] })]);
+
 /** 轮询轮次记录，UI 显示"上次轮询时间" */
 export const pollRuns = sqliteTable('poll_runs', {
   id: integer('id').primaryKey({ autoIncrement: true }),

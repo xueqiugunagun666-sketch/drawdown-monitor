@@ -135,6 +135,30 @@ test('被隔离的离谱报价不改 candle、状态，也不产生报警', asyn
   assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
 });
 
+test('监控中代币被批量响应漏掉时逐链健康降级，不把 HTTP 200 当正常', async () => {
+  const id = 'bsc:0xhealthmissing';
+  holder(id);
+  history(id, '1');
+  const d = deps({});
+  d.fetchQuotesDetailed = async (_chain, addrs) => ({
+    quotes: new Map(),
+    failures: [{
+      addresses: [...addrs], kind: 'partial_response',
+      reason: '响应未包含这些地址的有效报价', status: 200,
+    }],
+  });
+
+  await runPumpTick(NOW + 7, d);
+
+  const health = getRawDb().prepare(
+    `SELECT covered_count, failed_batch_count, last_error_kind
+       FROM pump_health WHERE component='quote' AND scope='dexscreener:bsc'`,
+  ).get() as { covered_count: number; failed_batch_count: number; last_error_kind: string };
+  assert.deepEqual(health, {
+    covered_count: 0, failed_batch_count: 0, last_error_kind: 'missing-monitored-quote',
+  });
+});
+
 test('真实的 11 倍行情不会被异常报价守卫误杀', async () => {
   const id = 'bsc:0xreal11x';
   const h = holder(id);

@@ -27,6 +27,9 @@ import { pumpAlertsAfterSeq, maxPumpAlertSeq } from '../../../../db/walletRepo.t
 import { enrichAlerts } from '../../../../db/alertEnrich.ts';
 import { cursorAfterSend, resolveCursor } from '../../../../lib/sseCursor.ts';
 import { CURRENT_VERSION } from '../../../../lib/changelog.ts';
+import { nowSec } from '../../../../lib/time.ts';
+import { pumpHealthRows } from '../../../../db/pumpHealthRepo.ts';
+import { pumpHealthSnapshot } from '../../../../lib/pumpHealthStatus.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,6 +52,15 @@ export async function GET(req: Request) {
   const stream = new ReadableStream({
     start(controller) {
       let closed = false;
+      let tick: ReturnType<typeof setInterval> | undefined;
+      let beat: ReturnType<typeof setInterval> | undefined;
+      let alertsReadOk = true;
+
+      const clearTimers = () => {
+        if (tick) clearInterval(tick);
+        if (beat) clearInterval(beat);
+      };
+
       const send = (event: string, data: unknown, id?: number): boolean => {
         if (closed) return false;
         const head = id === undefined ? '' : `id: ${id}\n`;
@@ -59,6 +71,7 @@ export async function GET(req: Request) {
           return true;
         } catch {
           closed = true;
+          clearTimers();
           return false;
         }
       };
@@ -75,14 +88,16 @@ export async function GET(req: Request) {
        */
       send('ready', { cursor, version: CURRENT_VERSION }, cursor);
 
-      const tick = setInterval(() => {
+      tick = setInterval(() => {
         if (closed) return;
         let fresh;
         try {
           fresh = pumpAlertsAfterSeq(u.id, cursor);
         } catch {
+          alertsReadOk = false;
           return;                       // 下一轮再试，不要因为一次读库失败就断流
         }
+        alertsReadOk = true;
         if (fresh.length === 0) return;
         const nextCursor = fresh[fresh.length - 1]!.seq;
         let payload;
@@ -97,19 +112,25 @@ export async function GET(req: Request) {
         cursor = cursorAfterSend(cursor, nextCursor, sent);
       }, POLL_MS);
 
-      const beat = setInterval(() => {
+      beat = setInterval(() => {
         if (closed) return;
         try {
-          controller.enqueue(encoder.encode(': keepalive\n\n'));
+          const serverAt = nowSec();
+          // 真正的业务心跳：SSE 打开只证明连接活着，这份快照才证明暴涨
+          // worker 最近完成过轮次。health 事件不带 id，不影响报警续传游标。
+          send('health', {
+            serverAt,
+            alertsRead: alertsReadOk ? 'ok' : 'error',
+            rows: pumpHealthSnapshot(pumpHealthRows(), serverAt),
+          });
         } catch {
-          closed = true;
+          send('health', { serverAt: nowSec(), alertsRead: 'error', rows: [] });
         }
       }, HEARTBEAT_MS);
 
       const stop = () => {
         closed = true;
-        clearInterval(tick);
-        clearInterval(beat);
+        clearTimers();
         try { controller.close(); } catch { /* 已关 */ }
       };
       req.signal.addEventListener('abort', stop);
