@@ -47,6 +47,7 @@ import { needsBackfill, backfillWalletToken, realBackfillDeps, type BackfillDeps
 import { fetchTokenInfo, type TokenInfo } from '../sources/gmgnTokenInfo.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
+import { align5m, nowSec } from '../lib/time.ts';
 import { randomUUID } from 'node:crypto';
 
 const log = makeLogger('pump-engine');
@@ -87,6 +88,7 @@ export const TICK_INTERVAL_SECONDS = 60;
  * 同一套报警，pananiu 72 条里 52 条超过 $50，nori 114 条里只有 28 条。
  */
 export const MIN_ALERT_VALUE_USD = 1;
+export const WATCHLIST_QUOTE_TTL_SECONDS = 120;
 
 export interface PumpDeps {
   fetchQuotes: (chain: string, addrs: string[]) => Promise<Map<string, BatchQuote>>;
@@ -98,9 +100,11 @@ export interface PumpDeps {
    * 传 null 表示关闭 —— 单元测试默认关闭，避免真的请求外部接口。
    */
   fetchCandidatePrices?: typeof fetchXxyyPrices | null;
+  /** 生产环境用实际评估时间；测试省略时沿用 runPumpTick 传入的确定时刻。 */
+  clock?: () => number;
 }
 
-export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes, fetchTokenInfo };
+export const realPumpDeps: PumpDeps = { fetchQuotes: fetchBatchQuotes, fetchTokenInfo, clock: nowSec };
 
 /* ---------- pump_states 的读写。放在这里而不是 walletRepo，
               因为它只被引擎用，且是引擎语义的一部分 ---------- */
@@ -185,26 +189,54 @@ function recentAlert(tokenId: string, now: number): RecentAlert | null {
   return { at, level, maxPrice };
 }
 
-/** 该币是否已在共享看板的监控列表里（那边的 candle 写入优先） */
-function isWatchlistToken(tokenId: string): boolean {
-  const r = getRawDb().prepare(
-    `SELECT 1 AS x FROM tokens WHERE id = ? AND enabled = 1 AND visibility = 'public'`,
-  ).get(tokenId) as { x: number } | undefined;
-  return r !== undefined;
-}
+type WatchlistQuote =
+  | { kind: 'wallet' }
+  | { kind: 'ready'; price: Decimal }
+  | { kind: 'paused'; reason: string };
 
-/** 这个币最新一根 5m candle 的收盘价。用来校验实时报价是不是同一个量级 */
-function latestCandleClose(tokenId: string): Decimal | null {
-  const r = getRawDb().prepare(
-    `SELECT c FROM candles WHERE token_id = ? AND timeframe = '5m' AND c IS NOT NULL
-     ORDER BY ts DESC LIMIT 1`,
-  ).get(tokenId) as { c: string } | undefined;
-  if (!r) return null;
+/**
+ * 看板币只能沿用看板流水线的同口径价格；冻结、失联、未来时间或 K 线没有
+ * 跟上最后成功报价时，本轮明确暂停，不能静默拿钱包批量价接在看板历史后面。
+ */
+function watchlistQuote(tokenId: string, evaluatedAt: number): WatchlistQuote {
+  const token = getRawDb().prepare(
+    `SELECT frozen, last_quote_at, last_source
+       FROM tokens WHERE id = ? AND enabled = 1 AND visibility = 'public'`,
+  ).get(tokenId) as {
+    frozen: number; last_quote_at: number | null; last_source: string | null;
+  } | undefined;
+  if (!token) return { kind: 'wallet' };
+  if (token.frozen !== 0) return { kind: 'paused', reason: '共享看板已冻结' };
+  if (token.last_quote_at === null || !token.last_source) {
+    return { kind: 'paused', reason: '共享看板尚无成功报价' };
+  }
+  if (token.last_quote_at > evaluatedAt + TICK_INTERVAL_SECONDS) {
+    return { kind: 'paused', reason: '共享看板报价时间在未来，时钟异常' };
+  }
+  const age = evaluatedAt - token.last_quote_at;
+  if (age > WATCHLIST_QUOTE_TTL_SECONDS) {
+    return { kind: 'paused', reason: `共享看板报价已陈旧 ${age} 秒` };
+  }
+
+  const candle = getRawDb().prepare(
+    `SELECT ts, c, source FROM candles
+       WHERE token_id = ? AND timeframe = '5m' AND c IS NOT NULL
+       ORDER BY ts DESC LIMIT 1`,
+  ).get(tokenId) as { ts: number; c: string; source: string | null } | undefined;
+  if (!candle || candle.ts !== align5m(token.last_quote_at)) {
+    return { kind: 'paused', reason: '共享看板 K 线未跟上最后成功报价' };
+  }
+  if (candle.source !== token.last_source) {
+    return { kind: 'paused', reason: '共享看板报价与 K 线来源不一致' };
+  }
   try {
-    const d = new Decimal(r.c);
-    return d.gt(0) ? d : null;
+    const price = new Decimal(candle.c);
+    if (!price.isFinite() || price.lte(0)) {
+      return { kind: 'paused', reason: '共享看板价格不是有限正数' };
+    }
+    return { kind: 'ready', price };
   } catch {
-    return null;
+    return { kind: 'paused', reason: '共享看板价格格式无效' };
   }
 }
 
@@ -259,10 +291,11 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   for (const tokenId of tokenIds) {
     try {
       const q = effectiveQuotes.get(tokenId) ?? null;
-      await evaluateToken(tokenId, q, now,
+      const evaluatedAt = deps.clock?.() ?? now;
+      await evaluateToken(tokenId, q, evaluatedAt,
         deps.backfill ?? realBackfillDeps, deps.fetchTokenInfo);
       // 流动性一起记下 —— 下一轮靠它决定这个币走快车道还是慢车道
-      wr.markTokenEvaluated(tokenId, now, q?.liquidityUsd);
+      wr.markTokenEvaluated(tokenId, evaluatedAt, q?.liquidityUsd);
     } catch (err) {
       log.warn(`${tokenId} 判定失败: ${safeErrorMessage(err)}`);
     }
@@ -341,7 +374,12 @@ async function evaluateToken(
   wr.setTokenLinks(tokenId, now, quote);
 
   // ---- 倍数 ----
-  const fromWatchlist = isWatchlistToken(tokenId);
+  const boardQuote = watchlistQuote(tokenId, now);
+  const fromWatchlist = boardQuote.kind !== 'wallet';
+  if (boardQuote.kind === 'paused') {
+    log.warn(`${tokenId} 钱包行情判定暂停：${boardQuote.reason}`);
+    return;
+  }
   /**
    * 这个币的 K 线如果是**共享看板**那条流水线写的，判定就得用它的价，
    * 不能用我们自己的批量报价。
@@ -367,17 +405,14 @@ async function evaluateToken(
     log.warn(`${tokenId} 报价隔离：价格不是有限正数`);
     return;
   }
-  if (fromWatchlist) {
-    const boardPrice = latestCandleClose(tokenId);
-    if (boardPrice) {
-      if (Decimal.max(price.div(boardPrice), boardPrice.div(price)).gt(2)) {
-        log.debug(
-          `${tokenId} 在看板上，改用看板价 ${boardPrice.toString()}`
-          + `（批量报价 ${quote.priceUsd}）`,
-        );
-      }
-      price = boardPrice;
+  if (boardQuote.kind === 'ready') {
+    if (Decimal.max(price.div(boardQuote.price), boardQuote.price.div(price)).gt(2)) {
+      log.debug(
+        `${tokenId} 在看板上，改用看板价 ${boardQuote.price.toString()}`
+        + `（批量报价 ${quote.priceUsd}）`,
+      );
     }
+    price = boardQuote.price;
   }
   /**
    * 市值跟着实际用的价走。看板的价来自跨池中位数，而批量报价的市值

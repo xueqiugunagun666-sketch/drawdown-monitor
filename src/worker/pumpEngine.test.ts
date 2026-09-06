@@ -231,15 +231,22 @@ test('币同时在共享看板里时，不抢写 candle（让给轮询器）', a
   const id = 'bsc:0xboth';
   const h = holder(id);
   history(id, '1');
+  const boardAt = NOW + 900;
+  candles(id, [[Math.floor(boardAt / 300) * 300, '1', '1']]);
   // 把它也加进共享看板
   getRawDb().prepare(
-    `INSERT INTO tokens (id, chain, address, added_at, enabled, frozen, fail_count, pinned, visibility)
-     VALUES (?, 'bsc', '0xboth', 1, 1, 0, 0, 0, 'public')`,
-  ).run(id);
+    `INSERT INTO tokens
+       (id, chain, address, added_at, enabled, frozen, fail_count, pinned, visibility,
+        last_source, last_quote_at)
+     VALUES (?, 'bsc', '0xboth', 1, 1, 0, 0, 0, 'public', 'dexscreener', ?)`,
+  ).run(id, boardAt);
+  getRawDb().prepare(
+    `UPDATE candles SET source='dexscreener' WHERE token_id=? AND timeframe='5m' AND ts=?`,
+  ).run(id, Math.floor(boardAt / 300) * 300);
 
   const before = (getRawDb().prepare(
     `SELECT COUNT(*) c FROM candles WHERE token_id=? AND source='wallet-batch'`).get(id) as { c: number }).c;
-  await runPumpTick(NOW + 900, deps({ '0xboth': { priceUsd: '2' } }));
+  await runPumpTick(boardAt, deps({ '0xboth': { priceUsd: '2' } }));
   const after = (getRawDb().prepare(
     `SELECT COUNT(*) c FROM candles WHERE token_id=? AND source='wallet-batch'`).get(id) as { c: number }).c;
   assert.equal(after, before, '看板已覆盖的币，钱包引擎不该再写 candle');
@@ -253,6 +260,24 @@ test('只在钱包里的币，引擎会写 candle 攒历史', async () => {
   const n = (getRawDb().prepare(
     `SELECT COUNT(*) c FROM candles WHERE token_id=? AND source='wallet-batch'`).get(id) as { c: number }).c;
   assert.ok(n > 0, '钱包独有的币必须自己攒历史');
+});
+
+test('报价跨过 5m 边界才返回时，按实际评估时间归桶', async () => {
+  const id = 'bsc:0xactualtime';
+  holder(id);
+  history(id, '1');
+  const scheduledAt = NOW + 290;
+  const evaluatedAt = NOW + 310;
+  await runPumpTick(scheduledAt, {
+    ...deps({ '0xactualtime': { priceUsd: '2' } }),
+    clock: () => evaluatedAt,
+  });
+  const row = getRawDb().prepare(
+    `SELECT ts FROM candles
+       WHERE token_id=? AND timeframe='5m' AND source='wallet-batch'
+       ORDER BY ts DESC LIMIT 1`,
+  ).get(id) as { ts: number };
+  assert.equal(row.ts, Math.floor(evaluatedAt / 300) * 300);
 });
 
 test('回填发生在 seed 之前 —— 顺序反了整套状态都是错的', async () => {
@@ -924,9 +949,14 @@ test('看板币用看板的价判定，不用批量报价 —— Monkey 那条 3
   wr.setHoldingMonitored(w.id, id, true, null, null);
   history(id, '0.0000000000000000000000002');        // 看板量级
   getRawDb().prepare(
-    `INSERT INTO tokens (id, chain, address, added_at, enabled, frozen, fail_count, pinned, visibility)
-     VALUES (?, 'bsc', '0xscalemix', 1, 1, 0, 0, 0, 'public')`,
-  ).run(id);
+    `INSERT INTO tokens
+       (id, chain, address, added_at, enabled, frozen, fail_count, pinned, visibility,
+        last_source, last_quote_at)
+     VALUES (?, 'bsc', '0xscalemix', 1, 1, 0, 0, 0, 'public', 'dexscreener', ?)`,
+  ).run(id, NOW);
+  getRawDb().prepare(
+    `UPDATE candles SET source='dexscreener' WHERE token_id=? AND timeframe='5m' AND ts=?`,
+  ).run(id, CUR);
 
   await runPumpTick(NOW, deps({ '0xscalemix': { priceUsd: '0.0000000000000000000000002' } }));
   const before = wr.listPumpAlerts(u.id, 0).length;
@@ -934,6 +964,44 @@ test('看板币用看板的价判定，不用批量报价 —— Monkey 那条 3
   // 批量报价跳到另一个量级 —— 该被看板价顶替掉
   await runPumpTick(NOW + 60, deps({ '0xscalemix': { priceUsd: '0.000000000000000000005925' } }));
   assert.equal(wr.listPumpAlerts(u.id, 0).length, before, '离群池的报价不该产生报警');
+});
+
+test('看板价格超过 TTL 后暂停本轮，不拿钱包价接旧历史', async () => {
+  const id = 'bsc:0xstaleboard';
+  const h = holder(id);
+  history(id, '1');
+  getRawDb().prepare(
+    `INSERT INTO tokens
+       (id, chain, address, added_at, enabled, frozen, fail_count, pinned, visibility,
+        last_source, last_quote_at)
+     VALUES (?, 'bsc', '0xstaleboard', 1, 1, 0, 0, 0, 'public', 'dexscreener', ?)`,
+  ).run(id, NOW - 121);
+
+  await runPumpTick(NOW, deps({ '0xstaleboard': { priceUsd: '3' } }));
+  const states = getRawDb().prepare(
+    `SELECT COUNT(*) c FROM pump_states WHERE token_id=?`,
+  ).get(id) as { c: number };
+  assert.equal(states.c, 0);
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
+});
+
+test('看板币被冻结后暂停本轮，不沿用冻结前旧价', async () => {
+  const id = 'bsc:0xfrozenboard';
+  const h = holder(id);
+  history(id, '1');
+  getRawDb().prepare(
+    `INSERT INTO tokens
+       (id, chain, address, added_at, enabled, frozen, fail_count, pinned, visibility,
+        last_source, last_quote_at)
+     VALUES (?, 'bsc', '0xfrozenboard', 1, 1, 1, 0, 0, 'public', 'dexscreener', ?)`,
+  ).run(id, NOW);
+
+  await runPumpTick(NOW, deps({ '0xfrozenboard': { priceUsd: '3' } }));
+  const states = getRawDb().prepare(
+    `SELECT COUNT(*) c FROM pump_states WHERE token_id=?`,
+  ).get(id) as { c: number };
+  assert.equal(states.c, 0);
+  assert.equal(wr.listPumpAlerts(h.userId, 0).length, 0);
 });
 
 test('只在钱包里的币，一轮内涨 11 倍照常报 —— 那正是这工具要抓的事', async () => {
