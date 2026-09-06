@@ -17,7 +17,11 @@
  */
 
 /** 会让报警完全无声的故障。每一条都单独判、单独提醒 */
-export type HealthIssue = 'audio-dead' | 'stream-down';
+export type HealthIssue =
+  | 'audio-dead'
+  | 'stream-down'
+  | 'backend-down'
+  | 'alert-read-down';
 
 /**
  * 报一次之前要持续这么久。
@@ -29,6 +33,32 @@ export const GRACE_SECONDS = 15;
 
 /** 一直不好的话，隔这么久再提醒一次。与报警去重窗口取同一个数 */
 export const RENOTIFY_SECONDS = 1800;
+export const BUSINESS_HEARTBEAT_TIMEOUT_SECONDS = 65;
+
+export interface HealthSignals {
+  audioReady: boolean;
+  streamConnected: boolean;
+  streamConnectedSince: number | null;
+  businessHeartbeatAt: number | null;
+  backendDown: boolean;
+  alertReadDown: boolean;
+}
+
+/** 把浏览器与服务端信号统一翻译成看门狗故障项，便于回放边界。 */
+export function healthIssuesForSignals(signals: HealthSignals, now: number): Set<HealthIssue> {
+  const present = new Set<HealthIssue>();
+  if (!signals.audioReady) present.add('audio-dead');
+  if (!signals.streamConnected) present.add('stream-down');
+  const heartbeatMissing = signals.streamConnected && (
+    signals.businessHeartbeatAt === null
+      ? signals.streamConnectedSince !== null
+        && now - signals.streamConnectedSince > BUSINESS_HEARTBEAT_TIMEOUT_SECONDS
+      : now - signals.businessHeartbeatAt > BUSINESS_HEARTBEAT_TIMEOUT_SECONDS
+  );
+  if (signals.streamConnected && (signals.backendDown || heartbeatMissing)) present.add('backend-down');
+  if (signals.streamConnected && signals.alertReadDown) present.add('alert-read-down');
+  return present;
+}
 
 export interface IssueState {
   /**
@@ -47,12 +77,21 @@ export interface IssueState {
 
 export type WatchState = Record<HealthIssue, IssueState>;
 
-export const ISSUES: HealthIssue[] = ['audio-dead', 'stream-down'];
+export const ISSUES: HealthIssue[] = [
+  'audio-dead', 'stream-down', 'backend-down', 'alert-read-down',
+];
+
+/** 音频没开启是常态；其余通道从页面打开起就应该在观察期后可用。 */
+function requiresPriorHealthy(issue: HealthIssue): boolean {
+  return issue === 'audio-dead';
+}
 
 export function initialWatchState(): WatchState {
   return {
     'audio-dead': { everHealthy: false, since: null, lastNotifiedAt: null },
     'stream-down': { everHealthy: false, since: null, lastNotifiedAt: null },
+    'backend-down': { everHealthy: false, since: null, lastNotifiedAt: null },
+    'alert-read-down': { everHealthy: false, since: null, lastNotifiedAt: null },
   };
 }
 
@@ -85,7 +124,7 @@ export function step(prev: WatchState, present: Set<HealthIssue>, now: number): 
     const held = now - since >= GRACE_SECONDS;
     const due = p.lastNotifiedAt === null || now - p.lastNotifiedAt >= RENOTIFY_SECONDS;
 
-    if (p.everHealthy && held && due) {
+    if ((!requiresPriorHealthy(issue) || p.everHealthy) && held && due) {
       notify.push(issue);
       state[issue] = { everHealthy: p.everHealthy, since, lastNotifiedAt: now };
     } else {
@@ -107,7 +146,8 @@ export function step(prev: WatchState, present: Set<HealthIssue>, now: number): 
 export function activeIssues(state: WatchState, now: number): HealthIssue[] {
   return ISSUES.filter((i) => {
     const s = state[i];
-    return s.everHealthy && s.since !== null && now - s.since >= GRACE_SECONDS;
+    return (!requiresPriorHealthy(i) || s.everHealthy)
+      && s.since !== null && now - s.since >= GRACE_SECONDS;
   });
 }
 
@@ -125,6 +165,18 @@ export function describeIssue(issue: HealthIssue): { title: string; body: string
         title: '实时推送已断开',
         body: '断开期间的暴涨不会播报。正在自动重连，重连后会把漏掉的补上；'
           + '一直不恢复就刷新一下页面。',
+      };
+    case 'backend-down':
+      return {
+        title: '暴涨监测后端可能已失活',
+        body: '网页连接仍可能显示正常，但后台没有按时完成行情轮次或业务心跳已中断。'
+          + '恢复前可能漏掉暴涨与新高提醒。',
+      };
+    case 'alert-read-down':
+      return {
+        title: '报警记录读取失败',
+        body: '浏览器连接仍在，但服务端暂时读不到新报警。游标没有推进，恢复后会补发；'
+          + '故障期间提醒可能延迟。',
       };
   }
 }

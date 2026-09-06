@@ -5,11 +5,12 @@ import { copyText } from '../../lib/copy.ts';
 
 import { Decimal, formatPrice } from '../../lib/decimal.ts';
 import {
-  pumpClass, pumpBar, describeBasis, isAthAlert, describeAthDelta, ATH_COLOR, ATH_BAR,
+  pumpClass, pumpBar, describeBasis, ATH_COLOR, ATH_BAR,
 } from '../../lib/pumpStyle.ts';
 import { humanAgo } from '../../lib/time.ts';
 import { baseMarketCap } from '../../lib/alertMarketCap.ts';
 import { money } from '../trash/TrashList.tsx';
+import { formatAthDelta, formatMultiple, isAthKind } from './notificationBatch.ts';
 
 export interface AlertRow {
   id: string; tokenId: string; firedAt: number; timeframe: string; basis: string;
@@ -18,7 +19,7 @@ export interface AlertRow {
   symbol: string | null; address: string | null; chain: string | null;
   /** 投递序号。历史快照与 SSE 都带，用它无缝合并而不是用时间戳猜顺序 */
   seq?: number;
-  /** 'level' 穿档 | 'advance' 又涨了一截 | 'ath' 破新高 | 'ath-advance' 破新高后又涨。旧行 null 按穿档读 */
+  /** 'level' 穿档 | 'advance' 又涨了一截 | 'ath' 破新高 | 'ath-advance' 破新高后又涨 | 'pump-ath' 暴涨与新高同轮 */
   kind?: string | null;
   /** ATH 报警的口径：「90 天新高」「历史新高」等。非 ATH 报警为 null */
   athScope?: string | null;
@@ -35,16 +36,13 @@ export function isSystemAlert(kind: string | null | undefined): boolean {
   return kind === 'source-down';
 }
 
-/**
- * 同一批里系统故障优先于行情。
- *
- * source-down 的 level 固定为 0；如果仍按倍数选最大，它会被任意 2x 行情
- * 盖住，恰好把最不能静默的消息静默掉。
- */
-export function pickNotificationAlert(alerts: AlertRow[]): AlertRow | null {
-  if (alerts.length === 0) return null;
-  return alerts.find((a) => isSystemAlert(a.kind))
-    ?? alerts.reduce((best, a) => (a.level > best.level ? a : best));
+/** ATH 与暴涨+ATH 都要按新高渲染；后者另外保留暴涨档位。 */
+export function isAthAlert(kind: string | null | undefined): boolean {
+  return isAthKind(kind);
+}
+
+export function isPumpAthAlert(kind: string | null | undefined): boolean {
+  return kind === 'pump-ath';
 }
 
 export function sourceAlertText(a: AlertRow): { title: string; body: string } {
@@ -89,6 +87,7 @@ export function LatestAlertBanner(
   }
 
   const ath = isAthAlert(a.kind);
+  const pumpAth = isPumpAthAlert(a.kind);
   const system = isSystemAlert(a.kind);
   const baseMc = baseMarketCap(a.marketCapUsd, a.priceUsd, a.basePriceUsd);
 
@@ -124,18 +123,31 @@ export function LatestAlertBanner(
                      focus-visible:outline focus-visible:outline-1`}>
           {alertName(a)}
         </button>
-        {ath ? (
+        {pumpAth ? (
+          <>
+            <span className={`${pumpClass(a.level)} text-lg font-medium tabular-nums`}>
+              {formatMultiple(a.multiple) ?? '—'}x
+            </span>
+            <span className={`${ATH_COLOR} text-lg font-medium`}>
+              · 破{a.athScope ?? '新高'}
+            </span>
+          </>
+        ) : ath ? (
           <span className={`${ATH_COLOR} text-lg font-medium`}>
             {a.kind === 'ath-advance' ? '再创新高' : `破${a.athScope ?? '新高'}`}
           </span>
         ) : (
           <span className={`${pumpClass(a.level)} text-lg font-medium tabular-nums`}>
-            {new Decimal(a.multiple).toFixed(1)}x
+            {formatMultiple(a.multiple) ?? '—'}x
           </span>
         )}
         <span className="text-sm text-neutral-400">
           {ath
-            ? [describeAthDelta(a.multiple), a.baseTs ? `前高立于 ${humanAgo(a.baseTs)}` : null]
+            ? [
+              pumpAth ? `${a.level}x 暴涨档` : null,
+              formatAthDelta(a.multiple),
+              a.baseTs ? `前高立于 ${humanAgo(a.baseTs)}` : null,
+            ]
               .filter(Boolean).join(' · ')
             : describeBasis(a.timeframe, a.basis)}
         </span>
@@ -209,11 +221,18 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
                 */}
               {isSystemAlert(a.kind) ? (
                 <span className="text-[#fab219] text-sm font-medium w-16 shrink-0">系统</span>
+              ) : isPumpAthAlert(a.kind) ? (
+                <span className="flex items-center gap-1 text-sm font-medium w-20 shrink-0">
+                  <span className={`${pumpClass(a.level)} tabular-nums`}>
+                    {formatMultiple(a.multiple) ?? '—'}x
+                  </span>
+                  <span className={ATH_COLOR}>新高</span>
+                </span>
               ) : isAthAlert(a.kind) ? (
                 <span className={`${ATH_COLOR} text-sm font-medium w-16 shrink-0`}>新高</span>
               ) : (
                 <span className={`${pumpClass(a.level)} tabular-nums font-medium w-16 shrink-0`}>
-                  {new Decimal(a.multiple).toFixed(1)}x
+                  {formatMultiple(a.multiple) ?? '—'}x
                 </span>
               )}
               <span className="text-[15px] text-neutral-200 shrink-0 font-medium">
@@ -227,7 +246,11 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
                 {isSystemAlert(a.kind)
                   ? sourceAlertText(a).body
                   : isAthAlert(a.kind)
-                  ? [a.athScope ?? '新高', describeAthDelta(a.multiple)].filter(Boolean).join(' · ')
+                  ? [
+                    isPumpAthAlert(a.kind) ? `${a.level}x 暴涨档` : null,
+                    a.athScope ?? '新高',
+                    formatAthDelta(a.multiple),
+                  ].filter(Boolean).join(' · ')
                     : describeBasis(a.timeframe, a.basis)}
               </span>
               {isAthAlert(a.kind) && a.baseTs && (

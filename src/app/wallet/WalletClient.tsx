@@ -5,21 +5,58 @@ import SoundToggle from '../../components/SoundToggle.tsx';
 import WalletList, { type WalletRow } from './WalletList.tsx';
 import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
 import AlertFeed, {
-  LatestAlertBanner, alertName, pickNotificationAlert, sourceAlertText, type AlertRow,
+  LatestAlertBanner, alertName, type AlertRow,
 } from './AlertFeed.tsx';
-import { baseMarketCap } from '../../lib/alertMarketCap.ts';
 import HealthWatch from './HealthWatch.tsx';
 import AlarmTest from './AlarmTest.tsx';
 import {
   playPumpSound, notifyPump, PUMP_PHRASE, ATH_PHRASE, SYSTEM_PHRASE,
+  MIXED_ALERT_PHRASE, SYSTEM_AND_MARKET_PHRASE,
+  type NotificationAttempt,
 } from '../../lib/pumpSound.ts';
-import { humanAgo } from '../../lib/time.ts';
-import { money } from '../trash/TrashList.tsx';
 import { CURRENT_VERSION } from '../../lib/changelog.ts';
 import { shouldPromptReload } from '../../lib/staleClient.ts';
-import { usd } from './HoldingsTable.tsx';
-import { describeBasis } from '../../lib/pumpStyle.ts';
 import { alertStreamUrl, mergeAlertRows } from './alertStreamState.ts';
+import {
+  buildAlertBatch, buildNotificationSpecs,
+  type AlertSoundKind, type NotificationSpec,
+} from './notificationBatch.ts';
+
+interface DeliveryFailure {
+  spec: NotificationSpec;
+  reason: string;
+}
+
+type RuntimeStatus = 'unknown' | 'healthy' | 'degraded' | 'down';
+
+interface BusinessHealth {
+  /** 用浏览器收包时间，不拿服务端时钟与本机时钟硬减。 */
+  receivedAt: number;
+  pumpStatus: RuntimeStatus;
+  alertsRead: 'ok' | 'error';
+  problemScopes: string[];
+}
+
+function soundPhrase(kind: AlertSoundKind | null): string | null {
+  switch (kind) {
+    case 'system': return SYSTEM_PHRASE;
+    case 'ath': return ATH_PHRASE;
+    case 'pump-and-ath': return MIXED_ALERT_PHRASE;
+    case 'system-and-market': return SYSTEM_AND_MARKET_PHRASE;
+    case 'pump': return PUMP_PHRASE;
+    default: return null;
+  }
+}
+
+function notificationFailureReason(result: NotificationAttempt): string | null {
+  if (result.accepted) return null;
+  switch (result.reason) {
+    case 'unsupported': return '当前浏览器不支持系统通知';
+    case 'permission-default': return '系统通知尚未授权，请在页面顶部允许通知';
+    case 'permission-denied': return '系统通知已被拒绝，请在浏览器设置中重新允许';
+    case 'constructor-failed': return '浏览器拒绝了本次系统通知调用';
+  }
+}
 
 export default function WalletClient() {
   const [wallets, setWallets] = useState<WalletRow[]>([]);
@@ -29,20 +66,28 @@ export default function WalletClient() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
+  const [streamEstablished, setStreamEstablished] = useState(false);
+  const [businessHealth, setBusinessHealth] = useState<BusinessHealth | null>(null);
   /** 历史快照边界确定之后才允许建立 SSE，堵住两者之间的首条报警空隙。 */
   const [snapshotReady, setSnapshotReady] = useState(false);
   /** 服务端已经是新版本，而这个页面还在跑旧 JS */
   const [staleVersion, setStaleVersion] = useState<string | null>(null);
   /** 小额阈值。null = 还没读到，读到之前不过滤 —— 宁可多显示也不要凭空少几行 */
   const [minValue, setMinValue] = useState<number | null>(null);
-  const seen = useRef(new Set<string>());
   /**
-   * seen 只在**第一次**加载时灌历史。
+   * 这是浏览器侧的处理去重，不是 SSE transport cursor，也不代表系统通知一定
+   * 成功。历史快照会播种它以避免刷新时重播；实时行先合并进页面，再记录为已处理。
+   */
+  const handled = useRef(new Set<string>());
+  const [deliveryFailures, setDeliveryFailures] = useState<DeliveryFailure[]>([]);
+  /**
+   * handled 只在**第一次**加载时灌历史。
    *
    * 之前每次 load() 都灌，于是有个隐蔽的顺序问题：断线期间发的报警，
    * 只要 load() 先跑（比如从睡眠中醒来刷新列表），就会被标成"见过"，
    * 随后 SSE 补播过来时被 added 过滤掉 —— 列表里有，人却没被通知。
-   * seen 该表达的是"这条已经通知过用户了"，不是"这条显示过了"。
+   * handled 只表达"这条已经进入当前页的处理队列"；系统通知成功与否另记在
+   * deliveryFailures，不能再用一个 Set 假装两件事相同。
    */
   const seeded = useRef(false);
   /**
@@ -74,7 +119,7 @@ export default function WalletClient() {
         if (!Number.isInteger(a.snapshotSeq) || (a.snapshotSeq ?? -1) < 0) {
           throw new Error('报警历史缺少快照游标');
         }
-        for (const x of list) seen.current.add(x.id);
+        for (const x of list) handled.current.add(x.id);
         cursor.current = a.snapshotSeq!;
         seeded.current = true;
         setSnapshotReady(true);
@@ -99,6 +144,7 @@ export default function WalletClient() {
     let stopped = false;
 
     const connect = () => {
+      setStreamEstablished(false);
       /**
        * 带上游标。EventSource 自动重连用的是建连时那个 URL，改不了，
        * 所以这里的 since 只对**主动重建**有效；自动重连靠服务端读
@@ -110,6 +156,7 @@ export default function WalletClient() {
 
       connection.addEventListener('ready', (e) => {
         setOffline(false);
+        setStreamEstablished(true);
         // 服务端在这里告诉我们它从哪个序号开始盯 —— 主动重建时要从这里接着要
         try {
           const d = JSON.parse((e as MessageEvent<string>).data) as
@@ -133,6 +180,7 @@ export default function WalletClient() {
       connection.onerror = () => {
         if (stopped) return;
         setOffline(true);
+        setStreamEstablished(false);
         if (connection.readyState !== EventSource.CLOSED) return; // 浏览器会自己重连
         clearTimeout(retry);
         retry = setTimeout(connect, 5000);                  // 彻底关了才自己重建
@@ -140,98 +188,66 @@ export default function WalletClient() {
 
       connection.addEventListener('pump', (e) => {
         setOffline(false);
+        setStreamEstablished(true);
         let fresh: AlertRow[];
         try { fresh = JSON.parse((e as MessageEvent<string>).data) as AlertRow[]; } catch { return; }
         for (const a of fresh) {
           if (typeof a.seq === 'number') cursor.current = Math.max(cursor.current, a.seq);
         }
-        const added = fresh.filter((a) => !seen.current.has(a.id));
+        const added = fresh.filter((a) => !handled.current.has(a.id));
         if (added.length === 0) return;
-        for (const a of added) seen.current.add(a.id);
+        // 先把同批全部交给页面列表，再做声音/系统通知。通知失败不能让行情
+        // 从页面消失，也不能让下一次 SSE 重放把同一批重复入队。
+        for (const a of added) handled.current.add(a.id);
         setAlerts((prev) => mergeAlertRows(prev, added));
 
-        // 系统故障的 level 固定为 0，不能让同批的 2x/5x 行情把它盖住。
-        const top = pickNotificationAlert(added);
-        if (!top) return;
-        const isAth = top.kind === 'ath' || top.kind === 'ath-advance';
-        const isSystem = top.kind === 'source-down';
+        const batch = buildAlertBatch(added);
+        const phrase = soundPhrase(batch.sound);
+        if (phrase) playPumpSound({ phrase });
 
-        // 两种报警念不同的话 —— 光靠听就能分出是哪一种，
-        // 而它们该引起的反应不一样
-        // 系统消息不念「暴涨」那句 —— 它不是行情
-        playPumpSound({ phrase: isSystem ? SYSTEM_PHRASE : isAth ? ATH_PHRASE : PUMP_PHRASE });
-
-        /**
-         * 通知标题必须写币名。系统通知里没法选中复制，弹出一串 0x
-         * 等于什么也没告诉用户。
-         *
-         * 实在没有币名时（新币还没拿到报价），至少把链名带上，
-         * 并在正文里给出完整地址 —— 正文虽然也不能复制，
-         * 但看得见总比只有截断的地址强。
-         */
-        const name = alertName(top);
-        const nameless = !top.symbol;
-
-        /**
-         * 四种报警读起来意思不同，内容**分开写**：
-         *
-         *   暴涨 3.0x     穿过一个新档位（里程碑）
-         *   又涨 4.4x     没升档但同一波还在继续
-         *   破历史新高     进入价格发现区，头上没有套牢盘
-         *   再创新高       破新高之后又涨了一截
-         *
-         * ATH 与暴涨要回答的问题根本不同：暴涨答"涨了几倍、从哪个窗口的
-         * 什么基准算的"；破新高答"前高是什么时候立的、现在高出多少"。
-         * 「前高立于 23 天前」是 ATH 独有且最关键的一句 —— 打破一个立了
-         * 三个月的高点，和打破昨天的高点，分量差得远。倍数反而次要：
-         * 破新高的意义在"进入价格发现区"，不在涨了几个百分点。
-         *
-         * ATH 那两条**必须带口径**：我们的历史只从开始监控那天算起，
-         * 九成的币覆盖完整可以说「历史新高」，其余只能说「N 天新高」。
-         */
-        const scope = top.athScope ?? '新高';
-        const overPct = ((Number(top.multiple) - 1) * 100).toFixed(0);
-
-        const verb = isAth
-          ? (top.kind === 'ath' ? `破${scope}` : `再创${scope}`)
-          : (top.kind === 'advance' ? '又涨' : '暴涨');
-
-        /**
-         * 市值排在正文最前面 —— 用户是按市值思考的（「从 5 万涨到 10 万」），
-         * 而价格是一串 0.00006726，读它要先数零，对"这币现在多大"没帮助。
-         */
-        const baseMc = baseMarketCap(top.marketCapUsd, top.priceUsd, top.basePriceUsd);
-        const mc = top.marketCapUsd != null
-          ? `市值 ${baseMc != null ? `${money(baseMc)} → ` : ''}${money(top.marketCapUsd)}`
-          : null;
-        const detail = [
-          mc,
-          isAth
-            ? [
-              top.baseTs ? `前高立于 ${humanAgo(top.baseTs)}` : null,
-              `现价高出 ${overPct}%`,
-            ].filter(Boolean).join(' · ')
-            : top.kind === 'advance'
-              ? `${describeBasis(top.timeframe, top.basis)} · 比上次报警又涨了一截`
-              : `${describeBasis(top.timeframe, top.basis)} · ${top.level}x 档`,
-          top.valueUsd ? `持仓 ${usd(top.valueUsd)}` : null,
-        ].filter(Boolean).join(' · ');
-
-        // ATH 标题不带倍数 —— 「破历史新高」本身就是全部信息，
-        // 后面缀个 1.1x 反而把重点冲淡；高出多少放正文
-        const title = isAth
-          ? (nameless ? `${top.chain ?? '未知链'} 上有币${verb}` : `${name} ${verb}`)
-          : (nameless
-            ? `${top.chain ?? '未知链'} 上有币${verb} ${Number(top.multiple).toFixed(1)}x`
-            : `${name} ${verb} ${Number(top.multiple).toFixed(1)}x`);
-
-        notifyPump(
-          isSystem ? sourceAlertText(top).title : title,
-          isSystem
-            ? sourceAlertText(top).body
-            : [detail, nameless ? top.address ?? top.tokenId : null].filter(Boolean).join('\n'),
-        );
+        // 声音只响一次；系统与行情各有一条独立摘要，系统故障不能把行情盖掉。
+        for (const spec of buildNotificationSpecs(
+          batch, (a) => a.symbol ?? a.address ?? alertName(a),
+        )) {
+          const result = notifyPump(spec.title, spec.body, { tag: spec.tag });
+          const reason = notificationFailureReason(result);
+          if (!reason) continue;
+          setDeliveryFailures((prev) => prev.some((x) => x.spec.tag === spec.tag)
+            ? prev
+            : [...prev, { spec, reason }]);
+        }
         void load();     // 顺带刷新持仓价值
+      });
+
+      connection.addEventListener('health', (e) => {
+        setOffline(false);
+        setStreamEstablished(true);
+        const receivedAt = Math.floor(Date.now() / 1000);
+        try {
+          const d = JSON.parse((e as MessageEvent<string>).data) as {
+            alertsRead?: 'ok' | 'error';
+            rows?: Array<{ component?: string; scope?: string; status?: RuntimeStatus }>;
+          };
+          if (!Array.isArray(d.rows) || (d.alertsRead !== 'ok' && d.alertsRead !== 'error')) {
+            throw new Error('health payload malformed');
+          }
+          const pump = d.rows.find((row) => row.component === 'pump' && row.scope === 'all');
+          const problemScopes = d.rows
+            .filter((row) => row.status === 'down' || row.status === 'degraded')
+            .map((row) => row.scope ?? 'unknown');
+          setBusinessHealth({
+            receivedAt,
+            pumpStatus: pump?.status ?? 'unknown',
+            alertsRead: d.alertsRead,
+            problemScopes,
+          });
+        } catch {
+          // 心跳格式坏了也不能当作收到了一份健康证明。
+          setBusinessHealth({
+            receivedAt, pumpStatus: 'unknown', alertsRead: 'error',
+            problemScopes: ['health-payload'],
+          });
+        }
       });
     };
 
@@ -279,7 +295,17 @@ export default function WalletClient() {
     <div className="space-y-6">
       {/* 看门狗：提示音或推送失效时走系统通知 + 标签页告警。
           页面内的横幅在下面，但横幅救不了"人没在看页面"这种情况 */}
-      <HealthWatch streamConnected={!offline} />
+      <HealthWatch
+        streamConnected={streamEstablished && !offline}
+        businessHeartbeatAt={businessHealth?.receivedAt ?? null}
+        backendDown={businessHealth !== null && (
+          businessHealth.pumpStatus === 'down'
+          || businessHealth.pumpStatus === 'unknown'
+          || businessHealth.problemScopes.length > 0
+            && businessHealth.problemScopes.some((scope) => scope !== 'all')
+        )}
+        alertReadDown={businessHealth?.alertsRead === 'error'}
+      />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <SoundToggle />
         {/* 告警自己也要能被验证 —— 没验证过的告警不算告警 */}
@@ -290,6 +316,28 @@ export default function WalletClient() {
         <p className="rounded border border-[#fab219] bg-[#fab219]/10 px-3 py-2 text-sm text-[#8a6100]">
           实时推送已断开，正在重连 —— 这段时间的暴涨不会播报。重连后会自动补上。
         </p>
+      )}
+      {businessHealth?.pumpStatus === 'degraded' && (
+        <p className="rounded border border-[#fab219] bg-[#fab219]/10 px-3 py-2 text-sm text-[#d69a1b]">
+          暴涨监测正在降级运行：{businessHealth.problemScopes.join('、') || '部分行情或判定失败'}。
+          页面仍会接收已成功生成的报警，系统正在继续重试。
+        </p>
+      )}
+      {deliveryFailures.length > 0 && (
+        <div role="alert" className="rounded-lg border-2 border-[#d03b3b]/70 bg-[#d03b3b]/10
+                                     px-3 py-2.5 text-sm text-[#f5a4a4]">
+          <p className="font-semibold text-[#ffb1b1]">系统通知没有送达，但报警没有丢失</p>
+          <p className="mt-1 text-neutral-300">
+            下面这些事件已经保留在「异动记录」里；失败原因不会自动消失，避免把“没有弹窗”误当成“没有行情”。
+          </p>
+          <ul className="mt-1.5 space-y-0.5 text-xs text-[#f5c0c0]">
+            {deliveryFailures.map((failure) => (
+              <li key={failure.spec.tag}>
+                {failure.spec.channel === 'system' ? '系统' : '行情'}通知（{failure.spec.alertIds.length} 条）：{failure.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {/**
         * 页面在跑旧代码时必须说出来。

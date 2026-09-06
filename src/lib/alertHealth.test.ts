@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   step, activeIssues, initialWatchState, describeIssue,
-  GRACE_SECONDS, RENOTIFY_SECONDS, ISSUES, type HealthIssue, type WatchState,
+  GRACE_SECONDS, RENOTIFY_SECONDS, ISSUES, BUSINESS_HEARTBEAT_TIMEOUT_SECONDS,
+  healthIssuesForSignals, type HealthIssue, type WatchState,
 } from './alertHealth.ts';
 
 const none = new Set<HealthIssue>();
@@ -24,6 +25,28 @@ test('从没正常过就不提醒 —— 那是还没开启，不是失效', () 
     assert.deepEqual(r.notify, [], `t=${t}`);
     s = r.state;
   }
+});
+
+test('服务端通道从页面打开起就必须可用，不要求曾经健康过', () => {
+  const backend = new Set<HealthIssue>(['backend-down']);
+  let s = step(initialWatchState(), backend, 100).state;
+  assert.deepEqual(step(s, backend, 100 + GRACE_SECONDS).notify, ['backend-down']);
+});
+
+test('SSE 连接还开着但业务心跳过期，也判为后端失活', () => {
+  const present = healthIssuesForSignals({
+    audioReady: true, streamConnected: true, streamConnectedSince: 100,
+    businessHeartbeatAt: 120, backendDown: false, alertReadDown: false,
+  }, 120 + BUSINESS_HEARTBEAT_TIMEOUT_SECONDS + 1);
+  assert.deepEqual([...present], ['backend-down']);
+});
+
+test('业务心跳明确报告读库失败时单独报警，游标可留待恢复补发', () => {
+  const present = healthIssuesForSignals({
+    audioReady: true, streamConnected: true, streamConnectedSince: 100,
+    businessHeartbeatAt: 120, backendDown: false, alertReadDown: true,
+  }, 121);
+  assert.deepEqual([...present], ['alert-read-down']);
 });
 
 test('本来好好的突然坏了，过了观察期就提醒', () => {

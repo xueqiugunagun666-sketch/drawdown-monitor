@@ -25,6 +25,10 @@ export const PUMP_PHRASE = '有东西暴涨了';
 export const ATH_PHRASE = '有币创新高了';
 /** 系统消息（数据源故障之类）。念得不一样，好让人知道这不是行情 */
 export const SYSTEM_PHRASE = '监控系统有情况';
+/** 同批同时有暴涨与新高时，声音只响一次但不能只说其中一种。 */
+export const MIXED_ALERT_PHRASE = '有币暴涨或创新高了';
+/** 同批同时有系统故障与行情时，系统通知和行情通知仍分开投递。 */
+export const SYSTEM_AND_MARKET_PHRASE = '监控系统有情况，行情也有异动';
 
 let ctx: AudioContext | null = null;
 
@@ -251,21 +255,60 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
  */
 const NOTIFY_HOLD_MS = 10_000;
 
-export function notifyPump(title: string, body: string): void {
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+export type NotificationFailureReason =
+  | 'unsupported'
+  | 'permission-default'
+  | 'permission-denied'
+  | 'constructor-failed';
+
+export type NotificationAttempt =
+  | { accepted: true; tag: string }
+  | { accepted: false; tag: string; reason: NotificationFailureReason };
+
+export interface NotifyPumpOptions {
+  /** 必须由事件 id/seq 生成；标题不是稳定身份。 */
+  tag?: string;
+}
+
+/**
+ * 提交系统通知并如实返回浏览器 API 的结果。
+ *
+ * accepted=true 只表示浏览器接受了 Notification 构造调用，不宣称操作系统
+ * 一定把横幅显示在屏幕上；accepted=false 必须由页面留下持久失败提示。
+ */
+export function notifyPump(
+  title: string, body: string, options: NotifyPumpOptions = {},
+): NotificationAttempt {
+  const tag = options.tag ?? 'show-tools-alert';
+  if (typeof Notification === 'undefined') {
+    return { accepted: false, tag, reason: 'unsupported' };
+  }
+  if (Notification.permission === 'default') {
+    return { accepted: false, tag, reason: 'permission-default' };
+  }
+  if (Notification.permission !== 'granted') {
+    return { accepted: false, tag, reason: 'permission-denied' };
+  }
   try {
     const n = new Notification(title, {
       body,
-      // tag 让同一个币的连续通知互相替换，不堆成一列。
-      // renotify 是配套的：光换 tag 内容、不重新提醒的话，
-      // 替换掉的那条就悄无声息了
-      tag: title,
+      // tag 由事件 id/seq 生成。同一事件重放时不会与别的同名币相撞。
+      tag,
       renotify: true,
       requireInteraction: true,
       silent: true,             // 声音由页面自己的语音播报负责，别响两次
     } as NotificationOptions);
     // 点一下把页面调到前台，省得在一堆标签里翻
     n.onclick = () => { window.focus(); n.close(); };
-    setTimeout(() => { try { n.close(); } catch { /* 已经关了 */ } }, NOTIFY_HOLD_MS);
-  } catch { /* 某些浏览器在非 https 下会抛 */ }
+    const closeTimer = setTimeout(() => { try { n.close(); } catch { /* 已经关了 */ } }, NOTIFY_HOLD_MS);
+    // Node 测试环境不应因为浏览器通知的保留定时器额外等待 10 秒；浏览器
+    // 的数字 timer 没有 unref，这个分支只会在 Node timer 对象存在时执行。
+    if (typeof closeTimer === 'object' && closeTimer !== null && 'unref' in closeTimer) {
+      (closeTimer as { unref: () => void }).unref();
+    }
+    return { accepted: true, tag };
+  } catch {
+    // 某些浏览器在非 https、权限状态异常或系统策略阻止时会抛。
+    return { accepted: false, tag, reason: 'constructor-failed' };
+  }
 }
