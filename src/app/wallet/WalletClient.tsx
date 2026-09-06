@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import SoundToggle from '../../components/SoundToggle.tsx';
 import WalletList, { type WalletRow } from './WalletList.tsx';
 import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
-import AlertFeed, { LatestAlertBanner, alertName, type AlertRow } from './AlertFeed.tsx';
+import AlertFeed, {
+  LatestAlertBanner, alertName, pickNotificationAlert, sourceAlertText, type AlertRow,
+} from './AlertFeed.tsx';
 import { baseMarketCap } from '../../lib/alertMarketCap.ts';
 import HealthWatch from './HealthWatch.tsx';
 import AlarmTest from './AlarmTest.tsx';
@@ -139,7 +141,9 @@ export default function WalletClient() {
         for (const a of added) seen.current.add(a.id);
         setAlerts((prev) => [...added, ...prev]);
 
-        const top = added.reduce((m, a) => (a.level > m.level ? a : m));
+        // 系统故障的 level 固定为 0，不能让同批的 2x/5x 行情把它盖住。
+        const top = pickNotificationAlert(added);
+        if (!top) return;
         const isAth = top.kind === 'ath' || top.kind === 'ath-advance';
         const isSystem = top.kind === 'source-down';
 
@@ -213,9 +217,9 @@ export default function WalletClient() {
             : `${name} ${verb} ${Number(top.multiple).toFixed(1)}x`);
 
         notifyPump(
-          isSystem ? `报价源 ${top.tokenId.split(':')[1] ?? ''} 可能不可信` : title,
+          isSystem ? sourceAlertText(top).title : title,
           isSystem
-            ? '它与另一个数据源的价格对不上，已连续多轮。详见服务器日志。'
+            ? sourceAlertText(top).body
             : [detail, nameless ? top.address ?? top.tokenId : null].filter(Boolean).join('\n'),
         );
         void load();     // 顺带刷新持仓价值

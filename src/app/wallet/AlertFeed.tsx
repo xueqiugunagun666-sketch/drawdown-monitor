@@ -35,6 +35,27 @@ export function isSystemAlert(kind: string | null | undefined): boolean {
   return kind === 'source-down';
 }
 
+/**
+ * 同一批里系统故障优先于行情。
+ *
+ * source-down 的 level 固定为 0；如果仍按倍数选最大，它会被任意 2x 行情
+ * 盖住，恰好把最不能静默的消息静默掉。
+ */
+export function pickNotificationAlert(alerts: AlertRow[]): AlertRow | null {
+  if (alerts.length === 0) return null;
+  return alerts.find((a) => isSystemAlert(a.kind))
+    ?? alerts.reduce((best, a) => (a.level > best.level ? a : best));
+}
+
+export function sourceAlertText(a: AlertRow): { title: string; body: string } {
+  const source = (a.tokenId.split(':')[1] ?? '未知').toUpperCase();
+  return {
+    title: `报价源 ${source} 已自动回退`,
+    body: `${source} 连续多轮请求失败、缺失或偏价，系统已自动回退 DexScreener。`
+      + '可在设置页查看数据源状态。',
+  };
+}
+
 /** 币名优先，没有才退回地址 —— 显示一串十六进制等于没说 */
 export function alertName(a: AlertRow): string {
   if (a.symbol) return a.symbol;
@@ -68,7 +89,26 @@ export function LatestAlertBanner(
   }
 
   const ath = isAthAlert(a.kind);
+  const system = isSystemAlert(a.kind);
   const baseMc = baseMarketCap(a.marketCapUsd, a.priceUsd, a.basePriceUsd);
+
+  if (system) {
+    const text = sourceAlertText(a);
+    return (
+      <div className="rounded-lg border border-[#fab219]/50 bg-[#fab219]/10 px-3 py-2.5">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="text-[#fab219] text-lg font-medium">{text.title}</span>
+          <span className="ml-auto text-xs text-neutral-500 shrink-0">{humanAgo(a.firedAt)}</span>
+        </div>
+        <p className="mt-1.5 text-sm text-neutral-300">
+          {text.body}{' '}
+          <a href="/settings" className="text-[#fab219] hover:underline underline-offset-4">
+            查看状态
+          </a>
+        </p>
+      </div>
+    );
+  }
 
   return (
     // 外层不能再是 button —— 里面要放复制按钮，button 不能嵌 button
@@ -178,14 +218,14 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
               )}
               <span className="text-[15px] text-neutral-200 shrink-0 font-medium">
                 {isSystemAlert(a.kind)
-                  ? `报价源 ${a.tokenId.split(':')[1] ?? ''} 可能不可信`
+                  ? sourceAlertText(a).title
                   : alertName(a)}
               </span>
               <span className={`text-xs shrink-0 ${
                 isSystemAlert(a.kind) ? 'text-[#fab219]'
                   : isAthAlert(a.kind) ? ATH_COLOR : 'text-neutral-500'}`}>
                 {isSystemAlert(a.kind)
-                  ? '与另一个数据源对不上，详见服务器日志'
+                  ? sourceAlertText(a).body
                   : isAthAlert(a.kind)
                   ? [a.athScope ?? '新高', describeAthDelta(a.multiple)].filter(Boolean).join(' · ')
                     : describeBasis(a.timeframe, a.basis)}

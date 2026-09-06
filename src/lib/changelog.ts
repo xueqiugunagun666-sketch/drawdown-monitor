@@ -20,6 +20,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: 'v4.9',
+    date: '2026-09-06',
+    headline: 'XXYY 进入受保护报价，异常时自动回退',
+    changes: [
+      {
+        kind: 'change',
+        title: '双源确认后才采用 XXYY 报价',
+        detail: 'XXYY 与 DexScreener 现在同轮并行取价；两边价格相差不超过一成时，采用两者较低值，因此向上的暴涨和新高必须同时得到两个源确认。缺失、偏价或接口报错时继续使用 DexScreener，不会让新源故障拖垮行情判定。第一阶段仍保留 DexScreener 的全部请求，用它提供流动性、成交量和确认价；暂时不以省请求为目标。',
+      },
+      {
+        kind: 'fix',
+        title: 'XXYY 静默失效会自动回退并只通知 pananiu',
+        detail: '请求失败、批量缺数据和价格偏离都会计入健康状态；连续五轮异常才提醒，失败次数与六小时提醒冷却都写进数据库，worker 重启后不会失忆。系统故障在同批通知中优先于行情，站内横幅与系统通知会明确写出已回退 DexScreener，并可到设置页查看原因。',
+      },
+    ],
+  },
+  {
     version: 'v4.8',
     date: '2026-09-06',
     headline: '接入第二个报价源（先影子跑），坏了会报给管理员',
