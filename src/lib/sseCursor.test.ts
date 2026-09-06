@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveCursor, MAX_PLAUSIBLE_SEQ } from './sseCursor.ts';
+import { resolveCursor, MAX_PLAUSIBLE_SEQ, cursorAfterSend } from './sseCursor.ts';
 
 const MAX_SEQ = 41230;
 
@@ -41,4 +41,9 @@ test('Last-Event-ID 是垃圾时退到 ?since，而不是直接跳到最新', ()
 
 test('小数截断成整数', () => {
   assert.equal(resolveCursor('40000.9', null, MAX_SEQ), 40000);
+});
+
+test('发送成功后才推进游标，失败时保留原位置供重试', () => {
+  assert.equal(cursorAfterSend(100, 101, false), 100);
+  assert.equal(cursorAfterSend(100, 101, true), 101);
 });

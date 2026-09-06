@@ -19,6 +19,7 @@ import { CURRENT_VERSION } from '../../lib/changelog.ts';
 import { shouldPromptReload } from '../../lib/staleClient.ts';
 import { usd } from './HoldingsTable.tsx';
 import { describeBasis } from '../../lib/pumpStyle.ts';
+import { alertStreamUrl, mergeAlertRows } from './alertStreamState.ts';
 
 export default function WalletClient() {
   const [wallets, setWallets] = useState<WalletRow[]>([]);
@@ -28,6 +29,8 @@ export default function WalletClient() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
+  /** 历史快照边界确定之后才允许建立 SSE，堵住两者之间的首条报警空隙。 */
+  const [snapshotReady, setSnapshotReady] = useState(false);
   /** 服务端已经是新版本，而这个页面还在跑旧 JS */
   const [staleVersion, setStaleVersion] = useState<string | null>(null);
   /** 小额阈值。null = 还没读到，读到之前不过滤 —— 宁可多显示也不要凭空少几行 */
@@ -58,7 +61,7 @@ export default function WalletClient() {
       ]) as [
         { wallets?: WalletRow[]; chains?: string[]; error?: string },
         { holdings?: HoldingRow[] },
-        { alerts?: AlertRow[] },
+        { alerts?: AlertRow[]; snapshotSeq?: number },
         { minAlertValueUsd?: number | null; defaultValue?: number },
       ];
       if (w.error) { setErr(w.error); return; }
@@ -68,10 +71,15 @@ export default function WalletClient() {
       setMinValue(st.minAlertValueUsd ?? st.defaultValue ?? 0);
       const list = a.alerts ?? [];
       if (!seeded.current) {
+        if (!Number.isInteger(a.snapshotSeq) || (a.snapshotSeq ?? -1) < 0) {
+          throw new Error('报警历史缺少快照游标');
+        }
         for (const x of list) seen.current.add(x.id);
+        cursor.current = a.snapshotSeq!;
         seeded.current = true;
+        setSnapshotReady(true);
       }
-      setAlerts(list);
+      setAlerts((prev) => mergeAlertRows(prev, list));
       setErr(null);
     } catch {
       setErr('加载失败，检查网络');
@@ -85,7 +93,8 @@ export default function WalletClient() {
   // SSE：不能用轮询拉报警 —— 后台标签页的定时器会被节流到约一分钟，
   // 而暴涨报警慢一分钟基本就没意义了
   useEffect(() => {
-    let es: EventSource;
+    if (!snapshotReady) return;
+    let es: EventSource | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
 
@@ -96,23 +105,23 @@ export default function WalletClient() {
        * Last-Event-ID。两条路都要留：401（会话过期）会让 EventSource
        * 彻底关闭，不会自动重连，只能靠主动重建。
        */
-      const q = cursor.current > 0 ? `?since=${cursor.current}` : '';
-      es = new EventSource(`/api/wallet/stream${q}`);
+      const connection = new EventSource(alertStreamUrl(cursor.current));
+      es = connection;
 
-      es.addEventListener('ready', (e) => {
+      connection.addEventListener('ready', (e) => {
         setOffline(false);
         // 服务端在这里告诉我们它从哪个序号开始盯 —— 主动重建时要从这里接着要
         try {
           const d = JSON.parse((e as MessageEvent<string>).data) as
             { cursor?: number; version?: string };
-          if (typeof d.cursor === 'number') cursor.current = d.cursor;
+          if (typeof d.cursor === 'number') cursor.current = Math.max(cursor.current, d.cursor);
           /**
            * 服务端的版本号是新鲜的，我们手里这个是打包时烙进去的。
            * 不一致就说明这个页面在跑旧代码 —— 一直开着的页面在部署之后
            * 会静默地继续用旧 JS，用户以为在用新版本，其实不是。
            */
           if (shouldPromptReload(d.version, CURRENT_VERSION)) setStaleVersion(d.version!);
-        } catch { /* 拿不到就退回不带 since，等于从最新开始，不会重播 */ }
+        } catch { /* 保留建连时的快照游标，不允许静默跳到最新 */ }
       });
 
       /**
@@ -121,15 +130,15 @@ export default function WalletClient() {
        * 这是这个页面最危险的静默失效：SSE 死掉之后页面看起来一切正常，
        * 而"没有报警"和"收不到报警"长得一模一样 —— 用户会以为行情很安静。
        */
-      es.onerror = () => {
+      connection.onerror = () => {
         if (stopped) return;
         setOffline(true);
-        if (es.readyState !== EventSource.CLOSED) return;   // 浏览器会自己重连
+        if (connection.readyState !== EventSource.CLOSED) return; // 浏览器会自己重连
         clearTimeout(retry);
         retry = setTimeout(connect, 5000);                  // 彻底关了才自己重建
       };
 
-      es.addEventListener('pump', (e) => {
+      connection.addEventListener('pump', (e) => {
         setOffline(false);
         let fresh: AlertRow[];
         try { fresh = JSON.parse((e as MessageEvent<string>).data) as AlertRow[]; } catch { return; }
@@ -139,7 +148,7 @@ export default function WalletClient() {
         const added = fresh.filter((a) => !seen.current.has(a.id));
         if (added.length === 0) return;
         for (const a of added) seen.current.add(a.id);
-        setAlerts((prev) => [...added, ...prev]);
+        setAlerts((prev) => mergeAlertRows(prev, added));
 
         // 系统故障的 level 固定为 0，不能让同批的 2x/5x 行情把它盖住。
         const top = pickNotificationAlert(added);
@@ -234,9 +243,9 @@ export default function WalletClient() {
       stopped = true;
       clearTimeout(retry);
       document.removeEventListener('visibilitychange', onVisible);
-      es.close();
+      es?.close();
     };
-  }, [load]);
+  }, [load, snapshotReady]);
 
   /** 返回错误文案；null 表示成功。UI 要能把服务端的拒绝理由原样说出来 */
   const saveMinValue = async (v: number): Promise<string | null> => {

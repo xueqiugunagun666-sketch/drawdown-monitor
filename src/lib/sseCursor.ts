@@ -38,6 +38,11 @@ export function resolveCursor(
   return currentMaxSeq;
 }
 
+/** 服务端只有在整批成功序列化并写入 SSE 队列后，才能推进内存游标。 */
+export function cursorAfterSend(current: number, next: number, sent: boolean): number {
+  return sent ? next : current;
+}
+
 /** 只接受非负整数序号。0 是合法的（库里一条都还没有）；负数、NaN、时间戳一律当作"没给" */
 function toSeq(raw: string | null): number | null {
   if (raw === null || raw.trim() === '') return null;

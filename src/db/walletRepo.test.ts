@@ -129,6 +129,12 @@ test('删钱包会级联删掉它的持仓', () => {
   assert.equal(wr.listHoldings(a.id).filter((h) => h.walletId === w.id).length, 0);
 });
 
+test('报警空库的快照边界是 0，第一条 SSE 必须从这里接', () => {
+  const a = mkUser();
+  assert.equal(wr.maxPumpAlertSeq(), 0);
+  assert.deepEqual(wr.pumpAlertSnapshot(a.id, 0), { snapshotSeq: 0, alerts: [] });
+});
+
 test('报警按用户隔离', () => {
   const a = mkUser(), b = mkUser();
   wr.insertPumpAlert({
@@ -151,6 +157,30 @@ test('listPumpAlerts 按时间过滤，供 SSE 增量拉取', () => {
   }
   assert.equal(wr.listPumpAlerts(a.id, 0).length, 3);
   assert.equal(wr.listPumpAlerts(a.id, 200).length, 2, 'sinceTs 应含等于该时刻的');
+});
+
+test('历史报警快照同时返回边界序号，每一行都带 seq', () => {
+  const a = mkUser();
+  for (const id of ['snap1', 'snap2']) {
+    wr.insertPumpAlert({
+      id: `${a.id}-${id}`, userId: a.id, tokenId: 'bsc:0xsnapshot', firedAt: 600,
+      timeframe: '5m', basis: 'open', level: 2, multiple: '2',
+      priceUsd: '2', basePriceUsd: '1', balance: null, valueUsd: null,
+    });
+  }
+  const snapshot = wr.pumpAlertSnapshot(a.id, 0);
+  assert.equal(snapshot.snapshotSeq, wr.maxPumpAlertSeq());
+  assert.equal(snapshot.alerts.length, 2, '同秒写入的两条不能互相覆盖');
+  assert.ok(snapshot.alerts.every((row) => Number.isInteger(row.seq) && row.seq > 0));
+  assert.ok(snapshot.alerts[0]!.seq > snapshot.alerts[1]!.seq, '历史按写入序号倒序');
+  assert.ok(snapshot.alerts.every((row) => row.seq <= snapshot.snapshotSeq));
+});
+
+test('没有当前用户报警时仍返回全局快照边界', () => {
+  const a = mkUser();
+  const snapshot = wr.pumpAlertSnapshot(a.id, 0);
+  assert.equal(snapshot.alerts.length, 0);
+  assert.equal(snapshot.snapshotSeq, wr.maxPumpAlertSeq());
 });
 
 test('扫描状态更新：失败时错误被记录', () => {

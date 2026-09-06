@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { currentUser } from '../../../../lib/accountAuth.ts';
-import { listPumpAlerts } from '../../../../db/walletRepo.ts';
+import { pumpAlertSnapshot } from '../../../../db/walletRepo.ts';
 import { enrichAlerts } from '../../../../db/alertEnrich.ts';
 
 export const dynamic = 'force-dynamic';
@@ -16,5 +16,9 @@ export async function GET(req: Request) {
    * 补上币名。没有它，用户听到播报打开页面看到的是一串十六进制，
    * 根本不知道是哪个币暴涨了 —— 这正是这个功能存在的意义。
    */
-  return NextResponse.json({ alerts: enrichAlerts(listPumpAlerts(u.id, sinceTs)) });
+  const snapshot = pumpAlertSnapshot(u.id, sinceTs);
+  return NextResponse.json({
+    snapshotSeq: snapshot.snapshotSeq,
+    alerts: enrichAlerts(snapshot.alerts),
+  });
 }

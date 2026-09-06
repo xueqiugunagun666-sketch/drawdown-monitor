@@ -16,7 +16,7 @@ export interface AlertRow {
   level: number; multiple: string; priceUsd: string | null; basePriceUsd: string | null;
   valueUsd: string | null;
   symbol: string | null; address: string | null; chain: string | null;
-  /** 投递序号。只有 SSE 推来的带，/api/wallet/alerts 的历史列表没有 */
+  /** 投递序号。历史快照与 SSE 都带，用它无缝合并而不是用时间戳猜顺序 */
   seq?: number;
   /** 'level' 穿档 | 'advance' 又涨了一截 | 'ath' 破新高 | 'ath-advance' 破新高后又涨。旧行 null 按穿档读 */
   kind?: string | null;

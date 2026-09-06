@@ -266,6 +266,11 @@ export function listPumpAlerts(userId: string, sinceTs: number): PumpAlertRow[] 
  */
 export interface PumpAlertWithSeq extends PumpAlertRow { seq: number }
 
+export interface PumpAlertSnapshot {
+  snapshotSeq: number;
+  alerts: PumpAlertWithSeq[];
+}
+
 const ROWID = sql<number>`rowid`;
 
 export function pumpAlertsAfterSeq(userId: string, seq: number): PumpAlertWithSeq[] {
@@ -276,6 +281,28 @@ export function pumpAlertsAfterSeq(userId: string, seq: number): PumpAlertWithSe
     .where(and(eq(pumpAlerts.userId, userId), sql`rowid > ${seq}`))
     .orderBy(asc(ROWID))
     .all();
+}
+
+/**
+ * 历史列表与 SSE 共用的原子快照边界。
+ *
+ * 先在读事务里固定全表最大 rowid，再只返回该边界内属于当前用户的历史行。
+ * 事务结束后写入的报警必然满足 rowid > snapshotSeq，由随后建立的 SSE 补上。
+ */
+export function pumpAlertSnapshot(userId: string, sinceTs: number): PumpAlertSnapshot {
+  return getRawDb().transaction(() => {
+    const snapshotSeq = maxPumpAlertSeq();
+    const alerts = getDb().select({ ...getTableColumns(pumpAlerts), seq: ROWID })
+      .from(pumpAlerts)
+      .where(and(
+        eq(pumpAlerts.userId, userId),
+        gte(pumpAlerts.firedAt, sinceTs),
+        sql`rowid <= ${snapshotSeq}`,
+      ))
+      .orderBy(desc(ROWID))
+      .all();
+    return { snapshotSeq, alerts };
+  })();
 }
 
 /** 当前最大写入序号。新连接从这里开始，不重播历史 */

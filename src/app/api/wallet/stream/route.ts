@@ -25,7 +25,7 @@
 import { currentUser } from '../../../../lib/accountAuth.ts';
 import { pumpAlertsAfterSeq, maxPumpAlertSeq } from '../../../../db/walletRepo.ts';
 import { enrichAlerts } from '../../../../db/alertEnrich.ts';
-import { resolveCursor } from '../../../../lib/sseCursor.ts';
+import { cursorAfterSend, resolveCursor } from '../../../../lib/sseCursor.ts';
 import { CURRENT_VERSION } from '../../../../lib/changelog.ts';
 
 export const dynamic = 'force-dynamic';
@@ -49,15 +49,17 @@ export async function GET(req: Request) {
   const stream = new ReadableStream({
     start(controller) {
       let closed = false;
-      const send = (event: string, data: unknown, id?: number) => {
-        if (closed) return;
+      const send = (event: string, data: unknown, id?: number): boolean => {
+        if (closed) return false;
         const head = id === undefined ? '' : `id: ${id}\n`;
         try {
           controller.enqueue(encoder.encode(
             `${head}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
           ));
+          return true;
         } catch {
           closed = true;
+          return false;
         }
       };
 
@@ -82,11 +84,17 @@ export async function GET(req: Request) {
           return;                       // 下一轮再试，不要因为一次读库失败就断流
         }
         if (fresh.length === 0) return;
-        // 按写入顺序取最后一条的序号：同一轮里的多条不会互相顶掉
-        cursor = fresh[fresh.length - 1]!.seq;
-        // 必须补币名 —— 系统通知里没法复制粘贴，
-        // 弹出一串 0x 等于没告诉用户是哪个币
-        send('pump', enrichAlerts(fresh), cursor);
+        const nextCursor = fresh[fresh.length - 1]!.seq;
+        let payload;
+        try {
+          // 必须补币名 —— 系统通知里没法复制粘贴，
+          // 弹出一串 0x 等于没告诉用户是哪个币
+          payload = enrichAlerts(fresh);
+        } catch {
+          return;                         // 不推进 cursor，下一轮重试同一批
+        }
+        const sent = send('pump', payload, nextCursor);
+        cursor = cursorAfterSend(cursor, nextCursor, sent);
       }, POLL_MS);
 
       const beat = setInterval(() => {
