@@ -13,7 +13,7 @@ Docker 守护进程本身要占约 100MB，构建时还要额外内存，而且�
 ## 一条命令
 
 ```bash
-git clone <你的仓库> /tmp/drawdown && cd /tmp/drawdown && sudo bash deploy/install.sh
+git clone <repository-url> /tmp/show-tools && cd /tmp/show-tools && sudo bash deploy/install.sh
 ```
 
 脚本会依次做这些事，**幂等**，重复执行不会破坏已有数据：
@@ -66,7 +66,7 @@ rsync -avn --delete \
   --exclude '.git' --exclude 'node_modules' --exclude '.next' --exclude 'data' \
   --exclude 'backups' --exclude 'backups-remote' --exclude '.env' \
   --exclude 'tsconfig.tsbuildinfo' --exclude '.DS_Store' \
-  ./ drawdown:deploy-stage/
+  ./ <ssh-host>:deploy-stage/
 # 去掉 -n 实跑
 ```
 
@@ -96,11 +96,11 @@ sudo systemctl restart drawdown-web drawdown-worker
 `ADMIN_ACCOUNT` 指定，值是**账号名**（`users.name`），不是 uuid。多个用逗号分隔：
 
 ```
-ADMIN_ACCOUNT=pananiu,retend666
+ADMIN_ACCOUNT=<admin-a>,<admin-b>
 ```
 
-每一项都是**整体相等**匹配，不做前缀匹配 —— 配 `retend` 不会把 `retend666`
-一起提权（这两个在本项目里是真实存在的不同账号）。
+每一项都是**整体相等**匹配，不做前缀或包含匹配。例如配置 `admin-a` 不会把
+`admin-a-test` 一起提权。
 
 **不设或设错 = 没有人是管理员**，所有删除都会被拒（fail closed）。这是有意的 ——
 反过来默认人人可删的话，配置一丢就等于把删除权限敞开给所有人。
@@ -162,18 +162,12 @@ DuckDNS 改完 IP 后解析生效通常要一两分钟，期间 Caddy 会签证�
 
 ## 安全须知
 
-- 两道闸门：全站口令（`ACCESS_TOKEN`）进门，之后必须再登录**个人账号**才能浏览与操作。
+- 全站只使用个人账号会话；新人必须凭有次数上限的邀请码注册，不再使用共享进站口令。
   登录失败按 IP 限流：10 分钟 8 次
 - cookie 是 httpOnly + SameSite=Lax，账号会话 30 天有效
 - 密码用 scrypt 哈希，会话表里只存 token 的哈希 —— 库泄露也拿不到可用凭证
 - `.env` 权限 600，只有 `drawdown` 用户可读
-- 删除、改备注、停用/冻结、改报警档位都要**管理员或添加者本人**，且全部写审计日志
-  （`npm run audit`）。删除还会推一条 Telegram
-
-> 以前这里写的是「知道口令的人都能加币删币，且不记录是谁操作的」。
-> 那句话曾经是真的 —— 2026-09-02 就有一个代币被人删掉，只能靠比对备份
-> 才知道丢了什么，至今不知道是谁干的。权限与审计就是为此加的。
-
-**仍然存在的限制**：中间件跑在 edge runtime 查不了数据库，只能判断会话 cookie
-存不存在。只读接口（`GET /api/tokens` 等）目前靠全站口令兜底。将来若取消全站
-口令，必须先给这些接口补上会话校验，否则设个假 cookie 就能把看板读出去。
+- 删除和修改按“管理员或资源所有者”规则控制；停用、冻结和全局报警档位等共享操作
+  收归管理员。敏感操作与审计日志在同一事务中写入（`npm run audit`）。
+- 中间件跑在 edge runtime，只能判断会话 Cookie 是否存在；每个 API 路由都会再查询
+  数据库校验真实会话，只读接口也不例外。
