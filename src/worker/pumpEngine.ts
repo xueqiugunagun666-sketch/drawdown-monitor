@@ -49,7 +49,9 @@ import { evaluateFilter, DEFAULT_THRESHOLDS, type FilterState } from './holdings
 import { isWakeUp, wakeUpLevel } from './wakeUp.ts';
 import { toHumanAmount } from '../sources/erc20.ts';
 import { needsBackfill, backfillWalletToken, realBackfillDeps, type BackfillDeps } from './walletBackfill.ts';
-import { fetchTokenInfo, type TokenInfo } from '../sources/gmgnTokenInfo.ts';
+import {
+  fetchTokenInfo, SOURCE_ID as GMGN_INFO_SOURCE_ID, type TokenInfo,
+} from '../sources/gmgnTokenInfo.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
 import { align5m, nowSec } from '../lib/time.ts';
@@ -81,8 +83,34 @@ const log = makeLogger('pump-engine');
  * 假报警漏洞重新打开。
  */
 export const TICK_INTERVAL_SECONDS = 60;
-/** 200 req/min、每批 30 个的理论顶是 6000；留 25% 给校正与抖动。 */
-export const PUMP_TOKEN_BUDGET = 4500;
+/**
+ * 每轮在全部热币之外最多发现这么多后台币。
+ *
+ * 900 个约 30 个 DexScreener 批次；热币先独立跑完，后台源即使变慢也不会
+ * 把同一轮的关键报警压到几千个冷币之后。按当前约一万币，冷队列约 11 轮
+ * 覆盖一次；温币排在冷币前，仍可维持约 3 分钟复查。
+ */
+export const PUMP_BACKGROUND_TOKEN_BUDGET = 900;
+
+export interface PumpTokenStages {
+  hot: string[];
+  background: string[];
+}
+
+/** 纯函数单测锁住关键不变量：热币不限量、后台才受预算约束。 */
+export function selectPumpTokenStages(
+  dueTokenIds: readonly string[], monitoredTokenIds: ReadonlySet<string>,
+  backgroundBudget = PUMP_BACKGROUND_TOKEN_BUDGET,
+): PumpTokenStages {
+  const hot: string[] = [];
+  const background: string[] = [];
+  const bounded = Math.max(0, Math.floor(backgroundBudget));
+  for (const tokenId of dueTokenIds) {
+    if (monitoredTokenIds.has(tokenId)) hot.push(tokenId);
+    else if (background.length < bounded) background.push(tokenId);
+  }
+  return { hot, background };
+}
 
 /**
  * 持仓价值低于这个数就不推送 —— **每人可以自己改**，这里只是没设过时的默认值。
@@ -134,9 +162,11 @@ function isRetryableQuoteFailure(f: QuoteBatchFailure): boolean {
   return f.kind !== 'empty_response';
 }
 
-const metadataQueue = new PQueue({ concurrency: 4 });
+// 上游额度是按请求数算的；压到 60/min，给其它 GMGN 路径留余量。
+const metadataQueue = new PQueue({ concurrency: 1, interval: 1000, intervalCap: 1 });
 const backfillQueue = new PQueue({ concurrency: 2 });
 const pendingMetadata = new Set<string>();
+const metadataRetryAfter = new Map<string, number>();
 const pendingBackfills = new Set<string>();
 const completedBackfills = new Set<string>();
 
@@ -145,12 +175,20 @@ function deferMetadata(
   getInfo: NonNullable<PumpDeps['fetchTokenInfo']>,
 ): void {
   if (pendingMetadata.has(tokenId)) return;
+  if ((metadataRetryAfter.get(tokenId) ?? 0) > now) return;
   pendingMetadata.add(tokenId);
   void metadataQueue.add(async () => {
     try {
       const info = await getInfo(chain, address);
       wr.setTokenMeta(tokenId, info?.holderCount ?? null, info?.symbol ?? null, now);
+      metadataRetryAfter.delete(tokenId);
+      recordVerdict(GMGN_INFO_SOURCE_ID, { ok: true, reason: null }, now, '元数据请求成功');
     } catch (err) {
+      metadataRetryAfter.set(tokenId, now + 300);
+      recordVerdict(
+        GMGN_INFO_SOURCE_ID, { ok: false, reason: safeErrorMessage(err) }, now,
+        `${chain} 元数据刷新失败`,
+      );
       log.warn(`${tokenId} 后台元数据刷新失败: ${safeErrorMessage(err)}`);
     } finally {
       pendingMetadata.delete(tokenId);
@@ -347,7 +385,9 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   // 成本可接受：批量接口一次 30 个地址，450 个币也只要 15 次请求。
   // 监控中的每轮都判；已被挡掉的每 30 分钟重查一次 ——
   // 一千多个粉尘币每轮都拉报价，光请求就占掉 20 秒
-  const tokenIds = wr.tokenIdsDueForEval(now, PUMP_TOKEN_BUDGET);
+  const monitored = new Set(wr.monitoredTokenIds());
+  const stages = selectPumpTokenStages(wr.tokenIdsDueForEval(now), monitored);
+  const tokenIds = [...stages.hot, ...stages.background];
   const runId = now;
   pumpHealth.beginPumpRun(runId, now, tokenIds.length);
   let totalCovered = 0;
@@ -370,13 +410,32 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   wr.markTokensAttempted(tokenIds, now);
   const quotes = new Map<string, BatchQuote>();
   const xxyyRound: XxyyRound = { quotes: new Map(), failures: new Map() };
-  const monitored = new Set(wr.monitoredTokenIds());
   const priority = new Map(tokenIds.map((id, i) => [id, tokenIds.length - i]));
   const evalQueue = new PQueue({ concurrency: 8 });
 
-  // 每条链各自等本链的 DS + XXYY；快链拿到结果后立即进入判定队列，
-  // 不再等其它慢链。单币的元数据/回填在生产又由更小的后台队列承接。
-  const chainTasks = [...byChain].map(async ([chain, addrs]) => {
+  interface ChainHealth {
+    requested: number;
+    covered: number;
+    technicalFailures: number;
+    missingMonitored: number;
+    criticalRequested: number;
+    messages: string[];
+  }
+  const chainHealth = new Map<string, ChainHealth>();
+
+  // 第一段只跑全部热币并完成判定，第二段才跑有上限的后台发现。这样同一条链
+  // 的冷币批次、超时或空响应都不能排在关键报警前面。
+  for (const stageTokenIds of [stages.hot, stages.background]) {
+    const stageByChain = new Map<string, string[]>();
+    for (const id of stageTokenIds) {
+      const [chain, addr] = id.split(':');
+      if (!chain || !addr) continue;
+      (stageByChain.get(chain) ?? stageByChain.set(chain, []).get(chain)!).push(addr);
+    }
+
+    // 每条链各自等本链的 DS + XXYY；快链拿到结果后立即进入判定队列，
+    // 不再等其它慢链。单币的元数据/回填在生产又由更小的后台队列承接。
+    const chainTasks = [...stageByChain].map(async ([chain, addrs]) => {
     const candidatePromise = deps.fetchCandidatePrices === null
       ? Promise.resolve<XxyyRound>({ quotes: new Map(), failures: new Map() })
       : fetchXxyyRound(
@@ -420,24 +479,18 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       quotes.set(key, quote);
     }
 
-    const criticalRequested = addrs.filter((a) =>
+    const currentHealth = chainHealth.get(chain) ?? {
+      requested: 0, covered: 0, technicalFailures: 0, missingMonitored: 0,
+      criticalRequested: 0, messages: [],
+    };
+    currentHealth.requested += addrs.length;
+    currentHealth.covered += covered;
+    currentHealth.technicalFailures += technicalFailures;
+    currentHealth.missingMonitored += missingMonitored;
+    currentHealth.criticalRequested += addrs.filter((a) =>
       monitored.has(`${chain}:${normalizeMint(chain, a)}`)).length;
-    const errorKind = technicalFailures > 0
-      ? 'batch-failure'
-      : missingMonitored > 0 ? 'missing-monitored-quote'
-      : covered === 0 && criticalRequested > 0 ? 'no-valid-price' : null;
-    pumpHealth.recordQuoteHealth({
-      runId, chain, now: deps.clock?.() ?? now, requested: addrs.length, covered,
-      failedBatches: technicalFailures, errorKind,
-      errorMessage: healthMessage ?? (errorKind === 'no-valid-price'
-        ? `${criticalRequested} 个监控中代币全部缺少有效报价` : null),
-    });
-    recordVerdict(
-      `dexscreener:${chain}`,
-      errorKind ? { ok: false, reason: healthMessage ?? '监控中代币无有效报价' } : { ok: true, reason: null },
-      deps.clock?.() ?? now,
-      `请求 ${addrs.length}，有效 ${covered}，技术失败批次 ${technicalFailures}`,
-    );
+    if (healthMessage) currentHealth.messages.push(healthMessage);
+    chainHealth.set(chain, currentHealth);
     totalCovered += covered;
     failedBatches += technicalFailures;
 
@@ -458,14 +511,16 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
 
     const chainTokenIds = addrs.map((address) => `${chain}:${normalizeMint(chain, address)}`);
     try {
-      recordQuoteShadows(chainTokenIds.map((tokenId) => {
+      recordQuoteShadows(chainTokenIds.flatMap((tokenId) => {
         const ds = chainQuotes.get(tokenId) ?? null;
         const xxyy = chainXxyy.quotes.get(tokenId) ?? null;
+        // 两边都没有数据的冷币不提供任何审计价值，只会让数据库膨胀。
+        if (!ds && !xxyy) return [];
         const observedAt = Math.max(ds?.fetchedAt ?? now, xxyy?.fetchedAt ?? now);
-        return {
+        return [{
           tokenId, observedAt, ds, xxyy,
           decision: decideQuote(ds, xxyy, localXxyyHealthy),
-        };
+        }];
       }));
     } catch (err) {
       log.warn(`${chain} 影子报价批量落库失败: ${safeErrorMessage(err)}`);
@@ -513,9 +568,36 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       }, { priority: priority.get(tokenId) ?? 0 }).then(() => undefined);
     });
     await Promise.all(evaluations);
-  });
+    });
 
-  await Promise.all(chainTasks);
+    await Promise.all(chainTasks);
+  }
+
+  for (const [chain] of byChain) {
+    const health = chainHealth.get(chain) ?? {
+      requested: 0, covered: 0, technicalFailures: 0, missingMonitored: 0,
+      criticalRequested: 0, messages: [],
+    };
+    const errorKind = health.technicalFailures > 0
+      ? 'batch-failure'
+      : health.missingMonitored > 0 ? 'missing-monitored-quote'
+      : health.covered === 0 && health.criticalRequested > 0 ? 'no-valid-price' : null;
+    const healthMessage = [...new Set(health.messages)].join('；') || null;
+    pumpHealth.recordQuoteHealth({
+      runId, chain, now: deps.clock?.() ?? now, requested: health.requested,
+      covered: health.covered, failedBatches: health.technicalFailures, errorKind,
+      errorMessage: healthMessage ?? (errorKind === 'no-valid-price'
+        ? `${health.criticalRequested} 个监控中代币全部缺少有效报价` : null),
+    });
+    recordVerdict(
+      `dexscreener:${chain}`,
+      errorKind
+        ? { ok: false, reason: healthMessage ?? '监控中代币无有效报价' }
+        : { ok: true, reason: null },
+      deps.clock?.() ?? now,
+      `请求 ${health.requested}，有效 ${health.covered}，技术失败批次 ${health.technicalFailures}`,
+    );
+  }
   const parallelMs = Date.now() - t0;
   if (deps.fetchCandidatePrices !== null) assessXxyy(byChain, quotes, xxyyRound, now);
 
@@ -614,10 +696,8 @@ async function evaluateToken(
     if (r.monitored) stillMonitored = true;
   }
   if (!stillMonitored || !quote) return { status: 'ok' };
-  // 第一次缺少持有人元数据时先等有界后台刷新；旧缓存存在则可继续使用。
-  if (deferSlowTasks && cachedMeta === null && wouldPass && chain && addr) {
-    return { status: 'deferred', reason: '元数据待刷新' };
-  }
+  // 元数据只是附加的空投盘筛选，不能挡住价格主链路。首次缓存尚未回来时
+  // 先按流动性/成交量继续；结果到达后下一轮会自动补上持有人数判定。
 
   // 报价里带着符号，第一次拿到就存下来 —— 否则页面上永远只有合约地址
   if (quote.symbol) wr.setHoldingSymbol(tokenId, quote.symbol);

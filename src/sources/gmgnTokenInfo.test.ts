@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTokenInfo, supportsChain } from './gmgnTokenInfo.ts';
+import { fetchTokenInfo, parseTokenInfo, supportsChain } from './gmgnTokenInfo.ts';
+import { SourceError } from '../lib/errors.ts';
 
 test('解析出 symbol 与 holder_count', () => {
   // 实测 MOONALD 的响应形状
@@ -34,4 +35,29 @@ test('四条 EVM 链都支持', () => {
   for (const c of ['ethereum', 'bsc', 'base', 'robinhood']) {
     assert.ok(supportsChain(c), `${c} 应支持`);
   }
+});
+
+test('网络失败显式抛出，不能伪装成查不到代币', async () => {
+  await assert.rejects(
+    fetchTokenInfo('bsc', '0xabc', {
+      apiKey: 'test-key',
+      request: async () => { throw new Error('socket timeout'); },
+    }),
+    (err: unknown) => err instanceof SourceError && err.kind === 'network',
+  );
+});
+
+test('429 与其它非 200 有明确失败分类', async () => {
+  await assert.rejects(
+    fetchTokenInfo('bsc', '0xabc', {
+      apiKey: 'test-key', request: async () => ({ status: 429, body: '' }),
+    }),
+    (err: unknown) => err instanceof SourceError && err.kind === 'rate_limited',
+  );
+  await assert.rejects(
+    fetchTokenInfo('bsc', '0xabc', {
+      apiKey: 'test-key', request: async () => ({ status: 503, body: '' }),
+    }),
+    (err: unknown) => err instanceof SourceError && err.kind === 'http_error',
+  );
 });

@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 import { runMigrations } from '../db/migrate.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
-import { runPumpTick, waitForPumpSlowTasks, type PumpDeps } from './pumpEngine.ts';
+import {
+  runPumpTick, selectPumpTokenStages, waitForPumpSlowTasks, type PumpDeps,
+} from './pumpEngine.ts';
 import { Decimal } from '../lib/decimal.ts';
 import type { BatchQuote } from '../sources/dexscreenerBatch.ts';
 import type { XxyyQuote } from '../sources/xxyy.ts';
@@ -1292,6 +1294,41 @@ test('DS 也没有可比样本时不把旧故障误清零', async () => {
 });
 
 /* ---------------- A05 有界调度 ---------------- */
+
+test('热币不受后台预算限制，后台币按原优先顺序截断', () => {
+  const due = ['bsc:hot-a', 'bsc:fresh-a', 'base:hot-b', 'bsc:warm-a', 'bsc:cold-a'];
+  const stages = selectPumpTokenStages(due, new Set(['bsc:hot-a', 'base:hot-b']), 2);
+  assert.deepEqual(stages.hot, ['bsc:hot-a', 'base:hot-b']);
+  assert.deepEqual(stages.background, ['bsc:fresh-a', 'bsc:warm-a']);
+});
+
+test('后台元数据未返回也不阻塞价格状态建立', async () => {
+  const at = NOW + 19_000;
+  const id = 'bsc:0xa05-metadata-nonblocking';
+  const u = wr.createUser(`metanb${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xmetanb${seq}`, null)!;
+  wr.upsertHolding(w.id, id, '1000000000000000000', 18, at);
+  history(id, '1');
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await runPumpTick(at, {
+    ...deps({ '0xa05-metadata-nonblocking': { priceUsd: '1' } }),
+    deferSlowTasks: true,
+    fetchTokenInfo: async () => {
+      await gate;
+      return { symbol: 'META', holderCount: 500 };
+    },
+  });
+
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.monitored, 1);
+  assert.ok((getRawDb().prepare(
+    `SELECT count(*) AS n FROM pump_states WHERE token_id=?`,
+  ).get(id) as { n: number }).n > 0, '元数据慢不能让首次价格状态一直空白');
+
+  release();
+  await waitForPumpSlowTasks();
+});
 
 test('HTTP 200 部分缺失只让缺失币短退避，成功币正常推进', async () => {
   const missing = 'bsc:0xpartial-missing';

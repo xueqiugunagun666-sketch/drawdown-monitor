@@ -30,6 +30,16 @@ export interface TokenInfo {
   holderCount: number | null;
 }
 
+type TokenInfoRequest = (
+  url: string, timeoutMs: number, headers: Record<string, string>,
+) => Promise<{ status: number; body: string }>;
+
+export interface FetchTokenInfoOptions {
+  /** 测试注入；生产省略时读取环境里的密钥。 */
+  apiKey?: string;
+  request?: TokenInfoRequest;
+}
+
 /** 从原始响应里取我们要的字段。单独导出便于测试，不必打网络 */
 export function parseTokenInfo(body: string): TokenInfo | null {
   let j: { code?: number; data?: { symbol?: string; holder_count?: number } };
@@ -51,10 +61,13 @@ export function supportsChain(chain: string): boolean {
   return chain in CHAIN_MAP;
 }
 
-export async function fetchTokenInfo(chain: string, address: string): Promise<TokenInfo | null> {
-  const apiKey = getSecrets().gmgnApiKey;
+export async function fetchTokenInfo(
+  chain: string, address: string, options: FetchTokenInfoOptions = {},
+): Promise<TokenInfo | null> {
+  const apiKey = options.apiKey ?? getSecrets().gmgnApiKey;
   const gmgnChain = CHAIN_MAP[chain];
   if (!apiKey || !gmgnChain) return null;
+  const request = options.request ?? httpGet;
 
   const params = new URLSearchParams({
     chain: gmgnChain,
@@ -66,14 +79,19 @@ export async function fetchTokenInfo(chain: string, address: string): Promise<To
 
   let res;
   try {
-    res = await httpGet(`${HOST}/v1/token/info?${params}`, 15_000, { 'X-APIKEY': apiKey });
+    res = await request(`${HOST}/v1/token/info?${params}`, 15_000, { 'X-APIKEY': apiKey });
   } catch (err) {
-    log.debug(`${chain}:${address.slice(0, 10)} 请求失败: ${err instanceof Error ? err.message : err}`);
-    return null;
+    const message = err instanceof Error ? err.message : String(err);
+    log.debug(`${chain}:${address.slice(0, 10)} 请求失败: ${message}`);
+    throw new SourceError({ sourceId: SOURCE_ID, kind: 'network', chain, message });
   }
   if (res.status === 429) {
     throw new SourceError({ sourceId: SOURCE_ID, kind: 'rate_limited', chain, message: '429 限流' });
   }
-  if (res.status !== 200) return null;
+  if (res.status !== 200) {
+    throw new SourceError({
+      sourceId: SOURCE_ID, kind: 'http_error', chain, message: `HTTP ${res.status}`,
+    });
+  }
   return parseTokenInfo(res.body);
 }
