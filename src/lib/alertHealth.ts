@@ -44,6 +44,17 @@ export interface HealthSignals {
   alertReadDown: boolean;
 }
 
+export type BackendRuntimeStatus = 'unknown' | 'healthy' | 'degraded' | 'down';
+
+/**
+ * 只有整个判定循环失活或尚无任何健康证明时，才升级成红色系统故障弹窗。
+ * 单链/单批次降级仍由页面黄条说明；把 degraded 当 down 会在回退正常工作时
+ * 反复喊“后端已死”，最终让真正的宕机提醒失去可信度。
+ */
+export function shouldEscalateBackend(status: BackendRuntimeStatus): boolean {
+  return status === 'down' || status === 'unknown';
+}
+
 /** 把浏览器与服务端信号统一翻译成看门狗故障项，便于回放边界。 */
 export function healthIssuesForSignals(signals: HealthSignals, now: number): Set<HealthIssue> {
   const present = new Set<HealthIssue>();

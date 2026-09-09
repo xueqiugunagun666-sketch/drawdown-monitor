@@ -21,6 +21,7 @@ import {
   buildAlertBatch, buildNotificationSpecs,
   type AlertSoundKind, type NotificationSpec,
 } from './notificationBatch.ts';
+import { shouldEscalateBackend } from '../../lib/alertHealth.ts';
 
 interface DeliveryFailure {
   spec: NotificationSpec;
@@ -299,12 +300,8 @@ export default function WalletClient() {
       <HealthWatch
         streamConnected={streamEstablished && !offline}
         businessHeartbeatAt={businessHealth?.receivedAt ?? null}
-        backendDown={businessHealth !== null && (
-          businessHealth.pumpStatus === 'down'
-          || businessHealth.pumpStatus === 'unknown'
-          || businessHealth.problemScopes.length > 0
-            && businessHealth.problemScopes.some((scope) => scope !== 'all')
-        )}
+        backendDown={businessHealth !== null
+          && shouldEscalateBackend(businessHealth.pumpStatus)}
         alertReadDown={businessHealth?.alertsRead === 'error'}
       />
       <div className="flex items-center justify-between gap-3 flex-wrap">

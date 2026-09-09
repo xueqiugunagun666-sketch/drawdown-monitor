@@ -7,6 +7,23 @@ User=drawdown
 Group=drawdown
 WorkingDirectory=/opt/drawdown-monitor
 ExecStart=/opt/drawdown-monitor/deploy/backup.sh
+TimeoutStartSec=45min
+
+# 备份绝不能再与分钟级报警争抢资源。2GB 库复制与压缩只在系统有余量时慢慢跑。
+Nice=15
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUQuota=20%
+MemoryHigh=192M
+MemoryMax=320M
+OOMPolicy=stop
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=drawdown-backup
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/drawdown-monitor/data /opt/drawdown-monitor/backups

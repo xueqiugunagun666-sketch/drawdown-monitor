@@ -3,6 +3,9 @@ Description=Drawdown Monitor Web (Next.js)
 After=network-online.target
 Wants=network-online.target
 
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
 [Service]
 Type=simple
 User=drawdown
@@ -19,9 +22,6 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=drawdown-web
-
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 NoNewPrivileges=true
 PrivateTmp=true

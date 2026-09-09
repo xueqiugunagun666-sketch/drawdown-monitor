@@ -2,11 +2,11 @@
 Description=定期备份数据库
 
 [Timer]
-# 每 6 小时一次。真正不可再生的是代币清单、备注和日程 ——
-# candle 丢了能重新回填，那些丢了只能靠记忆。
-OnCalendar=00/6:00
+# 每天低峰一次。真正不可再生的是账号、钱包备注与报警状态；行情历史可回填。
+OnCalendar=*-*-* 04:00:00
 Persistent=true
-RandomizedDelaySec=300
+RandomizedDelaySec=1800
+AccuracySec=5min
 
 [Install]
 WantedBy=timers.target

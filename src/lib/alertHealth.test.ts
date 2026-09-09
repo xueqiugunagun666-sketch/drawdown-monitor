@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   step, activeIssues, initialWatchState, describeIssue,
   GRACE_SECONDS, RENOTIFY_SECONDS, ISSUES, BUSINESS_HEARTBEAT_TIMEOUT_SECONDS,
-  healthIssuesForSignals, type HealthIssue, type WatchState,
+  healthIssuesForSignals, shouldEscalateBackend, type HealthIssue, type WatchState,
 } from './alertHealth.ts';
 
 const none = new Set<HealthIssue>();
@@ -47,6 +47,13 @@ test('业务心跳明确报告读库失败时单独报警，游标可留待恢�
     businessHeartbeatAt: 120, backendDown: false, alertReadDown: true,
   }, 121);
   assert.deepEqual([...present], ['alert-read-down']);
+});
+
+test('部分报价降级只显示黄条，不冒充整个后端死亡', () => {
+  assert.equal(shouldEscalateBackend('degraded'), false);
+  assert.equal(shouldEscalateBackend('healthy'), false);
+  assert.equal(shouldEscalateBackend('down'), true);
+  assert.equal(shouldEscalateBackend('unknown'), true);
 });
 
 test('本来好好的突然坏了，过了观察期就提醒', () => {

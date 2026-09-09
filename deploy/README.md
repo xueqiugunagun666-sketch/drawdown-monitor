@@ -51,7 +51,7 @@ systemctl restart drawdown-worker drawdown-web
 # 立即备份一次
 systemctl start drawdown-backup
 
-# 查看备份（每天一次，保留 7 天，gzip 压缩）
+# 查看备份（每天低峰一次，保留 14 天，快速 gzip 压缩）
 ls -lh /opt/drawdown-monitor/backups
 ```
 
