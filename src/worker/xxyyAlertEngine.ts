@@ -4,7 +4,6 @@
  * 这里只处理已经通过资格筛选（holdings.monitored=1）的币。DexScreener 的
  * 流动性、成交量和链接更新继续由慢轮次负责，但绝不再挡住本模块的当前价。
  */
-import PQueue from 'p-queue';
 import { Decimal } from '../lib/decimal.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
@@ -270,7 +269,7 @@ function evaluateAth(
   };
 }
 
-async function evaluateQuote(tokenId: string, quote: XxyyQuote, now: number): Promise<boolean> {
+function evaluateQuote(tokenId: string, quote: XxyyQuote, now: number): boolean {
   let price: Decimal;
   try { price = new Decimal(quote.priceUsd); }
   catch { return false; }
@@ -461,7 +460,7 @@ export async function runXxyyAlertTick(
     requested: tokenIds.length, covered: 0, evaluated: 0,
     pendingConfirmation: 0, failures: 0, evalErrors: 0,
   };
-  const queue = new PQueue({ concurrency: 8 });
+  const quotesToEvaluate: Array<{ tokenId: string; quote: XxyyQuote }> = [];
   let fatal: unknown = null;
   try {
     await Promise.all([...byChain].map(async ([chain, addresses]) => {
@@ -509,12 +508,18 @@ export async function runXxyyAlertTick(
       `请求 ${addresses.length}，有效 ${response.quotes.size}，技术失败批次 ${technical.length}，旧覆盖缺失 ${lostPreviouslyCovered}`,
     );
 
-    const tasks: Array<Promise<void>> = [];
     for (const [mint, quote] of response.quotes) {
       const tokenId = `${chain}:${normalizeMint(chain, mint)}`;
-      tasks.push(queue.add(async () => {
+      quotesToEvaluate.push({ tokenId, quote });
+    }
+    }));
+
+    // 所有 HTTP 必须先彻底结束，再开始同步 SQLite。否则等待写锁会堵住 Node
+    // 事件循环，让已经发出的下一条链请求在响应到达后仍被本地超时器杀掉。
+    const evaluateAll = getRawDb().transaction(() => {
+      for (const { tokenId, quote } of quotesToEvaluate) {
         try {
-          const evaluated = await evaluateQuote(tokenId, quote, deps.clock?.() ?? now);
+          const evaluated = evaluateQuote(tokenId, quote, deps.clock?.() ?? now);
           if (evaluated) result.evaluated++;
           else {
             const pending = getRawDb().prepare(
@@ -526,10 +531,9 @@ export async function runXxyyAlertTick(
           result.evalErrors++;
           log.warn(`${tokenId} XXYY 判定失败，本轮其他币继续: ${safeErrorMessage(error)}`);
         }
-      }).then(() => undefined));
-    }
-    await Promise.all(tasks);
-    }));
+      }
+    });
+    evaluateAll();
 
     if (now % 3600 < XXYY_ALERT_INTERVAL_SECONDS) {
       try { pruneXxyyCandles(now); }

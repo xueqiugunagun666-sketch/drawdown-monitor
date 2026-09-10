@@ -6,6 +6,7 @@
  * 的另一个 async loop 自我安慰“已经并行”。
  */
 import { runMigrations } from '../db/migrate.ts';
+import { getRawDb } from '../db/index.ts';
 import { makeLogger } from '../lib/log.ts';
 import { nowSec } from '../lib/time.ts';
 import { runXxyyAlertTick, XXYY_ALERT_INTERVAL_SECONDS } from './xxyyAlertEngine.ts';
@@ -15,6 +16,8 @@ let stopping = false;
 
 async function main(): Promise<void> {
   runMigrations();
+  // 报警链路优先等待短暂的主 worker 写事务；不能 5 秒一到就静默跳过币。
+  getRawDb().pragma('busy_timeout = 15000');
   const shutdown = (signal: string) => {
     log.info(`收到 ${signal}，本轮结束后退出`);
     stopping = true;
