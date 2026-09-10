@@ -44,6 +44,8 @@ export interface Secrets {
   coingeckoApiKey: string | undefined;
   gmgnApiKey: string | undefined;
   evmRpcBase: string | undefined;
+  /** Solana 钱包扫描 RPC；当前生产使用经授权的 XXYY RPC。 */
+  solanaRpcUrl: string | undefined;
   adminAccount: string | undefined;
   /** 群聊淘金：喊单回撤信号接口 */
   trashApiBase: string | undefined;
@@ -60,6 +62,7 @@ export function getSecrets(): Secrets {
     coingeckoApiKey: process.env.COINGECKO_API_KEY || undefined,
     gmgnApiKey: process.env.GMGN_API_KEY || undefined,
     evmRpcBase: process.env.EVM_RPC_BASE || undefined,
+    solanaRpcUrl: process.env.SOLANA_RPC_URL || undefined,
     adminAccount: process.env.ADMIN_ACCOUNT || undefined,
     trashApiBase: process.env.TRASH_API_BASE || undefined,
     trashApiToken: process.env.TRASH_API_TOKEN || undefined,
@@ -71,6 +74,7 @@ export function getSecrets(): Secrets {
   // RPC 端点是用户的私有基础设施，按密钥处理：
   // 不注册的话，eth_getLogs 超时的报错会把完整 URL 打进日志
   registerSecret(s.evmRpcBase);
+  registerSecret(s.solanaRpcUrl);
   registerSecret(s.trashApiToken);
   _secrets = s;
   return s;

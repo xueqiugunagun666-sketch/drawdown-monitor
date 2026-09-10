@@ -16,9 +16,14 @@ import { blockNumber as rpcBlockNumber } from '../sources/evmRpc.ts';
 import { chainIdOf } from '../sources/evmRpc.ts';
 import { scanWalletTokens } from '../sources/walletScan.ts';
 import { readBalances as rpcReadBalances, type TokenBalance } from '../sources/balances.ts';
+import {
+  fetchSolanaWalletSnapshot, SOURCE_ID as SOLANA_RPC_SOURCE_ID,
+  type SolanaWalletSnapshot,
+} from '../sources/solanaRpc.ts';
 import * as wr from '../db/walletRepo.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
+import { recordVerdict } from './sourceWatch.ts';
 
 const log = makeLogger('wallet-scanner');
 
@@ -38,25 +43,67 @@ export interface ScanDeps {
   readBalances: (
     chain: string, wallet: string, tokens: string[], known: Map<string, number | null>,
   ) => Promise<Map<string, TokenBalance>>;
+  solanaSnapshot: (wallet: string) => Promise<SolanaWalletSnapshot>;
 }
 
 export const realDeps: ScanDeps = {
   blockNumber: rpcBlockNumber,
   scanTokens: scanWalletTokens,
   readBalances: rpcReadBalances,
+  solanaSnapshot: fetchSolanaWalletSnapshot,
 };
+
+async function scanSolanaWallet(wallet: wr.WalletRow, now: number, deps: ScanDeps): Promise<void> {
+  const tag = `solana:${wallet.address.slice(0, 8)}…`;
+  let snapshot: SolanaWalletSnapshot;
+  try {
+    snapshot = await deps.solanaSnapshot(wallet.address);
+    recordVerdict(SOLANA_RPC_SOURCE_ID, { ok: true, reason: null }, now, '完整读取 Token 与 Token-2022');
+  } catch (err) {
+    const msg = safeErrorMessage(err);
+    recordVerdict(SOLANA_RPC_SOURCE_ID, { ok: false, reason: msg }, now, '钱包快照请求失败');
+    wr.updateWalletScanState(wallet.id, wallet.lastScannedBlock, now, msg);
+    log.warn(`${tag} 扫描失败: ${msg}`);
+    return;
+  }
+
+  try {
+    const applied = wr.applyWalletHoldingSnapshot(
+      wallet.id,
+      'solana',
+      [...snapshot.balances.values()].map((b) => ({
+        tokenId: `solana:${b.mint}`,
+        balance: b.balance,
+        decimals: b.decimals,
+      })),
+      snapshot.slot,
+      now,
+    );
+    log.info(`${tag} slot ${snapshot.slot}: 写入 ${applied.written}，清零 ${applied.removed}`);
+  } catch (err) {
+    // RPC 是好的、数据库写入失败；不要把本地故障记到数据源头上。
+    const msg = safeErrorMessage(err);
+    wr.updateWalletScanState(wallet.id, wallet.lastScannedBlock, now, msg);
+    log.warn(`${tag} 快照入库失败: ${msg}`);
+  }
+}
 
 export async function scanWallet(
   wallet: wr.WalletRow, now: number, deps: ScanDeps = realDeps,
 ): Promise<void> {
   const tag = `${wallet.chain}:${wallet.address.slice(0, 10)}…`;
 
+  if (wallet.chain === 'solana') {
+    await scanSolanaWallet(wallet, now, deps);
+    return;
+  }
+
   if (chainIdOf(wallet.chain) === null) {
-    // 本期只做四条 EVM 链。不支持的链要写进错误让用户看见，
+    // 不支持的链要写进错误让用户看见，
     // 而不是安静地什么都不做
     wr.updateWalletScanState(
       wallet.id, wallet.lastScannedBlock, now,
-      `暂不支持链 ${wallet.chain}（本期只做 ethereum/bsc/base/robinhood）`,
+      `暂不支持链 ${wallet.chain}（支持 ethereum/bsc/base/robinhood/solana）`,
     );
     return;
   }

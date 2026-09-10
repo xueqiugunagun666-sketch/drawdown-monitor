@@ -48,6 +48,13 @@ export function isPumpAthAlert(kind: string | null | undefined): boolean {
 
 export function sourceAlertText(a: AlertRow): { title: string; body: string } {
   const source = (a.tokenId.split(':')[1] ?? '未知').toUpperCase();
+  if (source === 'XXYY-SOLANA-RPC') {
+    return {
+      title: 'Solana 钱包 RPC 异常',
+      body: '连续多次无法完整读取 SPL Token 与 Token-2022 持仓。旧持仓已保留，未把读取失败误判为卖出。'
+        + '可在设置页查看数据源状态。',
+    };
+  }
   return {
     title: `报价源 ${source} 已自动回退`,
     body: `${source} 连续多轮请求失败、缺失或偏价，系统已自动回退 DexScreener。`

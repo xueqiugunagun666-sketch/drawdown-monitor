@@ -123,7 +123,7 @@ export default function WalletList(
 
       <form onSubmit={add} className="flex gap-2 flex-wrap mb-2">
         <input value={address} onChange={(e) => setAddress(e.target.value)}
-          placeholder="0x…" required spellCheck={false}
+          placeholder="EVM 0x… 或 Solana 地址" required spellCheck={false}
           className="flex-1 min-w-[15rem] bg-neutral-950 border border-neutral-800 rounded px-2 py-1.5
                      text-sm font-mono text-neutral-200 placeholder-neutral-600 focus:border-neutral-600 outline-none" />
         <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="备注（可选）"
@@ -135,7 +135,7 @@ export default function WalletList(
         </button>
       </form>
       <p className="text-xs text-neutral-600 mb-3">
-        填一次就行，{chains.join(' / ')} 四条链会一起监控。
+        EVM 地址会同时监控 ethereum / bsc / base / robinhood；Solana 地址只监控 solana。
       </p>
       {msg && (
         <p className={`text-sm mb-3 ${msg.kind === 'err' ? 'text-[#d03b3b]' : 'text-[#3fbf7f]'}`}>

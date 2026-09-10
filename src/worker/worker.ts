@@ -45,6 +45,7 @@ function logStartupConfig(): void {
   log.info(`TELEGRAM_BOT_TOKEN=${mask(s.telegramBotToken)}  TELEGRAM_CHAT_ID=${mask(s.telegramChatId)}`);
   log.info(`COINGECKO_API_KEY=${mask(s.coingeckoApiKey)}`);
   log.info(`GMGN_API_KEY=${mask(s.gmgnApiKey)}  ${s.gmgnApiKey ? '(OHLCV 回填走 GMGN，GT 兜底)' : '(未配置，回填走 GeckoTerminal)'}`);
+  log.info(`SOLANA_RPC_URL=${mask(s.solanaRpcUrl)}  ${s.solanaRpcUrl ? '(Solana 钱包扫描已启用)' : '(Solana 钱包扫描未配置)'}`);
   if (!s.telegramBotToken || !s.telegramChatId) {
     log.warn('Telegram 未配置，报警将无法投递（会在 alerts.delivered 中记录失败）');
   }

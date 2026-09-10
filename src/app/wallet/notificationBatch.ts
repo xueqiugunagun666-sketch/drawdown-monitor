@@ -168,6 +168,22 @@ function sourceName(a: AlertRow): string {
   return source.toUpperCase();
 }
 
+function systemNotificationText(a: AlertRow): { title: string; body: string } {
+  const source = sourceName(a);
+  if (source === 'XXYY-SOLANA-RPC') {
+    return {
+      title: '⚠️ Solana 钱包 RPC 异常',
+      body: '连续多次无法完整读取 SPL Token 与 Token-2022 持仓。旧持仓已保留，未误判为卖出。'
+        + '可在设置页查看数据源状态。',
+    };
+  }
+  return {
+    title: `⚠️ 报价源 ${source} 已自动回退`,
+    body: `${source} 连续多轮请求失败、缺失或偏价，系统已自动回退 DexScreener。`
+      + '可在设置页查看数据源状态。',
+  };
+}
+
 /**
  * 一事件一条浏览器通知。声音仍按 SSE 批次合并，但 Chrome 横幅不能再把
  * FLETCH 这种首次 2x 藏进“共 N 个异动”的摘要里。每条使用自己的事件
@@ -180,12 +196,11 @@ export function buildNotificationSpecs(
   const specs: NotificationSpec[] = [];
 
   for (const alert of batch.system) {
-    const source = sourceName(alert);
+    const text = systemNotificationText(alert);
     specs.push({
       channel: 'system',
-      title: `⚠️ 报价源 ${source} 已自动回退`,
-      body: `${source} 连续多轮请求失败、缺失或偏价，系统已自动回退 DexScreener。`
-        + '可在设置页查看数据源状态。',
+      title: text.title,
+      body: text.body,
       tag: stableNotificationTag('system', [alert]),
       alertIds: [alert.id],
     });

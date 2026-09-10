@@ -117,6 +117,7 @@ ATH 窗口为 3 天、7 天、30 天、90 天、180 天、360 天和全部历史
 | GeckoTerminal | 历史 OHLCV 兜底 | 免费额度慢，必须独立排队并支持断点续传 |
 | CoinGecko | 原生币美元价格与历史 | 限流与粒度会变化，实时和回填共享节流 |
 | EVM RPC | `eth_getLogs`、余额、代币元数据 | RPC URL 按密钥处理，超时和错误日志必须脱敏 |
+| Solana RPC | `getTokenAccountsByOwner` 钱包快照 | 同时读取 SPL Token 与 Token-2022；两者全部成功后才允许删除旧持仓 |
 | 外部信号 API | 群聊信号增量同步 | Bearer 凭据只在服务器 `.env`；失败与空结果分开记录 |
 
 正式报价规则：DexScreener 提供必需的流动性和成交量上下文；当 XXYY 同轮价格与它相差不超过
@@ -196,6 +197,7 @@ DATABASE_PATH=<absolute-or-relative-db-path>
 COINGECKO_API_KEY=<secret-or-empty>
 GMGN_API_KEY=<secret-or-empty>
 EVM_RPC_BASE=https://<private-rpc-host>/<private-path>
+SOLANA_RPC_URL=https://<authorized-solana-rpc-host>/<private-path>
 TRASH_API_BASE=https://<private-api-host>/<path>
 TRASH_API_TOKEN=<secret>
 ```

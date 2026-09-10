@@ -75,3 +75,19 @@ test('缺少 label 不会误清空备注', async () => {
   assert.equal(res.status, 400);
   assert.equal(wr.listWallets(alice.id).find((w) => w.address === addr)?.label, '保留');
 });
+
+test('Solana 地址只创建 solana 一行并保持大小写', async () => {
+  const sol = 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd';
+  const res = await POST(req(aliceToken, 'POST', { address: sol, label: 'SOL 钱包' }));
+  assert.equal(res.status, 200);
+  const data = await res.json() as { added: string[] };
+  assert.deepEqual(data.added, ['solana']);
+  const rows = wr.listWallets(alice.id).filter((w) => w.address === sol);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.chain, 'solana');
+});
+
+test('拒绝不是 32 字节公钥的伪 Solana base58 地址', async () => {
+  const res = await POST(req(aliceToken, 'POST', { address: '2'.repeat(32) }));
+  assert.equal(res.status, 400);
+});

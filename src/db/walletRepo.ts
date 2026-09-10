@@ -8,6 +8,7 @@
 import { eq, and, gte, desc, asc, sql, getTableColumns } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { Decimal } from '../lib/decimal.ts';
+import { normalizeWalletAddress } from '../lib/walletAddress.ts';
 import { getDb, getRawDb } from './index.ts';
 import {
   users, sessions, wallets, holdings, walletTokenCandidates, pumpAlerts, tokenMeta,
@@ -80,7 +81,7 @@ export function addWallet(
   const id = randomUUID();
   try {
     getDb().insert(wallets).values({
-      id, userId, chain, address: address.toLowerCase(), label: normalizeWalletLabel(label),
+      id, userId, chain, address: normalizeWalletAddress(address), label: normalizeWalletLabel(label),
       lastScannedBlock: null, lastScanAt: null, lastScanError: null,
       enabled: 1, createdAt: Math.floor(Date.now() / 1000),
     }).run();
@@ -104,7 +105,7 @@ export function updateWalletLabelByAddress(
 ): number {
   return getDb().update(wallets)
     .set({ label: normalizeWalletLabel(label) })
-    .where(and(eq(wallets.userId, userId), eq(wallets.address, address.trim().toLowerCase())))
+    .where(and(eq(wallets.userId, userId), eq(wallets.address, normalizeWalletAddress(address))))
     .run().changes;
 }
 
@@ -148,6 +149,68 @@ export function upsertHolding(
 export function removeHolding(walletId: string, tokenId: string): void {
   getDb().delete(holdings)
     .where(and(eq(holdings.walletId, walletId), eq(holdings.tokenId, tokenId))).run();
+}
+
+export interface HoldingSnapshotEntry {
+  tokenId: string;
+  balance: string;
+  decimals: number;
+}
+
+/**
+ * 原子应用一份完整持仓快照。用于 Solana：RPC 每轮返回钱包当前所有
+ * Token/Token-2022 账户，不需要像 EVM 一样靠转账日志增量发现。
+ *
+ * 插入、更新、删除旧持仓和推进 slot 必须在同一事务；任何一步失败都会
+ * 整体回滚，避免页面显示半份新余额、半份旧余额。
+ */
+export function applyWalletHoldingSnapshot(
+  walletId: string, chain: string, entries: HoldingSnapshotEntry[], slot: number, now: number,
+): { written: number; removed: number } {
+  const db = getRawDb();
+  const tx = db.transaction(() => {
+    const wallet = db.prepare(`SELECT chain FROM wallets WHERE id = ?`).get(walletId) as
+      { chain: string } | undefined;
+    if (!wallet || wallet.chain !== chain) throw new Error('钱包不存在或链不匹配');
+
+    const existing = db.prepare(`SELECT token_id FROM holdings WHERE wallet_id = ?`)
+      .all(walletId) as Array<{ token_id: string }>;
+    const keep = new Set<string>();
+    const upsert = db.prepare(`
+      INSERT INTO holdings
+        (wallet_id, token_id, balance, decimals, first_seen_at, last_seen_at,
+         monitored, filter_reason, below_since_ts)
+      VALUES (?, ?, ?, ?, ?, ?, 0, NULL, NULL)
+      ON CONFLICT(wallet_id, token_id) DO UPDATE SET
+        balance = excluded.balance,
+        decimals = excluded.decimals,
+        last_seen_at = excluded.last_seen_at
+    `);
+    let written = 0;
+    for (const entry of entries) {
+      if (!entry.tokenId.startsWith(`${chain}:`)) throw new Error('快照 token_id 链不匹配');
+      if (!/^\d+$/.test(entry.balance) || BigInt(entry.balance) <= 0n) {
+        throw new Error('快照余额必须是正整数字符串');
+      }
+      keep.add(entry.tokenId);
+      upsert.run(walletId, entry.tokenId, entry.balance, entry.decimals, now, now);
+      written++;
+    }
+
+    const remove = db.prepare(`DELETE FROM holdings WHERE wallet_id = ? AND token_id = ?`);
+    let removed = 0;
+    for (const row of existing) {
+      if (keep.has(row.token_id)) continue;
+      removed += remove.run(walletId, row.token_id).changes;
+    }
+    db.prepare(`
+      UPDATE wallets
+         SET last_scanned_block = ?, last_scan_at = ?, last_scan_error = NULL
+       WHERE id = ?
+    `).run(slot, now, walletId);
+    return { written, removed };
+  });
+  return tx();
 }
 
 export interface WalletTokenCandidate {
@@ -519,7 +582,7 @@ export function allHoldingTokenIds(): string[] {
  */
 export function removeWalletByAddress(userId: string, address: string): number {
   return getDb().delete(wallets)
-    .where(and(eq(wallets.userId, userId), eq(wallets.address, address.toLowerCase())))
+    .where(and(eq(wallets.userId, userId), eq(wallets.address, normalizeWalletAddress(address))))
     .run().changes;
 }
 

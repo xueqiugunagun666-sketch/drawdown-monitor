@@ -56,6 +56,14 @@ test('数据源故障文案覆盖请求失败、缺失和偏价，并说明已�
   assert.match(text.body, /DexScreener/);
 });
 
+test('Solana RPC 故障文案不谎称已回退报价源', () => {
+  const alert = { ...row('sol-rpc', 0, 'source-down'), tokenId: 'system:xxyy-solana-rpc' };
+  const text = sourceAlertText(alert);
+  assert.match(text.title, /Solana 钱包 RPC 异常/);
+  assert.match(text.body, /旧持仓已保留/);
+  assert.doesNotMatch(text.body, /回退 DexScreener/);
+});
+
 test('同一批重放得到稳定 tag，不按通知标题去重', () => {
   const a = row('same-a', 2, 'level', '2', 31);
   const b = row('same-b', 5, 'level', '5', 32);

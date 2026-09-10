@@ -25,6 +25,7 @@ const deps = (over: Partial<ScanDeps> = {}): ScanDeps => ({
   scanTokens: async () => new Set(['0xt1']),
   readBalances: async (_c, _w, tokens) =>
     new Map(tokens.map((t) => [t, { balance: '100', decimals: 18 }])),
+  solanaSnapshot: async () => ({ slot: 2000, balances: new Map() }),
   ...over,
 });
 
@@ -162,13 +163,63 @@ test('失败候选按指数退避且最高不超过 6 小时', () => {
   assert.equal(candidateRetryDelay(99), CANDIDATE_RETRY_MAX_SECONDS);
 });
 
-test('不支持的链跳过且不报错', async () => {
-  const u = wr.createUser(`sol${++seq}`, 'h')!;
-  wr.addWallet(u.id, 'solana', 'SoLaNaAddr', null);
+test('不支持的链跳过且明确写出错误', async () => {
+  const u = wr.createUser(`unknown${++seq}`, 'h')!;
+  wr.addWallet(u.id, 'arbitrum', '0xunknown', null);
   const w = wr.listWallets(u.id)[0]!;
   await scanWallet(w, 500, deps());
   const after = wr.listWallets(u.id)[0]!;
-  assert.match(after.lastScanError ?? '', /不支持|solana/i);
+  assert.match(after.lastScanError ?? '', /不支持|arbitrum/i);
+});
+
+test('Solana 完整快照写入持仓并保留 mint 大小写', async () => {
+  const u = wr.createUser(`sol${++seq}`, 'h')!;
+  const address = 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd';
+  const added = wr.addWallet(u.id, 'solana', address, null)!;
+  const wallet = wr.listWallets(u.id)[0]!;
+  const mint = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+
+  await scanWallet(wallet, 500, deps({
+    solanaSnapshot: async () => ({
+      slot: 987654,
+      balances: new Map([[mint, { mint, balance: '9007199254740993123', decimals: 5 }]]),
+    }),
+  }));
+
+  const holding = wr.listHoldingsByWallet(added.id)[0]!;
+  assert.equal(holding.tokenId, `solana:${mint}`);
+  assert.equal(holding.balance, '9007199254740993123');
+  assert.equal(holding.decimals, 5);
+  assert.equal(wr.listWallets(u.id)[0]?.lastScannedBlock, 987654);
+  assert.equal(wr.listWallets(u.id)[0]?.lastScanError, null);
+});
+
+test('Solana 快照失败保留旧持仓与旧 slot，并在钱包行显示错误', async () => {
+  const u = wr.createUser(`solfail${++seq}`, 'h')!;
+  const added = wr.addWallet(u.id, 'solana', 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd', null)!;
+  const mint = 'solana:DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+  wr.upsertHolding(added.id, mint, '77', 5, 100);
+  wr.updateWalletScanState(added.id, 123, 100, null);
+  const wallet = wr.listWallets(u.id)[0]!;
+
+  await scanWallet(wallet, 500, deps({
+    solanaSnapshot: async () => { throw new Error('XXYY RPC timeout'); },
+  }));
+
+  assert.equal(wr.listHoldingsByWallet(added.id)[0]?.balance, '77');
+  const after = wr.listWallets(u.id)[0]!;
+  assert.equal(after.lastScannedBlock, 123);
+  assert.match(after.lastScanError ?? '', /timeout/);
+});
+
+test('Solana 新的完整快照会删除已归零的旧持仓', async () => {
+  const u = wr.createUser(`solzero${++seq}`, 'h')!;
+  const added = wr.addWallet(u.id, 'solana', 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd', null)!;
+  wr.upsertHolding(added.id, 'solana:DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', '77', 5, 100);
+  await scanWallet(wr.listWallets(u.id)[0]!, 500, deps({
+    solanaSnapshot: async () => ({ slot: 124, balances: new Map() }),
+  }));
+  assert.equal(wr.listHoldingsByWallet(added.id).length, 0);
 });
 
 test('新加的钱包（从未扫过）会被立刻选中，不用等满一轮', async () => {

@@ -352,6 +352,50 @@ test('地址大小写归一 —— 同一地址不同写法不该建出两组', 
   assert.equal(wr.addWallet(u.id, 'bsc', '0xabcdef0123', null), null, '大小写不同也算重复');
 });
 
+test('Solana 钱包地址大小写保持原样，备注和删除按原地址匹配', () => {
+  const u = wr.createUser(`solcase${++seq}`, 'h')!;
+  const addr = 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd';
+  const w = wr.addWallet(u.id, 'solana', addr, 'SOL 主钱包')!;
+  assert.equal(wr.listWallets(u.id)[0]?.address, addr);
+  assert.equal(wr.updateWalletLabelByAddress(u.id, addr, 'SOL 2'), 1);
+  assert.equal(wr.listWallets(u.id)[0]?.label, 'SOL 2');
+  assert.equal(wr.removeWalletByAddress(u.id, addr), 1);
+  assert.equal(wr.listWallets(u.id).some((row) => row.id === w.id), false);
+});
+
+test('完整快照原子更新余额、保留 firstSeen/monitored，并删除快照外旧币', () => {
+  const u = wr.createUser(`snapshot${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'solana', 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd', null)!;
+  const keep = 'solana:DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+  const sold = 'solana:So11111111111111111111111111111111111111112';
+  wr.upsertHolding(w.id, keep, '1', 5, 100);
+  wr.upsertHolding(w.id, sold, '2', 9, 100);
+  wr.setHoldingMonitored(w.id, keep, true, null, null);
+
+  const result = wr.applyWalletHoldingSnapshot(w.id, 'solana', [
+    { tokenId: keep, balance: '999', decimals: 5 },
+  ], 456, 200);
+  assert.deepEqual(result, { written: 1, removed: 1 });
+  const rows = wr.listHoldingsByWallet(w.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.balance, '999');
+  assert.equal(rows[0]?.firstSeenAt, 100);
+  assert.equal(rows[0]?.monitored, 1);
+  assert.equal(wr.listWallets(u.id)[0]?.lastScannedBlock, 456);
+});
+
+test('完整快照任一无效条目会整体回滚，不删除旧持仓或推进 slot', () => {
+  const u = wr.createUser(`snapshotfail${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'solana', 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd', null)!;
+  const old = 'solana:So11111111111111111111111111111111111111112';
+  wr.upsertHolding(w.id, old, '2', 9, 100);
+  assert.throws(() => wr.applyWalletHoldingSnapshot(w.id, 'solana', [
+    { tokenId: 'bsc:wrong', balance: '1', decimals: 18 },
+  ], 999, 200), /链不匹配/);
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.tokenId, old);
+  assert.equal(wr.listWallets(u.id)[0]?.lastScannedBlock, null);
+});
+
 test('监控中的币每轮都要判', () => {
   const u = wr.createUser(`due${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xdue${seq}`, null)!;

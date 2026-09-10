@@ -5,11 +5,11 @@ import {
   updateWalletLabelByAddress,
 } from '../../../../db/walletRepo.ts';
 import { supportedChains } from '../../../../sources/evmRpc.ts';
+import { walletAddressKind } from '../../../../lib/walletAddress.ts';
 
 export const dynamic = 'force-dynamic';
 
-/** EVM 地址格式。本期四条链都是 EVM，格式统一 */
-const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const ALL_CHAINS = [...supportedChains(), 'solana'];
 
 function readLabel(raw: unknown): { ok: true; value: string | null } | { ok: false } {
   if (raw === undefined || raw === null) return { ok: true, value: null };
@@ -30,7 +30,7 @@ async function readObject(req: Request): Promise<Record<string, unknown> | null>
 export async function GET(req: Request) {
   const u = currentUser(req);
   if (!u) return NextResponse.json({ error: '需要登录个人账号' }, { status: 401 });
-  return NextResponse.json({ wallets: listWallets(u.id), chains: supportedChains() });
+  return NextResponse.json({ wallets: listWallets(u.id), chains: ALL_CHAINS });
 }
 
 /**
@@ -51,8 +51,9 @@ export async function POST(req: Request) {
   if (!body) return NextResponse.json({ error: '请求格式错误' }, { status: 400 });
 
   const address = typeof body.address === 'string' ? body.address.trim() : '';
-  if (!EVM_ADDRESS.test(address)) {
-    return NextResponse.json({ error: '地址格式不对，应为 0x 开头的 40 位十六进制' }, { status: 400 });
+  const kind = walletAddressKind(address);
+  if (!kind) {
+    return NextResponse.json({ error: '地址格式不对，请输入 EVM 0x 地址或 Solana 地址' }, { status: 400 });
   }
 
   const parsedLabel = readLabel(body.label);
@@ -60,10 +61,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '备注必须是文字' }, { status: 400 });
   }
 
-  const all = supportedChains();
-  const chains = Array.isArray(body.chains) && body.chains.length > 0
-    ? body.chains.filter((c) => all.includes(c))
-    : all;
+  const all = kind === 'solana' ? ['solana'] : supportedChains();
+  const chains = kind === 'solana'
+    ? ['solana']
+    : Array.isArray(body.chains) && body.chains.length > 0
+      ? body.chains.filter((c) => all.includes(c))
+      : all;
   if (chains.length === 0) {
     return NextResponse.json({ error: `没有可用的链。支持：${all.join(' / ')}` }, { status: 400 });
   }
@@ -94,8 +97,8 @@ export async function PATCH(req: Request) {
   }
 
   const address = body.address.trim();
-  if (!EVM_ADDRESS.test(address)) {
-    return NextResponse.json({ error: '地址格式不对，应为 0x 开头的 40 位十六进制' }, { status: 400 });
+  if (!walletAddressKind(address)) {
+    return NextResponse.json({ error: '地址格式不对，请输入 EVM 0x 地址或 Solana 地址' }, { status: 400 });
   }
   const parsedLabel = readLabel(body.label);
   if (!parsedLabel.ok) {

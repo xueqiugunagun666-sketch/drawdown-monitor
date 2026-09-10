@@ -77,3 +77,12 @@ test('同一币由多个已备注地址持有时，合并通知列出全部备�
   const spec = buildNotificationSpecs(buildAlertBatch([pump]), (a) => a.symbol ?? a.id)[0]!;
   assert.match(spec.body, /地址 自己1、自己2/);
 });
+
+test('Solana RPC 系统通知说明保留旧持仓，不冒充报价回退', () => {
+  const alert = { ...row('sol-rpc', 'source-down', '1', 0, 13), tokenId: 'system:xxyy-solana-rpc' };
+  const specs = buildNotificationSpecs(buildAlertBatch([alert]), (a) => a.symbol ?? a.tokenId);
+  assert.equal(specs.length, 1);
+  assert.match(specs[0]!.title, /Solana 钱包 RPC 异常/);
+  assert.match(specs[0]!.body, /旧持仓已保留/);
+  assert.doesNotMatch(specs[0]!.body, /DexScreener/);
+});
