@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { runMigrations } from '../db/migrate.ts';
 import * as wr from '../db/walletRepo.ts';
 import {
-  scanWallet, isScanDue, candidateRetryDelay, SCAN_INTERVAL_SECONDS,
-  CANDIDATE_RETRY_MAX_SECONDS, type ScanDeps,
+  scanWallet, scanWalletGroup, nextWalletGroup, walletScanKey, isScanDue,
+  candidateRetryDelay, SCAN_INTERVAL_SECONDS, CANDIDATE_RETRY_MAX_SECONDS, type ScanDeps,
 } from './walletScanner.ts';
 
 before(() => { runMigrations(); });
@@ -248,4 +248,67 @@ test('上次扫描失败的钱包按正常间隔重试，不做退避风暴', as
   const w = wr.listWallets(u.id)[0]!;
   assert.equal(isScanDue(w, 1000 + 60), false);
   assert.equal(isScanDue(w, 1000 + SCAN_INTERVAL_SECONDS), true);
+});
+
+test('从未扫描的钱包组优先于大量到期旧钱包', () => {
+  const oldUser = wr.createUser(`priority-old${++seq}`, 'h')!;
+  const oldId = wr.addWallet(oldUser.id, 'bsc', `0xpriorityold${seq}`, null)!.id;
+  wr.updateWalletScanState(oldId, 100, 100, null);
+  const old = wr.listWallets(oldUser.id)[0]!;
+
+  const freshUser = wr.createUser(`priority-new${++seq}`, 'h')!;
+  wr.addWallet(freshUser.id, 'solana', 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd', null);
+  const fresh = wr.listWallets(freshUser.id)[0]!;
+
+  const selected = nextWalletGroup([old, fresh], 1000, new Set());
+  assert.equal(selected?.[0]?.id, fresh.id, '新钱包不能排在旧钱包整轮之后');
+});
+
+test('同链同地址只请求一次并把结果写给多个用户', async () => {
+  const address = `0xshared${++seq}`;
+  const u1 = wr.createUser(`shared-a${seq}`, 'h')!;
+  const u2 = wr.createUser(`shared-b${seq}`, 'h')!;
+  const id1 = wr.addWallet(u1.id, 'bsc', address, null)!.id;
+  const id2 = wr.addWallet(u2.id, 'bsc', address, null)!.id;
+  wr.updateWalletScanState(id1, 900, 950, null); // 尚未到期，但可复用另一行的扫描结果
+  const w1 = wr.listWallets(u1.id)[0]!;
+  const w2 = wr.listWallets(u2.id)[0]!;
+
+  const group = nextWalletGroup([w1, w2], 1000, new Set());
+  assert.equal(group?.length, 2, '一行到期时应带上相同地址的其它用户一起复用结果');
+
+  let heads = 0, discoveries = 0, reads = 0;
+  let seenFrom = -1;
+  await scanWalletGroup(group!, 1000, deps({
+    blockNumber: async () => { heads++; return 1100; },
+    scanTokens: async (_chain, _wallet, from) => {
+      discoveries++;
+      seenFrom = from;
+      return new Set(['0xsharedtoken']);
+    },
+    readBalances: async (_chain, _wallet, tokens) => {
+      reads++;
+      return new Map(tokens.map((token) => [token, { balance: '42', decimals: 6 }]));
+    },
+  }), () => 1234);
+
+  assert.deepEqual([heads, discoveries, reads], [1, 1, 1]);
+  assert.equal(seenFrom, 0, '任一重复钱包从未扫描时，共享扫描必须覆盖完整历史');
+  assert.equal(wr.listHoldingsByWallet(id1)[0]?.balance, '42');
+  assert.equal(wr.listHoldingsByWallet(id2)[0]?.balance, '42');
+  assert.equal(wr.listWallets(u1.id)[0]?.lastScanAt, 1234, '记录实际完成时刻');
+  assert.equal(wr.listWallets(u2.id)[0]?.lastScanAt, 1234);
+});
+
+test('动态领取时能看见本轮中途新加的钱包', () => {
+  const oldUser = wr.createUser(`dynamic-old${++seq}`, 'h')!;
+  wr.addWallet(oldUser.id, 'bsc', `0xdynamicold${seq}`, null);
+  const old = wr.listWallets(oldUser.id)[0]!;
+  const processed = new Set([walletScanKey(old)]);
+
+  const freshUser = wr.createUser(`dynamic-new${++seq}`, 'h')!;
+  wr.addWallet(freshUser.id, 'bsc', `0xdynamicnew${seq}`, null);
+  const fresh = wr.listWallets(freshUser.id)[0]!;
+  const selected = nextWalletGroup([old, fresh], 1000, processed);
+  assert.equal(selected?.[0]?.id, fresh.id);
 });
