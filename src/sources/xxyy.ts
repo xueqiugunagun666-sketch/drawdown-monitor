@@ -17,7 +17,7 @@
  * 做请求、格式、零覆盖和覆盖率掉崖监控，不能把 HTTP 200 当成健康证明。
  */
 import PQueue from 'p-queue';
-import { httpPostJson } from '../lib/http.ts';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { SourceError, type SourceFailureKind } from '../lib/errors.ts';
 import { makeLogger } from '../lib/log.ts';
 import { Decimal } from '../lib/decimal.ts';
@@ -96,6 +96,32 @@ type BatchRequest = (
   timeoutMs: number,
   headers: Record<string, string>,
 ) => Promise<{ status: number; body: string }>;
+
+/**
+ * XXYY 的上游 keep-alive 在生产实测会把复用连接卡到超时；同机 curl 与每批
+ * 新连接都稳定在 0.3–0.9 秒。因此只对这个源禁用连接复用，并固定 IPv4。
+ */
+async function requestFreshConnection(
+  url: string, body: unknown, timeoutMs: number, headers: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const agent = new Agent({ pipelining: 0, connect: { family: 4 } });
+  try {
+    const response = await undiciFetch(url, {
+      method: 'POST', signal: ctrl.signal, dispatcher: agent,
+      headers: {
+        accept: 'application/json', 'content-type': 'application/json',
+        'user-agent': 'show-tools/1.0', connection: 'close', ...headers,
+      },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.text() };
+  } finally {
+    clearTimeout(timer);
+    await agent.close();
+  }
+}
 
 export interface FetchXxyyPricesOptions {
   /** 测试/回放注入请求器；省略时使用生产 httpPostJson。 */
@@ -204,8 +230,7 @@ export async function fetchXxyyPricesDetailed(
   }
   const merged = new Map<string, XxyyQuote>();
   const failures: XxyyBatchFailure[] = [];
-  const request = options.request ?? ((url: string, body: unknown, timeoutMs: number, headers: Record<string, string>) =>
-    httpPostJson(url, body, timeoutMs, headers));
+  const request = options.request ?? requestFreshConnection;
 
   for (let i = 0; i < addresses.length; i += BATCH_SIZE) {
     const batch = addresses.slice(i, i + BATCH_SIZE);
