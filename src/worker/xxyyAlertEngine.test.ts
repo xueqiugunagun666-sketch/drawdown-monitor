@@ -143,5 +143,5 @@ test('HTTP 200 但 XXYY 覆盖率掉到健康水位一半以下会显式降级',
       WHERE source_id = 'xxyy-alerts:bsc'`,
   ).get() as { consecutive_failures: number; last_fail_message: string };
   assert.equal(health.consecutive_failures, 1);
-  assert.match(health.last_fail_message, /覆盖率突然掉崖/);
+  assert.match(health.last_fail_message, /(覆盖率突然掉崖|此前有价的币从响应中消失)/);
 });

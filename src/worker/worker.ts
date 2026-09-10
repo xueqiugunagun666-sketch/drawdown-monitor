@@ -16,7 +16,7 @@ import * as repo from '../db/repo.ts';
 import { scanAllWallets, SCAN_INTERVAL_SECONDS } from './walletScanner.ts';
 import { runPumpTick, TICK_INTERVAL_SECONDS } from './pumpEngine.ts';
 import {
-  bootstrapXxyyAlertHistory, runXxyyAlertTick, XXYY_ALERT_INTERVAL_SECONDS,
+  runXxyyAlertTick, XXYY_ALERT_INTERVAL_SECONDS,
 } from './xxyyAlertEngine.ts';
 import { startTrashLoop } from './trashPoller.ts';
 import { nowSec } from '../lib/time.ts';
@@ -60,14 +60,6 @@ async function main(): Promise<void> {
   runMigrations();
   ensureDefaultRule();
   logStartupConfig();
-
-  try {
-    const seeded = bootstrapXxyyAlertHistory();
-    log.info(`XXYY 报警历史准备完成：候选 ${seeded.attempted}，接入 ${seeded.accepted}`);
-  } catch (err) {
-    // 影子历史只是起步加速；失败时快轮次仍会从第一条实时报价建基准。
-    log.exception('XXYY 影子历史接入失败，改从实时价格重新建立基准', err);
-  }
 
   const cfg = getConfig();
 

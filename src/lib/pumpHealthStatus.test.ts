@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusForPumpHealth, PUMP_HEARTBEAT_TIMEOUT_SECONDS } from './pumpHealthStatus.ts';
+import {
+  statusForPumpHealth, PUMP_HEARTBEAT_TIMEOUT_SECONDS, XXYY_ALERT_HEARTBEAT_TIMEOUT_SECONDS,
+} from './pumpHealthStatus.ts';
 import type { PumpHealthRow } from '../db/pumpHealthRepo.ts';
 
 function row(over: Partial<PumpHealthRow> = {}): PumpHealthRow {
@@ -20,6 +22,16 @@ test('worker 超过三轮没有完成时即使 SSE 仍开着也判 down', () => 
 test('完成但有批次或单币错误时是 degraded，不冒充 healthy', () => {
   assert.equal(statusForPumpHealth(row({ failedBatchCount: 1 }), 120, 1).status, 'degraded');
   assert.equal(statusForPumpHealth(row({ evalErrorCount: 1 }), 120, 1).status, 'degraded');
+});
+
+test('XXYY 快链路超过 60 秒未完成即判 down', () => {
+  const fast = row({
+    component: 'xxyy-alert', lastRunId: 3, lastStartedAt: 200, lastCompletedAt: 190,
+  });
+  assert.equal(
+    statusForPumpHealth(fast, 200 + XXYY_ALERT_HEARTBEAT_TIMEOUT_SECONDS + 1, 3).status,
+    'down',
+  );
 });
 
 test('当前轮某链技术失败且有效覆盖为零时判 down', () => {

@@ -2,6 +2,7 @@ import type { PumpHealthRow } from '../db/pumpHealthRepo.ts';
 
 export type PumpRuntimeStatus = 'unknown' | 'healthy' | 'degraded' | 'down';
 export const PUMP_HEARTBEAT_TIMEOUT_SECONDS = 180;
+export const XXYY_ALERT_HEARTBEAT_TIMEOUT_SECONDS = 60;
 
 export interface PumpHealthView extends PumpHealthRow {
   status: PumpRuntimeStatus;
@@ -14,11 +15,13 @@ export function statusForPumpHealth(
   const completedAge = row.lastCompletedAt === null ? null : Math.max(0, now - row.lastCompletedAt);
   let status: PumpRuntimeStatus = 'unknown';
 
-  if (row.component === 'pump') {
+  if (row.component === 'pump' || row.component === 'xxyy-alert') {
+    const timeout = row.component === 'xxyy-alert'
+      ? XXYY_ALERT_HEARTBEAT_TIMEOUT_SECONDS : PUMP_HEARTBEAT_TIMEOUT_SECONDS;
     const stuck = row.lastStartedAt !== null
       && (row.lastCompletedAt === null || row.lastStartedAt > row.lastCompletedAt)
-      && now - row.lastStartedAt > PUMP_HEARTBEAT_TIMEOUT_SECONDS;
-    if (stuck || (completedAge !== null && completedAge > PUMP_HEARTBEAT_TIMEOUT_SECONDS)) {
+      && now - row.lastStartedAt > timeout;
+    if (stuck || (completedAge !== null && completedAge > timeout)) {
       status = 'down';
     } else if (row.lastCompletedAt !== null) {
       status = row.lastErrorKind || row.failedBatchCount > 0 || row.evalErrorCount > 0

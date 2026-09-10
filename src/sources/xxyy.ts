@@ -12,7 +12,7 @@
  * 当前职责是：XXYY 独立决定已监控币的暴涨与 ATH 当前价；DexScreener
  * 并行维护资格、元数据与回撤看板，两者不在报警关键路径上互相等待。
  *
- * **这是没有公开文档的接口。** 对方随时可能改路径、改字段、加鉴权，
+ * **这是公开可访问、但没有稳定版文档的接口。** 对方仍可能改路径或字段，
  * 而最危险的是**静默地改** —— 比如某天开始给所有币回 0。所以调用方必须
  * 做请求、格式、零覆盖和覆盖率掉崖监控，不能把 HTTP 200 当成健康证明。
  */
@@ -54,13 +54,17 @@ export function normalizeMint(chain: string, mint: string): string {
  * 一次请求带多少个地址。
  *
  * 实测 1,200 个仍然 1.56 秒、无截断。留在 500 是**保守**：这是别人的
- * 私有接口，没有公开的限额说明，把单请求撑到极限等于把风险也撑到极限；
+ * 接口没有公开的限额说明，把单请求撑到极限等于把风险也撑到极限；
  * 500 个已经让请求数比 DexScreener 少一个数量级，够用了。
  */
 export const BATCH_SIZE = 500;
 
-/** 并发 1、每次间隔 300ms。私有接口，克制着用 */
-const queue = new PQueue({ concurrency: 1, interval: 300, intervalCap: 1 });
+/**
+ * 各链可并行，单链内仍按 500 个一批。报警目标是 15 秒；若这里串行或允许
+ * 单请求等 25 秒，某条慢链就能让下一轮整体迟到。
+ */
+const queue = new PQueue({ concurrency: 4, interval: 300, intervalCap: 4 });
+export const XXYY_REQUEST_TIMEOUT_MS = 8_000;
 
 export interface XxyyQuote {
   priceUsd: string;
@@ -207,7 +211,7 @@ export async function fetchXxyyPricesDetailed(
     let res;
     try {
       res = await queue.add(
-        () => request(URL, { tokenMints: batch }, 25_000,
+        () => request(URL, { tokenMints: batch }, XXYY_REQUEST_TIMEOUT_MS,
           { 'X-CHAIN': xchain, 'X-VERSION': '1' }),
         { throwOnTimeout: true },
       );

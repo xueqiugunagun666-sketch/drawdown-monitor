@@ -4,7 +4,8 @@ import { before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runMigrations } from './migrate.ts';
 import {
-  beginPumpRun, clearPumpHealth, completePumpRun, pumpHealthRows, recordQuoteHealth,
+  beginPumpRun, beginXxyyAlertRun, clearPumpHealth, completePumpRun,
+  completeXxyyAlertRun, pumpHealthRows, recordQuoteHealth,
 } from './pumpHealthRepo.ts';
 import { registerSecret } from '../lib/mask.ts';
 
@@ -27,6 +28,18 @@ test('开始与完成轮次分别持久化，卡住时会留下未完成的新 s
   row = pumpHealthRows().find((r) => r.component === 'pump')!;
   assert.equal(row.lastStartedAt, 200);
   assert.equal(row.lastCompletedAt, 110, '新轮未完成时保留上轮完成时间供超时判断');
+});
+
+test('XXYY 快链路有独立心跳与失败计数', () => {
+  beginXxyyAlertRun(200, 200, 30);
+  completeXxyyAlertRun({
+    runId: 200, now: 205, requested: 30, covered: 29,
+    failedBatches: 1, evalErrors: 2, errorKind: 'source-failure',
+  });
+  const row = pumpHealthRows().find((r) => r.component === 'xxyy-alert')!;
+  assert.equal(row.lastCompletedAt, 205);
+  assert.equal(row.coveredCount, 29);
+  assert.equal(row.evalErrorCount, 2);
 });
 
 test('每条链独立记录有效覆盖和技术失败，错误内容会掩码', () => {

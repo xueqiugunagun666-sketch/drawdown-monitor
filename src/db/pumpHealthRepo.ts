@@ -2,7 +2,7 @@ import { getRawDb } from './index.ts';
 import { scrubSecrets } from '../lib/mask.ts';
 
 export interface PumpHealthRow {
-  component: 'pump' | 'quote';
+  component: 'pump' | 'quote' | 'xxyy-alert';
   scope: string;
   lastRunId: number | null;
   lastStartedAt: number | null;
@@ -18,7 +18,7 @@ export interface PumpHealthRow {
 }
 
 interface RawRow {
-  component: 'pump' | 'quote'; scope: string; last_run_id: number | null;
+  component: 'pump' | 'quote' | 'xxyy-alert'; scope: string; last_run_id: number | null;
   last_started_at: number | null; last_completed_at: number | null;
   last_valid_quote_at: number | null; requested_count: number; covered_count: number;
   failed_batch_count: number; eval_error_count: number; last_error_kind: string | null;
@@ -111,6 +111,38 @@ export function completePumpRun(input: CompletePumpInput): void {
        last_valid_quote_at=CASE WHEN ? > 0 THEN ? ELSE last_valid_quote_at END,
        last_error_kind=?, last_error_message=?, updated_at=?
      WHERE component='pump' AND scope='all' AND last_run_id=?`,
+  ).run(
+    input.now, input.covered, input.failedBatches, input.evalErrors,
+    input.covered, input.now, input.errorKind ?? null, message, input.now, input.runId,
+  );
+}
+
+export function beginXxyyAlertRun(runId: number, now: number, requested: number): void {
+  getRawDb().prepare(
+    `INSERT INTO pump_health
+       (component, scope, last_run_id, last_started_at, requested_count, updated_at)
+     VALUES ('xxyy-alert', 'all', ?, ?, ?, ?)
+     ON CONFLICT(component, scope) DO UPDATE SET
+       last_run_id=excluded.last_run_id,
+       last_started_at=excluded.last_started_at,
+       requested_count=excluded.requested_count,
+       covered_count=0,
+       failed_batch_count=0,
+       eval_error_count=0,
+       last_error_kind=NULL,
+       last_error_message=NULL,
+       updated_at=excluded.updated_at`,
+  ).run(runId, now, requested, now);
+}
+
+export function completeXxyyAlertRun(input: CompletePumpInput): void {
+  const message = input.errorMessage ? scrubSecrets(input.errorMessage).slice(0, 240) : null;
+  getRawDb().prepare(
+    `UPDATE pump_health SET
+       last_completed_at=?, covered_count=?, failed_batch_count=?, eval_error_count=?,
+       last_valid_quote_at=CASE WHEN ? > 0 THEN ? ELSE last_valid_quote_at END,
+       last_error_kind=?, last_error_message=?, updated_at=?
+     WHERE component='xxyy-alert' AND scope='all' AND last_run_id=?`,
   ).run(
     input.now, input.covered, input.failedBatches, input.evalErrors,
     input.covered, input.now, input.errorKind ?? null, message, input.now, input.runId,

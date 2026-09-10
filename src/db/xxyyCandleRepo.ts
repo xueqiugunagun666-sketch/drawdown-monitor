@@ -58,15 +58,22 @@ function writeAccepted(
 
   const day = Math.floor(fetchedAt / 86400) * 86400;
   const old = db.prepare(
-    `SELECT high FROM wallet_xxyy_daily_highs WHERE token_id = ? AND day = ?`,
-  ).get(tokenId, day) as { high: string } | undefined;
+    `SELECT high, high_ts FROM wallet_xxyy_daily_highs WHERE token_id = ? AND day = ?`,
+  ).get(tokenId, day) as { high: string; high_ts: number | null } | undefined;
   const dayHigh = old ? Decimal.max(new Decimal(old.high), price).toString() : raw;
+  const highTs = !old || price.gt(new Decimal(old.high)) ? fetchedAt : (old.high_ts ?? fetchedAt);
   db.prepare(
-    `INSERT INTO wallet_xxyy_daily_highs (token_id, day, high, price_regime)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO wallet_xxyy_daily_highs (token_id, day, high, high_ts, price_regime)
+     VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(token_id, day) DO UPDATE SET
-       high = excluded.high, price_regime = excluded.price_regime`,
-  ).run(tokenId, day, dayHigh, XXYY_PRICE_REGIME);
+       high = excluded.high, high_ts = excluded.high_ts,
+       price_regime = excluded.price_regime`,
+  ).run(tokenId, day, dayHigh, highTs, XXYY_PRICE_REGIME);
+  db.prepare(
+    `INSERT INTO wallet_xxyy_history_meta (token_id, first_observed_at) VALUES (?, ?)
+     ON CONFLICT(token_id) DO UPDATE SET
+       first_observed_at = MIN(first_observed_at, excluded.first_observed_at)`,
+  ).run(tokenId, fetchedAt);
   db.prepare(`DELETE FROM wallet_xxyy_pending_quotes WHERE token_id = ?`).run(tokenId);
 }
 
@@ -135,7 +142,7 @@ export function loadXxyy5mCandles(tokenId: string, sinceTs: number) {
  * 内交叉确认，适合做安全起步历史；冲突与 XXYY-only 行不导入。
  */
 export function bootstrapXxyyCandlesFromShadow(
-  monitoredOnly = true,
+  monitoredOnly = true, now = Math.floor(Date.now() / 1000),
 ): { attempted: number; accepted: number } {
   const db = getRawDb();
   const scope = monitoredOnly
@@ -144,8 +151,14 @@ export function bootstrapXxyyCandlesFromShadow(
           WHERE h.token_id = q.token_id AND h.monitored = 1
        )`
     : '';
-  const accepted = db.transaction(() => {
-    const inserted = db.prepare(
+  let accepted = 0;
+  const since = now - XXYY_CANDLE_RETENTION_SECONDS;
+  const firstDay = Math.floor(since / 86400) * 86400;
+  for (let dayStart = firstDay; dayStart < now; dayStart += 86400) {
+    const sliceStart = Math.max(since, dayStart);
+    const sliceEnd = Math.min(now + 1, dayStart + 86400);
+    accepted += db.transaction(() => {
+      const inserted = db.prepare(
       `INSERT OR IGNORE INTO wallet_xxyy_candles
          (token_id, timeframe, ts, o, h, l, c, market_cap_usd,
           quote_fetched_at, price_regime)
@@ -154,27 +167,41 @@ export function bootstrapXxyyCandlesFromShadow(
               NULL, q.observed_at, ?
          FROM quote_shadow q
         WHERE q.decision = 'consensus' AND q.xxyy_price_usd IS NOT NULL
-          AND CAST(q.xxyy_price_usd AS REAL) > 0
+          AND q.xxyy_price_usd <> '0'
+          AND q.observed_at >= ? AND q.observed_at < ?
           ${scope}`,
-    ).run(XXYY_PRICE_REGIME).changes;
+      ).run(XXYY_PRICE_REGIME, sliceStart, sliceEnd).changes;
     if (inserted > 0) {
-      db.prepare(
-        `INSERT OR REPLACE INTO wallet_xxyy_daily_highs
-           (token_id, day, high, price_regime)
-         WITH ranked AS (
-           SELECT token_id, CAST(ts / 86400 AS INTEGER) * 86400 AS day, h,
-                  ROW_NUMBER() OVER (
-                    PARTITION BY token_id, CAST(ts / 86400 AS INTEGER)
-                    ORDER BY CAST(h AS REAL) DESC
-                  ) AS rank
-             FROM wallet_xxyy_candles
-            WHERE price_regime = ?
-         )
-         SELECT token_id, day, h, ? FROM ranked WHERE rank = 1`,
-      ).run(XXYY_PRICE_REGIME, XXYY_PRICE_REGIME);
+      const rows = db.prepare(
+        `SELECT token_id, h, quote_fetched_at FROM wallet_xxyy_candles
+         WHERE price_regime = ? AND ts >= ? AND ts < ?`,
+      ).all(XXYY_PRICE_REGIME, dayStart, dayStart + 86400) as Array<{
+        token_id: string; h: string; quote_fetched_at: number;
+      }>;
+      const highs = new Map<string, { price: Decimal; ts: number }>();
+      for (const row of rows) {
+        const price = positiveDecimal(row.h);
+        if (!price) continue;
+        const old = highs.get(row.token_id);
+        if (!old || price.gt(old.price)) highs.set(row.token_id, { price, ts: row.quote_fetched_at });
+      }
+      const write = db.prepare(
+        `INSERT OR IGNORE INTO wallet_xxyy_daily_highs
+           (token_id, day, high, high_ts, price_regime) VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const [tokenId, high] of highs) {
+        write.run(tokenId, dayStart, high.price.toString(), high.ts, XXYY_PRICE_REGIME);
+      }
     }
     return inserted;
-  })();
+    })();
+  }
+  db.prepare(
+    `INSERT INTO wallet_xxyy_history_meta (token_id, first_observed_at)
+     SELECT token_id, MIN(quote_fetched_at) FROM wallet_xxyy_candles GROUP BY token_id
+     ON CONFLICT(token_id) DO UPDATE SET
+       first_observed_at = MIN(first_observed_at, excluded.first_observed_at)`,
+  ).run();
   return { attempted: accepted, accepted };
 }
 
@@ -187,37 +214,52 @@ export function pruneXxyyCandles(now: number): number {
 /** XXYY 专用序列的最早覆盖时间。 */
 export function xxyyHistoryStart(tokenId: string): number | null {
   const row = getRawDb().prepare(
-    `SELECT MIN(t) AS t FROM (
-       SELECT MIN(day) AS t FROM wallet_xxyy_daily_highs WHERE token_id = ?
-       UNION ALL
-       SELECT MIN(ts) AS t FROM wallet_xxyy_candles WHERE token_id = ? AND timeframe = '5m'
-     ) WHERE t IS NOT NULL`,
-  ).get(tokenId, tokenId) as { t: number | null } | undefined;
+    `SELECT first_observed_at AS t FROM wallet_xxyy_history_meta WHERE token_id = ?`,
+  ).get(tokenId) as { t: number | null } | undefined;
   return row?.t ?? null;
+}
+
+export interface XxyyHighPoint { price: Decimal; ts: number | null }
+
+function highestRow(rows: Array<{ v: string; t: number | null }>): XxyyHighPoint | null {
+  let best: XxyyHighPoint | null = null;
+  for (const row of rows) {
+    const price = positiveDecimal(row.v);
+    if (price && (!best || price.gt(best.price))) best = { price, ts: row.t };
+  }
+  return best;
 }
 
 /** 在写入本轮价格前调用，返回纯 XXYY 历史高点。 */
 export function xxyyWindowHighsBefore(
   tokenId: string, windows: Array<{ key: string; seconds: number | null }>,
   now: number,
-): Map<string, Decimal> {
+): Map<string, XxyyHighPoint> {
   const db = getRawDb();
-  const out = new Map<string, Decimal>();
+  const out = new Map<string, XxyyHighPoint>();
   for (const window of windows) {
     const since = window.seconds === null ? null : now - window.seconds;
-    const row = since === null
-      ? db.prepare(
-        `SELECT high AS v FROM wallet_xxyy_daily_highs WHERE token_id = ?
-         ORDER BY CAST(high AS REAL) DESC LIMIT 1`,
-      ).get(tokenId)
-      : db.prepare(
-        `SELECT high AS v FROM wallet_xxyy_daily_highs
-         WHERE token_id = ? AND day >= ?
-         ORDER BY CAST(high AS REAL) DESC LIMIT 1`,
-      ).get(tokenId, Math.floor(since / 86400) * 86400);
-    const value = (row as { v?: string } | undefined)?.v;
-    const parsed = value ? positiveDecimal(value) : null;
-    if (parsed) out.set(window.key, parsed);
+    let rows: Array<{ v: string; t: number | null }>;
+    if (since === null) {
+      rows = db.prepare(
+        `SELECT high AS v, high_ts AS t FROM wallet_xxyy_daily_highs
+         WHERE token_id = ?`,
+      ).all(tokenId) as Array<{ v: string; t: number | null }>;
+    } else if (window.seconds! <= XXYY_CANDLE_RETENTION_SECONDS) {
+      rows = db.prepare(
+        `SELECT h AS v, ts AS t FROM wallet_xxyy_candles
+         WHERE token_id = ? AND timeframe = '5m' AND ts >= ?`,
+      ).all(tokenId, since) as Array<{ v: string; t: number | null }>;
+    } else {
+      // 边界日没有分钟级历史时整日排除，宁可少报一档，也不把窗口外高点算进来。
+      const boundaryDay = Math.floor(since / 86400) * 86400;
+      rows = db.prepare(
+        `SELECT high AS v, high_ts AS t FROM wallet_xxyy_daily_highs
+         WHERE token_id = ? AND day > ?`,
+      ).all(tokenId, boundaryDay) as Array<{ v: string; t: number | null }>;
+    }
+    const best = highestRow(rows);
+    if (best) out.set(window.key, best);
   }
   return out;
 }

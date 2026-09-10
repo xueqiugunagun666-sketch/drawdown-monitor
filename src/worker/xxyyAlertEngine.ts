@@ -11,7 +11,9 @@ import * as wr from '../db/walletRepo.ts';
 import {
   bootstrapXxyyCandlesFromShadow, loadXxyy5mCandles, pruneXxyyCandles,
   upsertXxyyCandle, xxyyHistoryStart, xxyyWindowHighsBefore, XXYY_PRICE_REGIME,
+  type XxyyHighPoint,
 } from '../db/xxyyCandleRepo.ts';
+import { beginXxyyAlertRun, completeXxyyAlertRun } from '../db/pumpHealthRepo.ts';
 import {
   fetchXxyyPricesDetailed, normalizeMint, supportsChain,
   type XxyyPricesDetailedResult, type XxyyQuote,
@@ -52,6 +54,7 @@ export interface XxyyAlertTickResult {
   evaluated: number;
   pendingConfirmation: number;
   failures: number;
+  evalErrors: number;
 }
 
 interface StateKey { tokenId: string; timeframe: string; basis: string; level: number }
@@ -133,24 +136,35 @@ interface XxyyAthRow {
   window_highs_at: number | null;
 }
 
-function parseHighs(raw: string | null): Map<string, Decimal> {
-  const out = new Map<string, Decimal>();
+function parseHighs(raw: string | null): Map<string, XxyyHighPoint> {
+  const out = new Map<string, XxyyHighPoint>();
   if (!raw) return out;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     for (const [key, value] of Object.entries(parsed)) {
-      if (typeof value !== 'string') continue;
-      const price = new Decimal(value);
-      if (price.isFinite() && price.gt(0)) out.set(key, price);
+      const point = typeof value === 'string'
+        ? { price: value, ts: null }
+        : value && typeof value === 'object'
+          ? value as { price?: unknown; ts?: unknown } : null;
+      if (!point || typeof point.price !== 'string') continue;
+      const price = new Decimal(point.price);
+      const ts = typeof point.ts === 'number' && Number.isInteger(point.ts) ? point.ts : null;
+      if (price.isFinite() && price.gt(0)) out.set(key, { price, ts });
     }
   } catch { /* 坏缓存下一轮重建 */ }
   return out;
 }
 
-function highest(values: Iterable<Decimal>, fallback: Decimal): Decimal {
+function highest(values: Iterable<XxyyHighPoint>, fallback: XxyyHighPoint): XxyyHighPoint {
   let best = fallback;
-  for (const value of values) if (value.gt(best)) best = value;
+  for (const value of values) if (value.price.gt(best.price)) best = value;
   return best;
+}
+
+function serializeHighs(highs: Map<string, XxyyHighPoint>): string {
+  return JSON.stringify(Object.fromEntries(
+    [...highs].map(([key, point]) => [key, { price: point.price.toString(), ts: point.ts }]),
+  ));
 }
 
 interface AthFire {
@@ -163,7 +177,7 @@ interface AthFire {
 
 /** 调用时 current 尚未写入历史，因此 highsBefore 不会把突破价吞进参照线。 */
 function evaluateAth(
-  tokenId: string, price: Decimal, now: number, highsBefore: Map<string, Decimal>,
+  tokenId: string, price: Decimal, now: number, highsBefore: Map<string, XxyyHighPoint>,
 ): AthFire | null {
   const db = getRawDb();
   const row = db.prepare(
@@ -175,15 +189,15 @@ function evaluateAth(
 
   // 切源首轮只建立 XXYY 自己的基准，不把影子期已经发生的涨幅补报给所有人。
   if (!row) {
-    const initial = highest(highsBefore.values(), price);
+    const initial = highest(highsBefore.values(), { price, ts: now });
     db.prepare(
       `INSERT INTO wallet_xxyy_ath
          (token_id, ath_price, ath_ts, history_start_ts, state,
           window_highs, window_highs_at, updated_at)
        VALUES (?, ?, ?, ?, 'ARMED', ?, ?, ?)`,
     ).run(
-      tokenId, initial.toString(), now, start,
-      JSON.stringify(Object.fromEntries([...highsBefore].map(([k, v]) => [k, v.toString()]))),
+      tokenId, initial.price.toString(), initial.ts ?? now, start,
+      serializeHighs(highsBefore),
       now, now,
     );
     return null;
@@ -199,16 +213,18 @@ function evaluateAth(
           history_start_ts = COALESCE(history_start_ts, ?), updated_at = ?
         WHERE token_id = ?`,
     ).run(
-      JSON.stringify(Object.fromEntries([...highs].map(([k, v]) => [k, v.toString()]))),
+      serializeHighs(highs),
       now, start, now, tokenId,
     );
   }
   if (highs.size === 0) return null;
 
   const coveredFrom = row.history_start_ts ?? start;
-  const broken = largestBrokenWindow(price, highs, coveredFrom, now, BREAKOUT_MARGIN);
+  const highPrices = new Map([...highs].map(([key, point]) => [key, point.price]));
+  const broken = largestBrokenWindow(price, highPrices, coveredFrom, now, BREAKOUT_MARGIN);
   const shortest = highs.get(ATH_WINDOWS[0]!.key);
-  if (shortest && row.last_window && price.lt(shortest.mul(new Decimal(String(REARM_RATIO))))) {
+  if (shortest && row.last_window
+    && price.lt(shortest.price.mul(new Decimal(String(REARM_RATIO))))) {
     db.prepare(
       `UPDATE wallet_xxyy_ath SET state = 'ARMED', last_window = NULL,
           last_alert_price = NULL, ref_ath = NULL, updated_at = ? WHERE token_id = ?`,
@@ -239,17 +255,17 @@ function evaluateAth(
         last_alert_price = ?, last_alert_at = ?, ref_ath = ?, last_window = ?, updated_at = ?
       WHERE token_id = ?`,
   ).run(
-    price.toString(), now, price.toString(), now, ref.toString(), broken.key, now, tokenId,
+    price.toString(), now, price.toString(), now, ref.price.toString(), broken.key, now, tokenId,
   );
   log.debug(`${tokenId} XXYY ${describeWindow(broken)}`);
   return {
     winner: {
       tokenId, timeframe: '24h', basis: 'low', level: 0,
-      multiple: price.div(ref), at: now,
+      multiple: price.div(ref.price), at: now,
     },
     kind: isNewWindow ? 'ath' : 'ath-advance',
-    basePrice: ref,
-    baseTs: row.ath_ts,
+    basePrice: ref.price,
+    baseTs: ref.ts,
     windowKey: broken.key,
   };
 }
@@ -352,6 +368,37 @@ interface CoverageBaseline {
   baseline_covered: number;
 }
 
+/** 返回本轮从响应中消失、但此前成功报过价的 token 数。 */
+function recordTokenCoverage(
+  chain: string, addresses: string[], quotes: Map<string, XxyyQuote>, now: number,
+): number {
+  const db = getRawDb();
+  return db.transaction(() => {
+    let lost = 0;
+    const read = db.prepare(
+      `SELECT last_ok_at FROM wallet_xxyy_token_health WHERE token_id = ?`,
+    );
+    const ok = db.prepare(
+      `INSERT INTO wallet_xxyy_token_health (token_id, last_ok_at, last_missing_at)
+       VALUES (?, ?, NULL)
+       ON CONFLICT(token_id) DO UPDATE SET last_ok_at=excluded.last_ok_at, last_missing_at=NULL`,
+    );
+    const missing = db.prepare(
+      `UPDATE wallet_xxyy_token_health SET last_missing_at = ? WHERE token_id = ?`,
+    );
+    for (const address of addresses) {
+      const mint = normalizeMint(chain, address);
+      const tokenId = `${chain}:${mint}`;
+      if (quotes.has(mint)) ok.run(tokenId, now);
+      else if (read.get(tokenId)) {
+        lost++;
+        missing.run(now, tokenId);
+      }
+    }
+    return lost;
+  })();
+}
+
 /**
  * HTTP 200 不是健康证明：覆盖率跌到历史健康水位的一半以下，也算静默故障。
  * 只在本轮没有技术失败时抬高水位，失败数据永远不能训练成“新正常”。
@@ -396,6 +443,8 @@ export async function runXxyyAlertTick(
   now: number, deps: XxyyAlertDeps = realXxyyAlertDeps,
 ): Promise<XxyyAlertTickResult> {
   const tokenIds = wr.monitoredTokenIds();
+  const runId = now;
+  beginXxyyAlertRun(runId, now, tokenIds.length);
   const byChain = new Map<string, string[]>();
   for (const tokenId of tokenIds) {
     const split = tokenId.indexOf(':');
@@ -407,10 +456,12 @@ export async function runXxyyAlertTick(
 
   const result: XxyyAlertTickResult = {
     requested: tokenIds.length, covered: 0, evaluated: 0,
-    pendingConfirmation: 0, failures: 0,
+    pendingConfirmation: 0, failures: 0, evalErrors: 0,
   };
   const queue = new PQueue({ concurrency: 8 });
-  await Promise.all([...byChain].map(async ([chain, addresses]) => {
+  let fatal: unknown = null;
+  try {
+    await Promise.all([...byChain].map(async ([chain, addresses]) => {
     if (!supportsChain(chain)) {
       result.failures++;
       recordVerdict(
@@ -430,50 +481,77 @@ export async function runXxyyAlertTick(
       };
     }
     result.covered += response.quotes.size;
+    const lostPreviouslyCovered = recordTokenCoverage(
+      chain, addresses, response.quotes, deps.clock?.() ?? now,
+    );
     const technical = response.failures.filter((failure) => isTechnicalFailure(failure.kind));
     const dropped = coverageDropped(
       chain, addresses.length, response.quotes.size, deps.clock?.() ?? now, technical.length,
     );
     const sourceFailed = technical.length > 0
-      || (addresses.length > 0 && response.quotes.size === 0) || dropped;
+      || (addresses.length > 0 && response.quotes.size === 0) || dropped
+      || lostPreviouslyCovered > 0;
     if (sourceFailed) result.failures += Math.max(1, technical.length);
     recordVerdict(
       `xxyy-alerts:${chain}`,
       sourceFailed
         ? { ok: false, reason: technical[0]?.reason
           ?? (response.quotes.size === 0
-            ? 'HTTP 200 但整链无有效报价' : 'HTTP 200 但有效报价覆盖率突然掉崖') }
+            ? 'HTTP 200 但整链无有效报价'
+            : lostPreviouslyCovered > 0
+              ? `${lostPreviouslyCovered} 个此前有价的币从响应中消失`
+              : 'HTTP 200 但有效报价覆盖率突然掉崖') }
         : { ok: true, reason: null },
       deps.clock?.() ?? now,
-      `请求 ${addresses.length}，有效 ${response.quotes.size}，技术失败批次 ${technical.length}`,
+      `请求 ${addresses.length}，有效 ${response.quotes.size}，技术失败批次 ${technical.length}，旧覆盖缺失 ${lostPreviouslyCovered}`,
     );
 
     const tasks: Array<Promise<void>> = [];
     for (const [mint, quote] of response.quotes) {
       const tokenId = `${chain}:${normalizeMint(chain, mint)}`;
       tasks.push(queue.add(async () => {
-        const evaluated = await evaluateQuote(tokenId, quote, deps.clock?.() ?? now);
-        if (evaluated) result.evaluated++;
-        else {
-          const pending = getRawDb().prepare(
-            `SELECT 1 AS yes FROM wallet_xxyy_pending_quotes WHERE token_id = ?`,
-          ).get(tokenId);
-          if (pending) result.pendingConfirmation++;
+        try {
+          const evaluated = await evaluateQuote(tokenId, quote, deps.clock?.() ?? now);
+          if (evaluated) result.evaluated++;
+          else {
+            const pending = getRawDb().prepare(
+              `SELECT 1 AS yes FROM wallet_xxyy_pending_quotes WHERE token_id = ?`,
+            ).get(tokenId);
+            if (pending) result.pendingConfirmation++;
+          }
+        } catch (error) {
+          result.evalErrors++;
+          log.warn(`${tokenId} XXYY 判定失败，本轮其他币继续: ${safeErrorMessage(error)}`);
         }
       }).then(() => undefined));
     }
     await Promise.all(tasks);
-  }));
+    }));
 
-  if (now % 3600 < XXYY_ALERT_INTERVAL_SECONDS) {
-    try { pruneXxyyCandles(now); }
-    catch (error) { log.warn(`清理 XXYY 细粒度历史失败: ${safeErrorMessage(error)}`); }
+    if (now % 3600 < XXYY_ALERT_INTERVAL_SECONDS) {
+      try { pruneXxyyCandles(now); }
+      catch (error) { log.warn(`清理 XXYY 细粒度历史失败: ${safeErrorMessage(error)}`); }
+    }
+    log.debug(
+      `XXYY 快轮次：请求 ${result.requested}，有效 ${result.covered}，`
+      + `判定 ${result.evaluated}，待确认 ${result.pendingConfirmation}，`
+      + `源失败 ${result.failures}，判定失败 ${result.evalErrors}`,
+    );
+    return result;
+  } catch (error) {
+    fatal = error;
+    throw error;
+  } finally {
+    const completedAt = deps.clock?.() ?? now;
+    completeXxyyAlertRun({
+      runId, now: completedAt, requested: result.requested, covered: result.covered,
+      failedBatches: result.failures, evalErrors: result.evalErrors,
+      errorKind: fatal ? 'tick-failure'
+        : result.failures > 0 ? 'source-failure'
+          : result.evalErrors > 0 ? 'eval-failure' : null,
+      errorMessage: fatal ? safeErrorMessage(fatal) : null,
+    });
   }
-  log.debug(
-    `XXYY 快轮次：请求 ${result.requested}，有效 ${result.covered}，`
-    + `判定 ${result.evaluated}，待确认 ${result.pendingConfirmation}，失败 ${result.failures}`,
-  );
-  return result;
 }
 
 /** worker 启动时调用一次，把已经影子观察过的 XXYY 价接成同源起步历史。 */

@@ -13,6 +13,8 @@ before(() => runMigrations());
 beforeEach(() => {
   const db = getRawDb();
   db.prepare('DELETE FROM wallet_xxyy_pending_quotes').run();
+  db.prepare('DELETE FROM wallet_xxyy_history_meta').run();
+  db.prepare('DELETE FROM wallet_xxyy_token_health').run();
   db.prepare('DELETE FROM wallet_xxyy_daily_highs').run();
   db.prepare('DELETE FROM wallet_xxyy_candles').run();
   db.prepare('DELETE FROM quote_shadow').run();
@@ -65,17 +67,18 @@ test('只从 quote_shadow 的 XXYY 列建立同源历史', () => {
      VALUES ('bsc:0xseed', 900, 1000, '99', '2', 'diverged', 0)`,
   ).run();
   db.prepare(`UPDATE quote_shadow SET decision = 'consensus'`).run();
-  assert.deepEqual(bootstrapXxyyCandlesFromShadow(false), { attempted: 1, accepted: 1 });
+  assert.deepEqual(bootstrapXxyyCandlesFromShadow(false, 1001), { attempted: 1, accepted: 1 });
   assert.equal(loadXxyy5mCandles('bsc:0xseed', 0)[0]?.o, '2');
 });
 
 test('历史起点与滚动高点只读 XXYY 专表', () => {
   upsertXxyyCandle('bsc:0xhigh', '2', null, 86400 + 60);
   upsertXxyyCandle('bsc:0xhigh', '3', null, 2 * 86400 + 60);
-  assert.equal(xxyyHistoryStart('bsc:0xhigh'), 86400);
+  assert.equal(xxyyHistoryStart('bsc:0xhigh'), 86400 + 60);
   const highs = xxyyWindowHighsBefore('bsc:0xhigh', [
     { key: '3d', seconds: 3 * 86400 }, { key: 'all', seconds: null },
   ], 3 * 86400);
-  assert.equal(highs.get('3d')?.toString(), '3');
-  assert.equal(highs.get('all')?.toString(), '3');
+  assert.equal(highs.get('3d')?.price.toString(), '3');
+  assert.equal(highs.get('3d')?.ts, 2 * 86400);
+  assert.equal(highs.get('all')?.price.toString(), '3');
 });

@@ -90,6 +90,7 @@ export const walletXxyyDailyHighs = sqliteTable('wallet_xxyy_daily_highs', {
   tokenId: text('token_id').notNull(),
   day: integer('day').notNull(),
   high: text('high').notNull(),
+  highTs: integer('high_ts'),
   priceRegime: text('price_regime').notNull(),
 }, (t) => [primaryKey({ columns: [t.tokenId, t.day] })]);
 
@@ -100,6 +101,19 @@ export const walletXxyyPendingQuotes = sqliteTable('wallet_xxyy_pending_quotes',
   marketCapUsd: text('market_cap_usd'),
   firstSeenAt: integer('first_seen_at').notNull(),
   lastSeenAt: integer('last_seen_at').notNull(),
+});
+
+/** 精确记录首次观察时间，不能用按天表的 00:00 冒充完整窗口覆盖。 */
+export const walletXxyyHistoryMeta = sqliteTable('wallet_xxyy_history_meta', {
+  tokenId: text('token_id').primaryKey(),
+  firstObservedAt: integer('first_observed_at').notNull(),
+});
+
+/** 曾经成功覆盖过的币若从响应里消失，必须显式降级，不能静默漏价。 */
+export const walletXxyyTokenHealth = sqliteTable('wallet_xxyy_token_health', {
+  tokenId: text('token_id').primaryKey(),
+  lastOkAt: integer('last_ok_at').notNull(),
+  lastMissingAt: integer('last_missing_at'),
 });
 
 /** 每链成功覆盖率高水位；用于识别 HTTP 200 但报价覆盖突然掉崖的静默故障。 */

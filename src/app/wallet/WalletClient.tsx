@@ -34,6 +34,7 @@ interface BusinessHealth {
   /** 用浏览器收包时间，不拿服务端时钟与本机时钟硬减。 */
   receivedAt: number;
   pumpStatus: RuntimeStatus;
+  xxyyAlertStatus: RuntimeStatus;
   alertsRead: 'ok' | 'error';
   problemScopes: string[];
 }
@@ -291,19 +292,21 @@ export default function WalletClient() {
             throw new Error('health payload malformed');
           }
           const pump = d.rows.find((row) => row.component === 'pump' && row.scope === 'all');
+          const xxyy = d.rows.find((row) => row.component === 'xxyy-alert' && row.scope === 'all');
           const problemScopes = d.rows
             .filter((row) => row.status === 'down' || row.status === 'degraded')
             .map((row) => row.scope ?? 'unknown');
           setBusinessHealth({
             receivedAt,
             pumpStatus: pump?.status ?? 'unknown',
+            xxyyAlertStatus: xxyy?.status ?? 'unknown',
             alertsRead: d.alertsRead,
             problemScopes,
           });
         } catch {
           // 心跳格式坏了也不能当作收到了一份健康证明。
           setBusinessHealth({
-            receivedAt, pumpStatus: 'unknown', alertsRead: 'error',
+            receivedAt, pumpStatus: 'unknown', xxyyAlertStatus: 'unknown', alertsRead: 'error',
             problemScopes: ['health-payload'],
           });
         }
@@ -358,7 +361,7 @@ export default function WalletClient() {
         streamConnected={streamEstablished && !offline}
         businessHeartbeatAt={businessHealth?.receivedAt ?? null}
         backendDown={businessHealth !== null
-          && shouldEscalateBackend(businessHealth.pumpStatus)}
+          && shouldEscalateBackend(businessHealth.xxyyAlertStatus)}
         alertReadDown={businessHealth?.alertsRead === 'error'}
       />
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -372,7 +375,8 @@ export default function WalletClient() {
           实时推送已断开，正在重连 —— 这段时间的暴涨不会播报。重连后会自动补上。
         </p>
       )}
-      {businessHealth?.pumpStatus === 'degraded' && (
+      {(businessHealth?.xxyyAlertStatus === 'degraded'
+        || businessHealth?.pumpStatus === 'degraded') && (
         <p className="rounded border border-[#fab219] bg-[#fab219]/10 px-3 py-2 text-sm text-[#d69a1b]">
           暴涨监测正在降级运行：{businessHealth.problemScopes.join('、') || '部分行情或判定失败'}。
           页面仍会接收已成功生成的报警，系统正在继续重试。

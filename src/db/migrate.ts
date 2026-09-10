@@ -43,9 +43,15 @@ CREATE TABLE IF NOT EXISTS wallet_xxyy_candles (
 CREATE INDEX IF NOT EXISTS idx_wallet_xxyy_candles_ts
   ON wallet_xxyy_candles(ts);
 CREATE TABLE IF NOT EXISTS wallet_xxyy_daily_highs (
-  token_id TEXT NOT NULL, day INTEGER NOT NULL, high TEXT NOT NULL,
+  token_id TEXT NOT NULL, day INTEGER NOT NULL, high TEXT NOT NULL, high_ts INTEGER,
   price_regime TEXT NOT NULL,
   PRIMARY KEY (token_id, day)
+);
+CREATE TABLE IF NOT EXISTS wallet_xxyy_history_meta (
+  token_id TEXT PRIMARY KEY, first_observed_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS wallet_xxyy_token_health (
+  token_id TEXT PRIMARY KEY, last_ok_at INTEGER NOT NULL, last_missing_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS wallet_xxyy_pending_quotes (
   token_id TEXT PRIMARY KEY, price_usd TEXT NOT NULL, market_cap_usd TEXT,
@@ -345,6 +351,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['users', 'min_alert_value_usd', 'REAL'],
   ['tokens', 'owner_id', 'TEXT'],
   ['events', 'owner_id', 'TEXT'],
+  ['wallet_xxyy_daily_highs', 'high_ts', 'INTEGER'],
 ];
 
 export function runMigrations(): void {
