@@ -3,7 +3,8 @@ import { Decimal } from '../lib/decimal.ts';
 import { align5m } from '../lib/time.ts';
 
 export const XXYY_PRICE_REGIME = 'xxyy-live-v1';
-export const XXYY_CANDLE_RETENTION_SECONDS = 31 * 86400;
+// 暴涨最长只看 24h；保留 8 天便于复盘。更长 ATH 只需要按天高点，另表长期存。
+export const XXYY_CANDLE_RETENTION_SECONDS = 8 * 86400;
 export const EXTREME_JUMP_RATIO = new Decimal('1000');
 export const EXTREME_CONFIRM_TOLERANCE = new Decimal('1.10');
 

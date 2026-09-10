@@ -36,6 +36,10 @@ export default async function SettingsPage() {
               <td>{cfg.polling.intervalSeconds} 秒（并发 {cfg.polling.maxConcurrency}）</td>
             </tr>
             <tr className="border-b border-neutral-900">
+              <td className="py-1.5 text-neutral-500">钱包暴涨 / ATH</td>
+              <td>XXYY 主报价 · 15 秒快轮次；DexScreener 只负责资格与元数据</td>
+            </tr>
+            <tr className="border-b border-neutral-900">
               <td className="py-1.5 text-neutral-500">失联阈值</td>
               <td>{cfg.polling.staleMinutes} 分钟无有效报价即告警</td>
             </tr>

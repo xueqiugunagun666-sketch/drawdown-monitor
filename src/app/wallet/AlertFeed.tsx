@@ -30,6 +30,9 @@ export interface AlertRow {
   marketCapUsd?: number | null;
   /** 基准价的时刻。ATH 报警用它说「前高立于 23 天前」 */
   baseTs?: number | null;
+  /** 报警实际使用的当前价来源；新链路固定为 xxyy。 */
+  priceSource?: string | null;
+  priceRegime?: string | null;
 }
 
 /** 系统消息（报价源故障之类），不是行情。只发给管理员 */
@@ -47,7 +50,7 @@ export function isPumpAthAlert(kind: string | null | undefined): boolean {
 }
 
 export function sourceAlertText(a: AlertRow): { title: string; body: string } {
-  const source = (a.tokenId.split(':')[1] ?? '未知').toUpperCase();
+  const source = (a.tokenId.split(':').slice(1).join(':') || '未知').toUpperCase();
   if (source === 'XXYY-SOLANA-RPC') {
     return {
       title: 'Solana 钱包 RPC 异常',
@@ -55,10 +58,17 @@ export function sourceAlertText(a: AlertRow): { title: string; body: string } {
         + '可在设置页查看数据源状态。',
     };
   }
+  if (source === 'XXYY' || source.startsWith('XXYY-ALERTS:')) {
+    const chain = source.includes(':') ? `（${source.split(':')[1]}）` : '';
+    return {
+      title: `XXYY 主报价异常${chain}`,
+      body: 'XXYY 连续多轮请求失败或有效报价覆盖率异常，钱包暴涨与 ATH 报警已暂停。'
+        + '回撤看板仍继续使用 DexScreener，可在设置页查看数据源状态。',
+    };
+  }
   return {
-    title: `报价源 ${source} 已自动回退`,
-    body: `${source} 连续多轮请求失败、缺失或偏价，系统已自动回退 DexScreener。`
-      + '可在设置页查看数据源状态。',
+    title: `数据源 ${source} 异常`,
+    body: `${source} 连续多轮异常，相关能力已暂停。可在设置页查看数据源状态。`,
   };
 }
 
@@ -185,6 +195,12 @@ export function LatestAlertBanner(
           </span>
         )}
         {a.chain && <span className="text-xs text-neutral-600">{a.chain}</span>}
+        {a.priceSource === 'xxyy' && (
+          <span className="rounded border border-[#fab219]/30 bg-[#fab219]/10 px-1.5 py-0.5
+                           text-[10px] font-medium tracking-wide text-[#fab219]">
+            报价 XXYY
+          </span>
+        )}
       </div>
 
       {addr && (
@@ -283,6 +299,9 @@ export default function AlertFeed({ alerts }: { alerts: AlertRow[] }) {
                 <span className="text-neutral-600 text-xs tabular-nums hidden lg:inline">
                   ${formatPrice(new Decimal(a.basePriceUsd), 6)} → ${formatPrice(new Decimal(a.priceUsd), 6)}
                 </span>
+              )}
+              {!isSystemAlert(a.kind) && a.priceSource === 'xxyy' && (
+                <span className="text-[#fab219] text-[10px] shrink-0">XXYY</span>
               )}
               <span className="ml-auto text-xs text-neutral-600 shrink-0">{humanAgo(a.firedAt)}</span>
             </li>

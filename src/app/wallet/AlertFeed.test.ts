@@ -49,11 +49,12 @@ test('pump-ath 同时写出暴涨倍数、暴涨档位和新高', () => {
   assert.match(spec.title, /破90天新高/);
 });
 
-test('数据源故障文案覆盖请求失败、缺失和偏价，并说明已回退', () => {
+test('XXYY 主报价故障明确暂停钱包报警，不谎称回退', () => {
   const text = sourceAlertText(row('system', 0, 'source-down'));
-  assert.match(text.title, /XXYY.*自动回退/);
-  assert.match(text.body, /请求失败、缺失或偏价/);
+  assert.match(text.title, /XXYY 主报价异常/);
+  assert.match(text.body, /暴涨与 ATH 报警已暂停/);
   assert.match(text.body, /DexScreener/);
+  assert.doesNotMatch(text.body, /自动回退/);
 });
 
 test('Solana RPC 故障文案不谎称已回退报价源', () => {

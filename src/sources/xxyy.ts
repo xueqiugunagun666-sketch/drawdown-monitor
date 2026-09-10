@@ -9,12 +9,12 @@
  *
  * **它不能全盘替代 DexScreener**：只回 priceUSD / marketCap / pairAddress，
  * 没有流动性和成交量 —— 而过滤层（一个币要不要进监控）正是靠那两个。
- * 第一阶段仍同轮请求 DexScreener，只把 XXYY 当候选价；两边相差不超过
- * 10% 时才取较低价。等真实运行证明稳定后，才有资格讨论降低 DS 取价频率。
+ * 当前职责是：XXYY 独立决定已监控币的暴涨与 ATH 当前价；DexScreener
+ * 并行维护资格、元数据与回撤看板，两者不在报警关键路径上互相等待。
  *
  * **这是没有公开文档的接口。** 对方随时可能改路径、改字段、加鉴权，
  * 而最危险的是**静默地改** —— 比如某天开始给所有币回 0。所以调用方必须
- * 做交叉校验（见 sourceAgreement），不能把它当成可信输入直接用。
+ * 做请求、格式、零覆盖和覆盖率掉崖监控，不能把 HTTP 200 当成健康证明。
  */
 import PQueue from 'p-queue';
 import { httpPostJson } from '../lib/http.ts';

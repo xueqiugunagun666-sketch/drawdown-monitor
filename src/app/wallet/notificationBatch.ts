@@ -145,6 +145,7 @@ function marketTitle(a: AlertRow, nameFor: (a: AlertRow) => string): string {
 
 function marketDetails(a: AlertRow): string[] {
   const details: string[] = [];
+  if (a.priceSource === 'xxyy') details.push('报价 XXYY');
   if (a.walletLabels && a.walletLabels.length > 0) {
     details.push(`地址 ${a.walletLabels.join('、')}`);
   }
@@ -164,7 +165,7 @@ function marketDetails(a: AlertRow): string[] {
 }
 
 function sourceName(a: AlertRow): string {
-  const source = a.tokenId.split(':')[1] ?? a.tokenId;
+  const source = a.tokenId.split(':').slice(1).join(':') || a.tokenId;
   return source.toUpperCase();
 }
 
@@ -177,10 +178,17 @@ function systemNotificationText(a: AlertRow): { title: string; body: string } {
         + '可在设置页查看数据源状态。',
     };
   }
+  if (source === 'XXYY' || source.startsWith('XXYY-ALERTS:')) {
+    const chain = source.includes(':') ? `（${source.split(':')[1]}）` : '';
+    return {
+      title: `⚠️ XXYY 主报价异常${chain}`,
+      body: 'XXYY 连续多轮请求失败或有效报价覆盖率异常，钱包暴涨与 ATH 报警已暂停。'
+        + '回撤看板仍继续使用 DexScreener，可在设置页查看数据源状态。',
+    };
+  }
   return {
-    title: `⚠️ 报价源 ${source} 已自动回退`,
-    body: `${source} 连续多轮请求失败、缺失或偏价，系统已自动回退 DexScreener。`
-      + '可在设置页查看数据源状态。',
+    title: `⚠️ 数据源 ${source} 异常`,
+    body: `${source} 连续多轮异常，相关能力已暂停。可在设置页查看数据源状态。`,
   };
 }
 

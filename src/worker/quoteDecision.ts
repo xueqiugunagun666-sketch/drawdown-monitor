@@ -1,9 +1,9 @@
 /**
  * 双源报价的逐币决策。
  *
- * 目前生产行为仍由 `current*` 描述：DS 是正式来源，只有 XXYY 同轮接近且
- * 整轮健康时才取两者较低价。`hypothetical*` 是下一版冲突暂停规则的影子
- * 结果，只落库、不参与窗口、状态机和通知。
+ * `decideQuote` 保留描述切源前的双源影子诊断并写入 quote_shadow；正式
+ * 钱包报警已经由 xxyyAlertEngine 独立执行，不读取这里的 current 结果。
+ * `selectAlertPrice` 则锁住新规则：XXYY 有效就用，缺失就暂停，绝不 DS 冒充。
  */
 import { Decimal } from '../lib/decimal.ts';
 import type { BatchQuote } from '../sources/dexscreenerBatch.ts';

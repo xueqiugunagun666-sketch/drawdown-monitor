@@ -51,11 +51,13 @@ test('单币通知保留所在链、市值变化、判定窗口与持仓价值',
   pump.priceUsd = '2.035';
   pump.basePriceUsd = '1';
   pump.valueUsd = '125.5';
+  pump.priceSource = 'xxyy';
   const spec = buildNotificationSpecs(buildAlertBatch([pump]), (a) => a.symbol ?? a.id)[0]!;
   assert.match(spec.title, /🚀.*cap.*BSC.*暴涨 2\.0x/);
   assert.match(spec.body, /市值.*→.*162\.4K/);
   assert.match(spec.body, /5 分钟内从低点/);
   assert.match(spec.body, /持仓.*125/);
+  assert.match(spec.body, /报价 XXYY/);
 });
 
 test('不同链使用直观链名，ATH 与暴涨标题一眼可区分', () => {

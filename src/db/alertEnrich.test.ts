@@ -45,6 +45,15 @@ test('enrichAlerts 补出币名、地址与链', () => {
   assert.deepEqual(e?.walletLabels, []);
 });
 
+test('XXYY 全部窗口不会冒充真实全历史，明确写运行期新高', () => {
+  const a = alert('bsc:0xxxyy-ath');
+  a.kind = 'ath';
+  a.athWindow = 'all';
+  a.priceSource = 'xxyy';
+  a.priceRegime = 'xxyy-live-v1';
+  assert.equal(enrichAlerts([a])[0]?.athScope, 'XXYY运行期新高');
+});
+
 test('同一用户多个地址的备注进入通知，跨链重复备注去重且不泄露给别人', () => {
   const a = wr.createUser(`labels-a-${++seq}`, 'h')!;
   const b = wr.createUser(`labels-b-${++seq}`, 'h')!;

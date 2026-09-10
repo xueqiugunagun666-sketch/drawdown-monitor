@@ -20,6 +20,28 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: 'v4.17',
+    date: '2026-09-11',
+    headline: '暴涨与 ATH 切换到 XXYY 15 秒快报价',
+    changes: [
+      {
+        kind: 'change',
+        title: 'XXYY 直接决定钱包暴涨和新高提醒',
+        detail: '监控中的去重代币每 15 秒由 XXYY 批量取价并立即判定，不再等待 DexScreener 追价或等待冷币队列。DexScreener 继续负责流动性、成交量、项目链接和回撤看板，不再覆盖钱包报警价格。',
+      },
+      {
+        kind: 'fix',
+        title: '报价历史、暴涨状态和 ATH 状态按来源隔离',
+        detail: 'XXYY 使用独立 K 线与状态表，不与旧 DS、GMGN 或回撤看板历史混算；报警会记录并显示报价来源。极端跳价只等待下一次 XXYY 复核，普通 2x、3x、5x、10x 不增加确认延迟。',
+      },
+      {
+        kind: 'fix',
+        title: 'XXYY 静默故障会通知管理员',
+        detail: '网络、响应格式、整链无报价和有效覆盖率掉崖都会累计故障；连续异常会提醒管理员，并明确说明钱包暴涨与 ATH 已暂停，不会把 DexScreener 回退伪装成 XXYY。',
+      },
+    ],
+  },
+  {
     version: 'v4.16',
     date: '2026-09-11',
     headline: '新钱包优先扫描，真实持仓不再显示成 0',

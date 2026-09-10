@@ -69,8 +69,11 @@ export function lookupWalletLabels(userId: string, tokenId: string): string[] {
  *
  * 旧报警行没有 ath_window，退回按覆盖天数描述（老口径）。
  */
-function lookupAthScope(tokenId: string, athWindow: string | null): string | null {
+function lookupAthScope(
+  tokenId: string, athWindow: string | null, priceRegime: string | null,
+): string | null {
   if (athWindow) {
+    if (athWindow === 'all' && priceRegime === 'xxyy-live-v1') return 'XXYY运行期新高';
     const w = windowByKey(athWindow);
     if (w) return describeWindow(w);
   }
@@ -96,9 +99,11 @@ export function enrichAlerts(rows: PumpAlertRow[]): EnrichedAlert[] {
   return rows.map((a) => {
     if (!cache.has(a.tokenId)) cache.set(a.tokenId, lookupSymbol(a.tokenId));
     const isAth = a.kind === 'ath' || a.kind === 'ath-advance' || a.kind === 'pump-ath';
-    const scopeKey = `${a.tokenId}|${a.athWindow ?? ''}`;
+    const scopeKey = `${a.tokenId}|${a.athWindow ?? ''}|${a.priceRegime ?? ''}`;
     const walletKey = `${a.userId}|${a.tokenId}`;
-    if (isAth && !scopes.has(scopeKey)) scopes.set(scopeKey, lookupAthScope(a.tokenId, a.athWindow));
+    if (isAth && !scopes.has(scopeKey)) {
+      scopes.set(scopeKey, lookupAthScope(a.tokenId, a.athWindow, a.priceRegime));
+    }
     if (!walletLabels.has(walletKey)) {
       walletLabels.set(walletKey, lookupWalletLabels(a.userId, a.tokenId));
     }
