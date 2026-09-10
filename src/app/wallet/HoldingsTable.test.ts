@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { usd, matchesQuery, isDust, type HoldingRow } from './HoldingsTable.tsx';
+import {
+  usd, matchesQuery, isDust, holdingBuckets, quotedHoldingValue, type HoldingRow,
+} from './HoldingsTable.tsx';
 
 test('大额加千位分隔符', () => {
   // 合计是这一页最该一眼读懂的数字，$116097.28 要数位数才知道量级
@@ -119,4 +121,33 @@ test('价值算不出来的不算小额 —— 算不出说明数据有问题，
 
 test('极小金额也照判 —— Decimal 比较，不走 JS number', () => {
   assert.equal(isDust(row('0.000000000000000001'), 1), true);
+});
+
+test('待评估与已过滤严格分开，真实持仓不能被折叠成 0', () => {
+  const rows = [
+    row('12'),
+    row(null),
+    row('3'),
+    { ...row('8'), monitored: false, filterReason: null },
+    { ...row('5'), monitored: false, filterReason: '流动性不足' },
+  ];
+  const buckets = holdingBuckets(rows, 10);
+  assert.equal(buckets.monitored.length, 2, '价值未知的不能当粉尘藏掉');
+  assert.equal(buckets.dust.length, 1);
+  assert.equal(buckets.pending.length, 1);
+  assert.equal(buckets.filtered.length, 1);
+  assert.equal(rows.length, 5);
+});
+
+test('合计包含所有已报价实际持仓，不受监控状态影响', () => {
+  const rows = [
+    row('10'),
+    { ...row('2.5'), monitored: false, filterReason: '成交量不足' },
+    { ...row(null), monitored: false, filterReason: null },
+  ];
+  assert.deepEqual(quotedHoldingValue(rows), { total: '12.5', quotedCount: 2 });
+});
+
+test('完全没有报价时合计为空而不是假装为零', () => {
+  assert.deepEqual(quotedHoldingValue([row(null)]), { total: null, quotedCount: 0 });
 });

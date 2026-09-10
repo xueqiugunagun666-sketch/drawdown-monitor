@@ -169,7 +169,7 @@ function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
         <span className="tabular-nums">{price(h.priceUsd)}</span>
         {/* 没进监控必须说明原因，不能让币静静消失（第 4 条铁律） */}
         <span className={`ml-auto shrink-0 text-right ${h.monitored ? 'text-[#3fbf7f]' : 'text-neutral-500'}`}>
-          {h.monitored ? '监控中' : h.filterReason ?? '未监控'}
+          {h.monitored ? '监控中' : h.filterReason ?? '待行情评估'}
         </span>
       </div>
     </li>
@@ -187,6 +187,33 @@ export function isDust(h: HoldingRow, floor: number): boolean {
   if (floor <= 0) return false;
   if (h.valueUsd === null) return false;
   return new Decimal(h.valueUsd).lt(floor);
+}
+
+/**
+ * “尚未评估”和“已评估但不达标”必须分开。
+ *
+ * 两者以前都被塞进 filtered 并默认折叠，导致刚扫出的真实持仓在页面上看起来
+ * 像 0。filterReason=null 表示行情/过滤器还没轮到它，不是已经决定不监控。
+ */
+export function holdingBuckets(holdings: HoldingRow[], minValue: number) {
+  const inMonitor = holdings.filter((h) => h.monitored);
+  return {
+    monitored: inMonitor.filter((h) => !isDust(h, minValue)),
+    dust: inMonitor.filter((h) => isDust(h, minValue)),
+    pending: holdings.filter((h) => !h.monitored && h.filterReason === null),
+    filtered: holdings.filter((h) => !h.monitored && h.filterReason !== null),
+  };
+}
+
+/** 所有取得报价的实际持仓合计；没有任何报价时返回 null，不能伪装成 $0。 */
+export function quotedHoldingValue(holdings: HoldingRow[]): {
+  total: string | null; quotedCount: number;
+} {
+  const quoted = holdings.filter((h) => h.valueUsd !== null);
+  if (quoted.length === 0) return { total: null, quotedCount: 0 };
+  const total = quoted.reduce(
+    (sum, h) => sum.plus(new Decimal(h.valueUsd!)), new Decimal(0));
+  return { total: total.toString(), quotedCount: quoted.length };
 }
 
 export default function HoldingsTable(
@@ -214,19 +241,19 @@ export default function HoldingsTable(
     return d !== 0 ? d : byMultiple(a, b);
   };
   // 刚报过警的排最前，其次按当前倍数
-  const inMonitor = hit.filter((h) => h.monitored);
   /**
    * 粉尘单独一组而不是直接扔掉：它们仍然在监控、涨幅照常算，
    * 只是不值得占据视线。用户随时能展开看见 —— 币不能静静消失。
    */
-  const monitored = inMonitor.filter((h) => !isDust(h, minValue)).sort(byAlertThenMultiple);
-  const dust = inMonitor.filter((h) => isDust(h, minValue)).sort(byAlertThenMultiple);
-  const filtered = hit.filter((h) => !h.monitored);
+  const buckets = holdingBuckets(hit, minValue);
+  const monitored = buckets.monitored.sort(byAlertThenMultiple);
+  const dust = buckets.dust.sort(byAlertThenMultiple);
+  const pending = buckets.pending.sort(byAlertThenMultiple);
+  const filtered = buckets.filtered.sort(byAlertThenMultiple);
 
-  // 合计始终按全部监控中的算，不随搜索变 ——
-  // 搜索是"找一个币"，不是"看一个子集值多少钱"
-  const total = holdings.filter((h) => h.monitored).reduce(
-    (s, h) => (h.valueUsd ? s.plus(new Decimal(h.valueUsd)) : s), new Decimal(0));
+  // 合计按全部已取得报价的真实持仓算，不随搜索、过滤状态或小额阈值变化。
+  // 全部还没报价时必须显示“—”，显示 $0 会让用户以为链上余额也是 0。
+  const value = quotedHoldingValue(holdings);
 
   return (
     <section>
@@ -236,7 +263,8 @@ export default function HoldingsTable(
           <p className="text-xs text-neutral-600 mt-0.5">
             {searching
               ? `搜索结果 ${hit.length}`
-              : `监控中 ${monitored.length}`
+              : `持仓 ${holdings.length} · 监控中 ${monitored.length}`
+                + (pending.length > 0 ? ` · 待评估 ${pending.length}` : '')
                 + (dust.length > 0 ? ` · 小额 ${dust.length}` : '')
                 + (filtered.length > 0 ? ` · 已过滤 ${filtered.length}` : '')}
           </p>
@@ -249,10 +277,15 @@ export default function HoldingsTable(
         </div>
         {/* 合计是这一页最重要的数字，原本是最小号字挤在右边缘 */}
         <div className="text-right">
-          <div className="meta-label">合计</div>
+          <div className="meta-label">已报价持仓合计</div>
           <div className="text-[22px] font-semibold tabular-nums leading-none mt-1 tracking-tight">
-            {usd(total.toString())}
+            {usd(value.total)}
           </div>
+          {holdings.length > 0 && (
+            <div className="text-[11px] text-neutral-600 mt-1">
+              已报价 {value.quotedCount}/{holdings.length}
+            </div>
+          )}
         </div>
       </div>
 
@@ -293,6 +326,10 @@ export default function HoldingsTable(
           <ul className="space-y-1.5">
             {monitored.map((h) => (
               <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={alerted.has(h.tokenId)} />
+            ))}
+            {/* 待评估是真实持仓，默认显示；折叠它们会让“121 条”看起来像 0。 */}
+            {pending.map((h) => (
+              <Row key={`${h.wallet}-${h.tokenId}`} h={h} alerted={false} />
             ))}
             {/* 搜索时小额与被过滤的都直接展开 ——
                 最常见的问题恰恰是"我这个币怎么不见了" */}
