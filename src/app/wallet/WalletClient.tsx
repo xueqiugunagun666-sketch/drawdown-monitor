@@ -38,6 +38,27 @@ interface BusinessHealth {
   problemScopes: string[];
 }
 
+export const PORTFOLIO_REFRESH_INTERVAL_MS = 10_000;
+
+/**
+ * 新钱包的扫描和行情评估都在 worker 里异步完成。
+ *
+ * 添加成功后那次即时请求通常只能看到空列表；如果页面一直开着，又恰好没有
+ * 新报警触发 load()，浏览器就会永远保留那个“0”。只在确实还有后台工作时
+ * 临时刷新，稳定后立刻停止，避免每个在线用户长期轮询 SQLite。
+ */
+export function needsPortfolioRefresh(
+  wallets: readonly WalletRow[], holdings: readonly HoldingRow[],
+): boolean {
+  const queuedWallet = wallets.some(
+    (wallet) => wallet.lastScanAt === null && wallet.lastScanError === null,
+  );
+  const pendingHolding = holdings.some(
+    (holding) => !holding.monitored && holding.filterReason === null,
+  );
+  return queuedWallet || pendingHolding;
+}
+
 function soundPhrase(kind: AlertSoundKind | null): string | null {
   switch (kind) {
     case 'system': return SYSTEM_PHRASE;
@@ -134,7 +155,43 @@ export default function WalletClient() {
     }
   }, []);
 
+  /**
+   * 扫描期间只刷新会变化的钱包和持仓，不重复拉报警历史与个人设置。
+   * HTTP 非 2xx 也必须显式失败；否则 401 JSON 会被当成空数组，把真持仓抹成 0。
+   */
+  const refreshPortfolio = useCallback(async () => {
+    try {
+      const [walletResponse, holdingsResponse] = await Promise.all([
+        fetch('/api/wallet/wallets'),
+        fetch('/api/wallet/holdings'),
+      ]);
+      const [w, h] = await Promise.all([
+        walletResponse.json(), holdingsResponse.json(),
+      ]) as [
+        { wallets?: WalletRow[]; chains?: string[]; error?: string },
+        { holdings?: HoldingRow[]; error?: string },
+      ];
+      if (!walletResponse.ok || w.error) throw new Error(w.error ?? '钱包加载失败');
+      if (!holdingsResponse.ok || h.error) throw new Error(h.error ?? '持仓加载失败');
+      setWallets(w.wallets ?? []);
+      setChains(w.chains ?? []);
+      setHoldings(h.holdings ?? []);
+      setErr(null);
+    } catch {
+      setErr('持仓自动刷新失败，检查网络');
+    }
+  }, []);
+
   useEffect(() => { void load(); }, [load]);
+
+  const portfolioPending = needsPortfolioRefresh(wallets, holdings);
+  useEffect(() => {
+    if (!portfolioPending) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshPortfolio();
+    }, PORTFOLIO_REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [portfolioPending, refreshPortfolio]);
 
   // SSE：不能用轮询拉报警 —— 后台标签页的定时器会被节流到约一分钟，
   // 而暴涨报警慢一分钟基本就没意义了
@@ -362,7 +419,12 @@ export default function WalletClient() {
       )}
       {/* 横幅放最顶上：用户是听到播报才打开页面的，第一眼必须看到是哪个币 */}
       <LatestAlertBanner alerts={alerts} onFocus={focusToken} />
-      <WalletList wallets={wallets} chains={chains} onChange={load} />
+      <WalletList wallets={wallets} chains={chains} onChange={refreshPortfolio} />
+      {portfolioPending && (
+        <p role="status" className="text-xs text-[#fab219]">
+          钱包扫描或行情评估进行中，持仓会自动刷新…
+        </p>
+      )}
       {/* 小额阈值放在持仓表头里，不放页面右上角：它影响的就是下面这个列表，
           放在效果发生的地方才看得见 —— 右上角那种位置等于没有 */}
       <HoldingsTable holdings={holdings} alertedTokenIds={alertedTokenIds}
