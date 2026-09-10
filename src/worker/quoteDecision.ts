@@ -27,6 +27,43 @@ export interface QuoteDecision {
   hypotheticalSource: 'dexscreener' | 'xxyy' | null;
 }
 
+/**
+ * 暴涨与 ATH 真正使用的价格。
+ *
+ * 用户在 XXYY 交易，因此“可执行价格”必须以 XXYY 为准。DexScreener 继续
+ * 提供流动性、成交量、池子与社交元数据，但不能再等它追价之后才报警。
+ * source=fallback-dexscreener 必须一路写进报警记录，不能把降级伪装成 XXYY。
+ */
+export interface AlertPriceQuote {
+  priceUsd: string;
+  marketCapUsd: number | null;
+  source: 'xxyy' | 'fallback-dexscreener';
+  fetchedAt: number | null;
+}
+
+export function selectAlertPrice(
+  ds: BatchQuote | null, xxyy: XxyyQuote | null,
+): AlertPriceQuote | null {
+  const xxyyPrice = price(xxyy?.priceUsd);
+  if (xxyyPrice) {
+    return {
+      priceUsd: xxyyPrice.toString(),
+      marketCapUsd: xxyy?.marketCapUsd ?? null,
+      source: 'xxyy',
+      fetchedAt: xxyy?.fetchedAt ?? null,
+    };
+  }
+
+  const dsPrice = price(ds?.priceUsd);
+  if (!dsPrice) return null;
+  return {
+    priceUsd: dsPrice.toString(),
+    marketCapUsd: ds?.marketCapUsd ?? null,
+    source: 'fallback-dexscreener',
+    fetchedAt: ds?.fetchedAt ?? null,
+  };
+}
+
 function price(raw: string | undefined): Decimal | null {
   if (raw === undefined) return null;
   try {
