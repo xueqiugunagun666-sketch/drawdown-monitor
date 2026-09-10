@@ -48,8 +48,8 @@ journalctl -u drawdown-web -f
 # 重启
 systemctl restart drawdown-worker drawdown-web
 
-# 立即备份一次
-systemctl start drawdown-backup
+# 立即强制备份一次（定时服务在非 04 点会主动跳过）
+sudo -u drawdown /opt/drawdown-monitor/deploy/backup.sh --force
 
 # 查看备份（每天低峰一次，保留 14 天，快速 gzip 压缩）
 ls -lh /opt/drawdown-monitor/backups
@@ -71,8 +71,8 @@ rsync -avn --delete \
 ```
 
 ```bash
-# 服务器：备份 -> 同步 -> 迁移 -> 构建 -> 重启
-sudo systemctl start drawdown-backup
+# 服务器：强制备份 -> 同步 -> 迁移 -> 构建 -> 重启
+sudo -u drawdown /opt/drawdown-monitor/deploy/backup.sh --force
 sudo rsync -a --delete --exclude '.git' --exclude 'node_modules' --exclude '.next' \
   --exclude 'data' --exclude 'backups' --exclude 'backups-remote' --exclude '.env' \
   --exclude 'tsconfig.tsbuildinfo' ~/deploy-stage/ /opt/drawdown-monitor/

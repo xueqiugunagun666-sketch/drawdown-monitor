@@ -8,6 +8,13 @@ DB="${APP_DIR}/data/monitor.db"
 OUT_DIR="${APP_DIR}/backups"
 KEEP_DAYS=14
 
+# timer 的历史状态或人工误操作都可能让任务在白天启动。除非明确 --force，
+# 非本地 04 点一律立即退出，报警主链路优先于补做一份重备份。
+if [[ "${1:-}" != "--force" && "$(date +%H)" != "04" ]]; then
+  echo "跳过备份：当前不在本地 04 点低峰窗口（人工执行请加 --force）"
+  exit 0
+fi
+
 [ -f "$DB" ] || { echo "数据库不存在: $DB"; exit 0; }
 mkdir -p "$OUT_DIR"
 
