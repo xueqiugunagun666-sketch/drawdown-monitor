@@ -15,9 +15,6 @@ import { backfillNativePrices } from '../sources/nativeHistory.ts';
 import * as repo from '../db/repo.ts';
 import { scanAllWallets, SCAN_INTERVAL_SECONDS } from './walletScanner.ts';
 import { runPumpTick, TICK_INTERVAL_SECONDS } from './pumpEngine.ts';
-import {
-  runXxyyAlertTick, XXYY_ALERT_INTERVAL_SECONDS,
-} from './xxyyAlertEngine.ts';
 import { startTrashLoop } from './trashPoller.ts';
 import { nowSec } from '../lib/time.ts';
 
@@ -153,22 +150,6 @@ async function main(): Promise<void> {
     }
   };
   void pumpLoop();
-
-  // 快轮次：XXYY 是暴涨与 ATH 的唯一实时价，每 15 秒扫全部监控中去重币。
-  // 与慢轮次完全并行，不能 await DS，也不能被冷币发现队列拖住。
-  const xxyyAlertLoop = async () => {
-    while (!stopping) {
-      const started = Date.now();
-      try {
-        await runXxyyAlertTick(nowSec());
-      } catch (err) {
-        log.exception('XXYY 暴涨/ATH 快轮次异常', err);
-      }
-      const wait = XXYY_ALERT_INTERVAL_SECONDS * 1000 - (Date.now() - started);
-      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    }
-  };
-  void xxyyAlertLoop();
 
   // 群聊淘金：独立循环，拉不到不影响价格轮询与暴涨判定
   startTrashLoop(() => stopping);

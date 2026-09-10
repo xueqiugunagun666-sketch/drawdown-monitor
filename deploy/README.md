@@ -25,7 +25,7 @@ git clone <repository-url> /tmp/show-tools && cd /tmp/show-tools && sudo bash de
 5. 交互式填写 Telegram token、chat id、网页登录口令（留空则自动生成强口令）
 6. 询问访问域名
 7. `npm ci` + `npm run build` + 建表
-8. 装好并启动 systemd 服务与每日备份定时器
+8. 装好并启动 web、主 worker、XXYY 报警 worker 与每日备份定时器
 
 ## 没有域名怎么办
 
@@ -81,6 +81,13 @@ cd /opt/drawdown-monitor
 sudo -u drawdown npm run db:migrate      # 见下方说明，这一步不能省
 sudo -u drawdown npm run build
 sudo systemctl restart drawdown-web drawdown-worker
+```
+
+暴涨与 ATH 的 XXYY 15 秒快轮询在独立的 `drawdown-xxyy-alert` 服务中，避免被
+DexScreener 慢轮次、钱包扫描或回填阻塞。更新 worker 代码时也要同步重启它：
+
+```bash
+sudo systemctl restart drawdown-worker drawdown-xxyy-alert drawdown-web
 ```
 
 **为什么要单独跑 `db:migrate`**：`next start` 不执行迁移，只有 worker 启动时会跑

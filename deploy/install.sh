@@ -159,6 +159,7 @@ sudo -u "$APP_USER" npm run db:migrate
 # ---------------------------------------------------------------- 服务
 step "安装 systemd 服务"
 cp "$APP_DIR/deploy/drawdown-worker.service" /etc/systemd/system/
+cp "$APP_DIR/deploy/drawdown-xxyy-alert.service" /etc/systemd/system/
 cp "$APP_DIR/deploy/drawdown-web.service"    /etc/systemd/system/
 cp "$APP_DIR/deploy/drawdown-backup.service" /etc/systemd/system/
 cp "$APP_DIR/deploy/drawdown-backup.timer"   /etc/systemd/system/
@@ -171,13 +172,13 @@ if ! caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
 fi
 grn "  Caddyfile 校验通过"
 systemctl daemon-reload
-systemctl enable --now drawdown-worker drawdown-web drawdown-backup.timer >/dev/null
+systemctl enable --now drawdown-worker drawdown-xxyy-alert drawdown-web drawdown-backup.timer >/dev/null
 systemctl restart caddy
 
 # ---------------------------------------------------------------- 收尾
 step "等待服务就绪"
 sleep 8
-for s in drawdown-worker drawdown-web caddy; do
+for s in drawdown-worker drawdown-xxyy-alert drawdown-web caddy; do
   if systemctl is-active --quiet "$s"; then grn "  $s  运行中"; else red "  $s  未运行 —— journalctl -u $s -n 50"; fi
 done
 
@@ -198,8 +199,8 @@ echo "  访问：https://${DOMAIN}"
 echo "  用上面那个邀请码注册，用户名填 ${ADMIN_NAME:-你配置的管理员名} 就是管理员"
 echo
 echo "常用命令："
-echo "  看日志      journalctl -u drawdown-worker -f"
-echo "  重启        systemctl restart drawdown-worker drawdown-web"
+echo "  看日志      journalctl -u drawdown-worker -f；报警快链路看 drawdown-xxyy-alert"
+echo "  重启        systemctl restart drawdown-worker drawdown-xxyy-alert drawdown-web"
 echo "  更新代码    见 deploy/README.md「更新代码」一节（rsync，不是 git pull）"
 echo "  邀请码      cd ${APP_DIR} && sudo -u ${APP_USER} npm run invite"
 echo "  手动备份    sudo -u drawdown ${APP_DIR}/deploy/backup.sh --force"
