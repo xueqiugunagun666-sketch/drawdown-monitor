@@ -31,7 +31,8 @@
     "invite": "tsx --env-file-if-exists=.env scripts/invite.ts",
     "trash:resync": "tsx --env-file-if-exists=.env scripts/trash-resync.ts",
     "purge:mispriced": "tsx --env-file-if-exists=.env scripts/purge-mispriced-candles.ts",
-    "ath:backfill": "tsx --env-file-if-exists=.env scripts/ath-backfill.ts"
+    "ath:backfill": "tsx --env-file-if-exists=.env scripts/ath-backfill.ts",
+    "xxyy:bootstrap": "tsx --env-file-if-exists=.env scripts/bootstrap-xxyy-alerts.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
