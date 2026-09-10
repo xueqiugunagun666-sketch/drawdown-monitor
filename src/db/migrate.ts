@@ -33,6 +33,24 @@ CREATE TABLE IF NOT EXISTS candles (
   txn_count INTEGER, source TEXT,
   PRIMARY KEY (token_id, timeframe, ts)
 );
+CREATE TABLE IF NOT EXISTS wallet_xxyy_candles (
+  token_id TEXT NOT NULL, timeframe TEXT NOT NULL, ts INTEGER NOT NULL,
+  o TEXT NOT NULL, h TEXT NOT NULL, l TEXT NOT NULL, c TEXT NOT NULL,
+  market_cap_usd TEXT, quote_fetched_at INTEGER NOT NULL,
+  price_regime TEXT NOT NULL,
+  PRIMARY KEY (token_id, timeframe, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_xxyy_candles_ts
+  ON wallet_xxyy_candles(ts);
+CREATE TABLE IF NOT EXISTS wallet_xxyy_daily_highs (
+  token_id TEXT NOT NULL, day INTEGER NOT NULL, high TEXT NOT NULL,
+  price_regime TEXT NOT NULL,
+  PRIMARY KEY (token_id, day)
+);
+CREATE TABLE IF NOT EXISTS wallet_xxyy_pending_quotes (
+  token_id TEXT PRIMARY KEY, price_usd TEXT NOT NULL, market_cap_usd TEXT,
+  first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ath_state (
   token_id TEXT NOT NULL, mode TEXT NOT NULL, quote_mode TEXT NOT NULL,
   ath_raw TEXT, ath_robust TEXT, ath_ts INTEGER, ath_liquidity REAL, ath_market_cap REAL,

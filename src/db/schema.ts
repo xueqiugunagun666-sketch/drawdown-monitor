@@ -65,6 +65,43 @@ export const candles = sqliteTable('candles', {
   source: text('source'),
 }, (t) => [primaryKey({ columns: [t.tokenId, t.timeframe, t.ts] })]);
 
+/**
+ * 钱包暴涨 / ATH 的 XXYY 专用价格序列。
+ *
+ * 绝不能复用上面的 candles：那张表属于回撤看板，会混入 DexScreener、
+ * GMGN 回填和主池切换结果。同一个 5 分钟格跨源合并 h/l 后，2x 与 ATH
+ * 都无法再证明是由 XXYY 报价触发的。
+ */
+export const walletXxyyCandles = sqliteTable('wallet_xxyy_candles', {
+  tokenId: text('token_id').notNull(),
+  timeframe: text('timeframe').notNull(),
+  ts: integer('ts').notNull(),
+  o: text('o').notNull(),
+  h: text('h').notNull(),
+  l: text('l').notNull(),
+  c: text('c').notNull(),
+  marketCapUsd: text('market_cap_usd'),
+  quoteFetchedAt: integer('quote_fetched_at').notNull(),
+  priceRegime: text('price_regime').notNull(),
+}, (t) => [primaryKey({ columns: [t.tokenId, t.timeframe, t.ts] })]);
+
+/** XXYY 运行以来的按天高点，供 30/90/180/360 天与运行期新高使用。 */
+export const walletXxyyDailyHighs = sqliteTable('wallet_xxyy_daily_highs', {
+  tokenId: text('token_id').notNull(),
+  day: integer('day').notNull(),
+  high: text('high').notNull(),
+  priceRegime: text('price_regime').notNull(),
+}, (t) => [primaryKey({ columns: [t.tokenId, t.day] })]);
+
+/** 极端跳价只延迟一个采样确认，不允许永久静默隔离真实行情。 */
+export const walletXxyyPendingQuotes = sqliteTable('wallet_xxyy_pending_quotes', {
+  tokenId: text('token_id').primaryKey(),
+  priceUsd: text('price_usd').notNull(),
+  marketCapUsd: text('market_cap_usd'),
+  firstSeenAt: integer('first_seen_at').notNull(),
+  lastSeenAt: integer('last_seen_at').notNull(),
+});
+
 export const athState = sqliteTable('ath_state', {
   tokenId: text('token_id').notNull(),
   mode: text('mode').notNull(),                      // 'rolling_90d' | 'all_time' | 'since_added'
