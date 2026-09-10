@@ -291,7 +291,7 @@ export default function HoldingsTable(
 
       {holdings.length === 0 ? (
         <p className="text-sm text-neutral-600">
-          还没扫到持仓。加了钱包后，第一次扫描要等十几分钟。
+          还没扫到持仓。新钱包会优先扫描；进度和错误请看上方各链状态。
         </p>
       ) : (
         <>

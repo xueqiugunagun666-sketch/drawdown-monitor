@@ -78,7 +78,7 @@ export default function WalletList(
       setAddress(''); setLabel('');
       setMsg({
         kind: 'ok',
-        text: `已在 ${d.added?.join(' / ')} 上开始监控${
+        text: `已在 ${d.added?.join(' / ')} 上加入扫描队列${
           d.already?.length ? `（${d.already.join(' / ')} 之前加过了）` : ''
         }`,
       });
