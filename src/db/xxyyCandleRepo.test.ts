@@ -64,7 +64,8 @@ test('只从 quote_shadow 的 XXYY 列建立同源历史', () => {
        (token_id, bucket_ts, observed_at, ds_price_usd, xxyy_price_usd, decision, round_healthy)
      VALUES ('bsc:0xseed', 900, 1000, '99', '2', 'diverged', 0)`,
   ).run();
-  assert.deepEqual(bootstrapXxyyCandlesFromShadow(), { attempted: 1, accepted: 1 });
+  db.prepare(`UPDATE quote_shadow SET decision = 'consensus'`).run();
+  assert.deepEqual(bootstrapXxyyCandlesFromShadow(false), { attempted: 1, accepted: 1 });
   assert.equal(loadXxyy5mCandles('bsc:0xseed', 0)[0]?.o, '2');
 });
 

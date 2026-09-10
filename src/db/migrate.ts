@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS wallet_xxyy_pending_quotes (
   token_id TEXT PRIMARY KEY, price_usd TEXT NOT NULL, market_cap_usd TEXT,
   first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS wallet_xxyy_source_baselines (
+  chain TEXT PRIMARY KEY,
+  baseline_requested INTEGER NOT NULL, baseline_covered INTEGER NOT NULL,
+  last_requested INTEGER NOT NULL, last_covered INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ath_state (
   token_id TEXT NOT NULL, mode TEXT NOT NULL, quote_mode TEXT NOT NULL,
   ath_raw TEXT, ath_robust TEXT, ath_ts INTEGER, ath_liquidity REAL, ath_market_cap REAL,
@@ -195,12 +201,19 @@ CREATE TABLE IF NOT EXISTS pump_states (
   level REAL NOT NULL, state TEXT NOT NULL, last_fired_at INTEGER,
   PRIMARY KEY (token_id, timeframe, basis, level)
 );
+CREATE TABLE IF NOT EXISTS wallet_xxyy_pump_states (
+  token_id TEXT NOT NULL, timeframe TEXT NOT NULL, basis TEXT NOT NULL,
+  level REAL NOT NULL, state TEXT NOT NULL, last_fired_at INTEGER,
+  PRIMARY KEY (token_id, timeframe, basis, level)
+);
 CREATE TABLE IF NOT EXISTS pump_alerts (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_id TEXT NOT NULL,
   fired_at INTEGER NOT NULL, timeframe TEXT NOT NULL, basis TEXT NOT NULL,
   level REAL NOT NULL, multiple TEXT NOT NULL,
   price_usd TEXT, base_price_usd TEXT, balance TEXT, value_usd TEXT,
-  acked_at INTEGER
+  acked_at INTEGER,
+  price_source TEXT,
+  price_regime TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pump_alerts_user ON pump_alerts(user_id, fired_at);
 CREATE TABLE IF NOT EXISTS ath_daily (
@@ -218,6 +231,14 @@ CREATE TABLE IF NOT EXISTS wallet_ath (
   complete INTEGER NOT NULL DEFAULT 0,
   backfilled_at INTEGER,
   updated_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS wallet_xxyy_ath (
+  token_id TEXT PRIMARY KEY,
+  ath_price TEXT, ath_ts INTEGER, history_start_ts INTEGER,
+  state TEXT NOT NULL DEFAULT 'ARMED',
+  last_alert_price TEXT, last_alert_at INTEGER, ref_ath TEXT,
+  window_highs TEXT, window_highs_at INTEGER, last_window TEXT,
+  updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS trash_signals (
   id INTEGER PRIMARY KEY,
@@ -308,6 +329,8 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['pump_alerts', 'market_cap_usd', 'REAL'],
   ['pump_alerts', 'quote_fetched_at', 'INTEGER'],
   ['pump_alerts', 'evaluated_at', 'INTEGER'],
+  ['pump_alerts', 'price_source', 'TEXT'],
+  ['pump_alerts', 'price_regime', 'TEXT'],
   ['wallet_ath', 'state', "TEXT NOT NULL DEFAULT 'ARMED'"],
   ['wallet_ath', 'last_alert_price', 'TEXT'],
   ['wallet_ath', 'last_alert_at', 'INTEGER'],

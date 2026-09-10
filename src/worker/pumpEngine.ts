@@ -143,14 +143,18 @@ export interface PumpDeps {
   clock?: () => number;
   /** 生产把持有人元数据与历史回填放入有界后台队列；测试默认仍同步等待。 */
   deferSlowTasks?: boolean;
+  /** 生产慢轮次只负责 DS 资格/元数据；正式报警由 15 秒 XXYY 独立循环负责。 */
+  evaluateAlerts?: boolean;
 }
 
 export const realPumpDeps: PumpDeps = {
   fetchQuotes: fetchBatchQuotes,
   fetchQuotesDetailed: fetchBatchQuotesDetailed,
+  fetchCandidatePrices: null,
   fetchTokenInfo,
   clock: nowSec,
   deferSlowTasks: true,
+  evaluateAlerts: false,
 };
 
 function isTechnicalQuoteFailure(f: QuoteBatchFailure): boolean {
@@ -551,7 +555,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
           const outcome = await evaluateToken(
             tokenId, quote, evaluatedAt,
             deps.backfill ?? realBackfillDeps, deps.fetchTokenInfo,
-            deps.deferSlowTasks ?? false,
+            deps.deferSlowTasks ?? false, deps.evaluateAlerts ?? true,
           );
           if (outcome.status === 'ok') {
             wr.markTokenEvaluated(tokenId, evaluatedAt, quote.liquidityUsd);
@@ -644,6 +648,7 @@ async function evaluateToken(
   backfillDeps: BackfillDeps = realBackfillDeps,
   getInfo: PumpDeps['fetchTokenInfo'] = fetchTokenInfo,
   deferSlowTasks = false,
+  evaluateAlerts = true,
 ): Promise<TokenEvalOutcome> {
   const [chain, addr] = tokenId.split(':');
   const cachedMeta = wr.getTokenMeta(tokenId);
@@ -703,6 +708,10 @@ async function evaluateToken(
   if (quote.symbol) wr.setHoldingSymbol(tokenId, quote.symbol);
   // 官网 / 推特 / 电报也是这个响应白送的，存下来给页面上的跳转按钮用
   wr.setTokenLinks(tokenId, now, quote);
+
+  // 正式环境的报警已拆到独立 XXYY 快循环。本轮仍更新 monitored、符号、
+  // 链接与过滤水位，但绝不能再写混合源 K 线或生成 DS 报警。
+  if (!evaluateAlerts) return { status: 'ok' };
 
   // ---- 倍数 ----
   const boardQuote = watchlistQuote(tokenId, now);
@@ -992,7 +1001,7 @@ interface PersistedAlert {
 }
 
 /** 把一条报警发给每个持有人，各自带自己的余额与持仓价值 */
-function fanout(
+export function fanout(
   tokenId: string,
   holders: ReturnType<typeof wr.usersHoldingToken>,
   price: Decimal,
@@ -1007,6 +1016,8 @@ function fanout(
   marketCapUsd: number | null = null,
   /** 实际判定价可用的时刻；双源共识取两者较晚，看板价取看板水位。 */
   quoteFetchedAt: number | null = null,
+  priceSource: string | null = null,
+  priceRegime: string | null = null,
 ): { notified: number; skipped: number } {
   let notified = 0, skipped = 0;
   const byUser = new Map<string, typeof holders>();
@@ -1063,6 +1074,8 @@ function fanout(
       marketCapUsd,
       quoteFetchedAt,
       evaluatedAt: now,
+      priceSource,
+      priceRegime,
       // 多钱包余额的 raw 整数只有 decimals 完全一致时才可直接相加；展示与
       // 阈值实际依赖的是上面用 Decimal 算出的 valueUsd，所以多钱包留空，
       // 避免把某一个钱包的余额冒充总余额。

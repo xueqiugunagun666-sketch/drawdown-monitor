@@ -380,10 +380,12 @@ export type AlertKind =
 
 export function insertPumpAlert(
   row: Omit<PumpAlertRow,
-    'ackedAt' | 'kind' | 'baseTs' | 'athWindow' | 'marketCapUsd' | 'quoteFetchedAt' | 'evaluatedAt'>
+    'ackedAt' | 'kind' | 'baseTs' | 'athWindow' | 'marketCapUsd' | 'quoteFetchedAt'
+    | 'evaluatedAt' | 'priceSource' | 'priceRegime'>
      & { ackedAt?: number | null; kind?: AlertKind | null; baseTs?: number | null;
          athWindow?: string | null; marketCapUsd?: number | null;
-         quoteFetchedAt?: number | null; evaluatedAt?: number | null },
+         quoteFetchedAt?: number | null; evaluatedAt?: number | null;
+         priceSource?: string | null; priceRegime?: string | null },
 ): void {
   // kind 默认 'level'：调用方不关心时就是穿档，旧行也全是这么来的
   getDb().insert(pumpAlerts)
@@ -394,6 +396,8 @@ export function insertPumpAlert(
       marketCapUsd: row.marketCapUsd ?? null,
       quoteFetchedAt: row.quoteFetchedAt ?? null,
       evaluatedAt: row.evaluatedAt ?? null,
+      priceSource: row.priceSource ?? null,
+      priceRegime: row.priceRegime ?? null,
     }).run();
 }
 

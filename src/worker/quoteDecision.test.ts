@@ -67,14 +67,11 @@ test('只有 XXYY 有价时也能成为报警价格', () => {
   });
 });
 
-test('XXYY 无有效价时明确回退 DexScreener', () => {
+test('XXYY 无有效价时暂停报警，不能拿 DexScreener 冒充主源', () => {
   const selected = selectAlertPrice({
     ...ds('1.25'), marketCapUsd: 125_000, fetchedAt: 456,
   }, xx('0'));
-  assert.deepEqual(selected, {
-    priceUsd: '1.25', marketCapUsd: 125_000,
-    source: 'fallback-dexscreener', fetchedAt: 456,
-  });
+  assert.equal(selected, null);
 });
 
 test('两个源都无有效正价时不制造报警价格', () => {

@@ -126,21 +126,55 @@ export function loadXxyy5mCandles(tokenId: string, sinceTs: number) {
   ).all(tokenId, sinceTs) as Array<{ ts: number; o: string; l: string }>;
 }
 
-/** 迁移前影子运行已经积累的 XXYY 观察可直接作为同源历史，不复制 DS 数据。 */
-export function bootstrapXxyyCandlesFromShadow(): { attempted: number; accepted: number } {
-  const rows = getRawDb().prepare(
-    `SELECT token_id, observed_at, xxyy_price_usd
-       FROM quote_shadow
-      WHERE xxyy_price_usd IS NOT NULL
-      ORDER BY observed_at, token_id`,
-  ).all() as Array<{ token_id: string; observed_at: number; xxyy_price_usd: string }>;
-  let accepted = 0;
-  for (const row of rows) {
-    if (upsertXxyyCandle(row.token_id, row.xxyy_price_usd, null, row.observed_at).status === 'accepted') {
-      accepted++;
+/**
+ * 迁移前影子运行已经积累的 XXYY 共识观察可直接作为同源历史。
+ *
+ * 生产有数百万行 quote_shadow，绝不能逐行做多次 SQL；这里用两条集合 SQL
+ * 一次完成，并且默认只导入当前 monitored 的去重币。共识行已被 DS 在 10%
+ * 内交叉确认，适合做安全起步历史；冲突与 XXYY-only 行不导入。
+ */
+export function bootstrapXxyyCandlesFromShadow(
+  monitoredOnly = true,
+): { attempted: number; accepted: number } {
+  const db = getRawDb();
+  const scope = monitoredOnly
+    ? `AND EXISTS (
+         SELECT 1 FROM holdings h
+          WHERE h.token_id = q.token_id AND h.monitored = 1
+       )`
+    : '';
+  const accepted = db.transaction(() => {
+    const inserted = db.prepare(
+      `INSERT OR IGNORE INTO wallet_xxyy_candles
+         (token_id, timeframe, ts, o, h, l, c, market_cap_usd,
+          quote_fetched_at, price_regime)
+       SELECT q.token_id, '5m', q.bucket_ts,
+              q.xxyy_price_usd, q.xxyy_price_usd, q.xxyy_price_usd, q.xxyy_price_usd,
+              NULL, q.observed_at, ?
+         FROM quote_shadow q
+        WHERE q.decision = 'consensus' AND q.xxyy_price_usd IS NOT NULL
+          AND CAST(q.xxyy_price_usd AS REAL) > 0
+          ${scope}`,
+    ).run(XXYY_PRICE_REGIME).changes;
+    if (inserted > 0) {
+      db.prepare(
+        `INSERT OR REPLACE INTO wallet_xxyy_daily_highs
+           (token_id, day, high, price_regime)
+         WITH ranked AS (
+           SELECT token_id, CAST(ts / 86400 AS INTEGER) * 86400 AS day, h,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY token_id, CAST(ts / 86400 AS INTEGER)
+                    ORDER BY CAST(h AS REAL) DESC
+                  ) AS rank
+             FROM wallet_xxyy_candles
+            WHERE price_regime = ?
+         )
+         SELECT token_id, day, h, ? FROM ranked WHERE rank = 1`,
+      ).run(XXYY_PRICE_REGIME, XXYY_PRICE_REGIME);
     }
-  }
-  return { attempted: rows.length, accepted };
+    return inserted;
+  })();
+  return { attempted: accepted, accepted };
 }
 
 export function pruneXxyyCandles(now: number): number {

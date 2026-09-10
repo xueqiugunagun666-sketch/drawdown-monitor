@@ -10,6 +10,8 @@
  * 的那句话，而不是把七个窗口各报一遍。
  */
 
+import { Decimal } from '../lib/decimal.ts';
+
 export interface AthWindow {
   key: string;
   label: string;
@@ -61,17 +63,18 @@ export function windowIsCovered(
  */
 export function largestBrokenWindow(
   price: { gt(x: unknown): boolean; },
-  highs: Map<string, { mul(x: number): unknown; gt(x: unknown): boolean }>,
+  highs: Map<string, { mul(x: Decimal): unknown; gt(x: unknown): boolean }>,
   historyStartTs: number | null,
   now: number,
   margin: number,
 ): AthWindow | null {
   let best: AthWindow | null = null;
+  const threshold = new Decimal(1).plus(new Decimal(String(margin)));
   for (const w of ATH_WINDOWS) {
     if (!windowIsCovered(w, historyStartTs, now)) continue;
     const h = highs.get(w.key);
     if (!h) continue;
-    if (price.gt(h.mul(1 + margin))) best = w;   // 越往后越长，最后一个成立的就是最长的
+    if (price.gt(h.mul(threshold))) best = w;   // 越往后越长，最后一个成立的就是最长的
   }
   return best;
 }

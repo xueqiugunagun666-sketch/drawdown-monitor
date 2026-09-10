@@ -32,17 +32,18 @@ export interface QuoteDecision {
  *
  * 用户在 XXYY 交易，因此“可执行价格”必须以 XXYY 为准。DexScreener 继续
  * 提供流动性、成交量、池子与社交元数据，但不能再等它追价之后才报警。
- * source=fallback-dexscreener 必须一路写进报警记录，不能把降级伪装成 XXYY。
+ * XXYY 缺失时返回 null：DexScreener 仍可更新过滤与元数据，但不能冒充
+ * XXYY 触发钱包报警。故障由独立健康看护显式通知管理员。
  */
 export interface AlertPriceQuote {
   priceUsd: string;
   marketCapUsd: number | null;
-  source: 'xxyy' | 'fallback-dexscreener';
+  source: 'xxyy';
   fetchedAt: number | null;
 }
 
 export function selectAlertPrice(
-  ds: BatchQuote | null, xxyy: XxyyQuote | null,
+  _ds: BatchQuote | null, xxyy: XxyyQuote | null,
 ): AlertPriceQuote | null {
   const xxyyPrice = price(xxyy?.priceUsd);
   if (xxyyPrice) {
@@ -54,14 +55,7 @@ export function selectAlertPrice(
     };
   }
 
-  const dsPrice = price(ds?.priceUsd);
-  if (!dsPrice) return null;
-  return {
-    priceUsd: dsPrice.toString(),
-    marketCapUsd: ds?.marketCapUsd ?? null,
-    source: 'fallback-dexscreener',
-    fetchedAt: ds?.fetchedAt ?? null,
-  };
+  return null;
 }
 
 function price(raw: string | undefined): Decimal | null {

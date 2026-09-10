@@ -16,6 +16,7 @@ const alert = (tokenId: string): wr.PumpAlertRow => ({
   level: 2, multiple: '2.4', priceUsd: '1', basePriceUsd: '0.4',
   balance: '100', valueUsd: '100', ackedAt: null, kind: 'level', baseTs: null,
   athWindow: null, marketCapUsd: null, quoteFetchedAt: null, evaluatedAt: null,
+  priceSource: null, priceRegime: null,
 });
 
 test('优先从 holdings 取币名', () => {

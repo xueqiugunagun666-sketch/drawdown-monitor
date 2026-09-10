@@ -15,6 +15,9 @@ import { backfillNativePrices } from '../sources/nativeHistory.ts';
 import * as repo from '../db/repo.ts';
 import { scanAllWallets, SCAN_INTERVAL_SECONDS } from './walletScanner.ts';
 import { runPumpTick, TICK_INTERVAL_SECONDS } from './pumpEngine.ts';
+import {
+  bootstrapXxyyAlertHistory, runXxyyAlertTick, XXYY_ALERT_INTERVAL_SECONDS,
+} from './xxyyAlertEngine.ts';
 import { startTrashLoop } from './trashPoller.ts';
 import { nowSec } from '../lib/time.ts';
 
@@ -57,6 +60,14 @@ async function main(): Promise<void> {
   runMigrations();
   ensureDefaultRule();
   logStartupConfig();
+
+  try {
+    const seeded = bootstrapXxyyAlertHistory();
+    log.info(`XXYY 报警历史准备完成：候选 ${seeded.attempted}，接入 ${seeded.accepted}`);
+  } catch (err) {
+    // 影子历史只是起步加速；失败时快轮次仍会从第一条实时报价建基准。
+    log.exception('XXYY 影子历史接入失败，改从实时价格重新建立基准', err);
+  }
 
   const cfg = getConfig();
 
@@ -132,9 +143,8 @@ async function main(): Promise<void> {
   };
   void walletScanLoop();
 
-  // 暴涨判定：2 分钟一轮，与看板的 30 秒分开。
-  // 钱包币走 DexScreener 批量接口（一次 30 个地址），
-  // 单币成本比看板低一个数量级，见 spec §8 的容量测算
+  // 慢轮次：DexScreener 只维护流动性/成交量资格与项目元数据，不再决定
+  // 钱包报警价格。即使本轮超过 60 秒，也不会拖住下面独立的 XXYY 快轮次。
   const pumpLoop = async () => {
     while (!stopping) {
       const t0 = Date.now();
@@ -151,6 +161,22 @@ async function main(): Promise<void> {
     }
   };
   void pumpLoop();
+
+  // 快轮次：XXYY 是暴涨与 ATH 的唯一实时价，每 15 秒扫全部监控中去重币。
+  // 与慢轮次完全并行，不能 await DS，也不能被冷币发现队列拖住。
+  const xxyyAlertLoop = async () => {
+    while (!stopping) {
+      const started = Date.now();
+      try {
+        await runXxyyAlertTick(nowSec());
+      } catch (err) {
+        log.exception('XXYY 暴涨/ATH 快轮次异常', err);
+      }
+      const wait = XXYY_ALERT_INTERVAL_SECONDS * 1000 - (Date.now() - started);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  };
+  void xxyyAlertLoop();
 
   // 群聊淘金：独立循环，拉不到不影响价格轮询与暴涨判定
   startTrashLoop(() => stopping);

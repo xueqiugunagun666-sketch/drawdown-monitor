@@ -102,6 +102,16 @@ export const walletXxyyPendingQuotes = sqliteTable('wallet_xxyy_pending_quotes',
   lastSeenAt: integer('last_seen_at').notNull(),
 });
 
+/** 每链成功覆盖率高水位；用于识别 HTTP 200 但报价覆盖突然掉崖的静默故障。 */
+export const walletXxyySourceBaselines = sqliteTable('wallet_xxyy_source_baselines', {
+  chain: text('chain').primaryKey(),
+  baselineRequested: integer('baseline_requested').notNull(),
+  baselineCovered: integer('baseline_covered').notNull(),
+  lastRequested: integer('last_requested').notNull(),
+  lastCovered: integer('last_covered').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
 export const athState = sqliteTable('ath_state', {
   tokenId: text('token_id').notNull(),
   mode: text('mode').notNull(),                      // 'rolling_90d' | 'all_time' | 'since_added'
@@ -377,6 +387,16 @@ export const pumpStates = sqliteTable('pump_states', {
   lastFiredAt: integer('last_fired_at'),
 }, (t) => [primaryKey({ columns: [t.tokenId, t.timeframe, t.basis, t.level] })]);
 
+/** XXYY 报警专用状态；不继承旧 DS/混合源状态，防止切源后漏报或补报。 */
+export const walletXxyyPumpStates = sqliteTable('wallet_xxyy_pump_states', {
+  tokenId: text('token_id').notNull(),
+  timeframe: text('timeframe').notNull(),
+  basis: text('basis').notNull(),
+  level: real('level').notNull(),
+  state: text('state').notNull(),
+  lastFiredAt: integer('last_fired_at'),
+}, (t) => [primaryKey({ columns: [t.tokenId, t.timeframe, t.basis, t.level] })]);
+
 /** 报警记录，每个持有者一行 —— 余额与持仓价值是各人自己的 */
 export const pumpAlerts = sqliteTable('pump_alerts', {
   id: text('id').primaryKey(),
@@ -418,6 +438,10 @@ export const pumpAlerts = sqliteTable('pump_alerts', {
   /** A05/A17：用这两个时间直接计算“可信报价 → 事件落库”延迟。 */
   quoteFetchedAt: integer('quote_fetched_at'),
   evaluatedAt: integer('evaluated_at'),
+  /** 当前报警实际使用的实时价来源。历史 NULL 行属于切源前记录。 */
+  priceSource: text('price_source'),
+  /** 把同一来源的不同算法时期隔开，避免状态或历史跨版本混算。 */
+  priceRegime: text('price_regime'),
 });
 
 /**
@@ -582,6 +606,25 @@ export const walletAth = sqliteTable('wallet_ath', {
   /** 上次报警报到哪一档窗口（'3d'/'90d'/'all'…）。只有突破更长的才算新消息 */
   lastWindow: text('last_window'),
   updatedAt: integer('updated_at'),
+});
+
+/**
+ * XXYY-only ATH 状态。第一条 XXYY 价格只建基准，之后所有实时突破与缓存
+ * 都只读 wallet_xxyy_* 表；旧 GMGN/DS 的 wallet_ath 不参与。
+ */
+export const walletXxyyAth = sqliteTable('wallet_xxyy_ath', {
+  tokenId: text('token_id').primaryKey(),
+  athPrice: text('ath_price'),
+  athTs: integer('ath_ts'),
+  historyStartTs: integer('history_start_ts'),
+  state: text('state').default('ARMED').notNull(),
+  lastAlertPrice: text('last_alert_price'),
+  lastAlertAt: integer('last_alert_at'),
+  refAth: text('ref_ath'),
+  windowHighs: text('window_highs'),
+  windowHighsAt: integer('window_highs_at'),
+  lastWindow: text('last_window'),
+  updatedAt: integer('updated_at').notNull(),
 });
 
 /**
