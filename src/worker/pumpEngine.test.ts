@@ -118,6 +118,48 @@ test('从平稳涨到 2 倍会报，且带上倍数与基准价', async () => {
   assert.ok(Number(a!.multiple) >= 2);
 });
 
+test('Solana mint 从持仓到报价、K 线和报警全程保留大小写', async () => {
+  const mint = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+  const id = `solana:${mint}`;
+  const u = wr.createUser(`solpump${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'solana', 'A1TMhSGzQxMr1TboBKtgixKz1sS6REASMxPo1qsyTSJd', null)!;
+  wr.upsertHolding(w.id, id, '100000', 5, NOW);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  history(id, '1');
+
+  const seenChains: string[] = [];
+  const solDeps = (priceUsd: string): PumpDeps => ({
+    fetchCandidatePrices: null,
+    fetchQuotes: async (chain, addrs) => {
+      if (!addrs.includes(mint)) return new Map();
+      seenChains.push(chain);
+      return new Map([[mint, {
+        priceUsd, liquidityUsd: 50000, volume24hUsd: 99999, volume1hUsd: 9999,
+        marketCapUsd: 100000, symbol: 'BONK', priceNative: null,
+        quoteSymbol: 'SOL', quoteAddress: 'So11111111111111111111111111111111111111112',
+        priceCorrected: false, pairCreatedAt: null,
+        imageUrl: null, websiteUrl: null, twitterUrl: null, telegramUrl: null,
+      }]]);
+    },
+  });
+
+  await runPumpTick(NOW, solDeps('1'));
+  await runPumpTick(NOW + 60, solDeps('2.5'));
+  assert.ok(seenChains.includes('solana'));
+  const alert = wr.listPumpAlerts(u.id, 0)[0]!;
+  assert.equal(alert.tokenId, id);
+  assert.equal(alert.level, 2);
+  assert.equal(alert.priceUsd, '2.5');
+  assert.equal(wr.listHoldingsByWallet(w.id)[0]?.symbol, 'BONK');
+  const candle = getRawDb().prepare(
+    `SELECT c FROM candles WHERE token_id = ? AND timeframe = '5m' ORDER BY ts DESC LIMIT 1`,
+  ).get(id) as { c: string };
+  assert.equal(candle.c, '2.5');
+  // 本文件共用一个内存库；清掉持仓，避免后续 BSC 用例把这个 Solana 币
+  // 当成“报价缺失”反复累计健康故障。
+  assert.equal(wr.removeWallet(u.id, w.id), true);
+});
+
 test('被隔离的离谱报价不改 candle、状态，也不产生报警', async () => {
   const id = 'bsc:0xquarantine';
   const h = holder(id);

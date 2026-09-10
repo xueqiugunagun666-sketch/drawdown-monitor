@@ -95,6 +95,13 @@ test('按 baseToken.address 归位，大小写不敏感', () => {
   assert.equal(m.get('0xaaa')?.volume24hUsd, 20000);
 });
 
+test('Solana mint 大小写敏感且按原样归位', () => {
+  const mint = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+  const m = parseBatchQuotes(JSON.stringify([pair(mint, '0.00001', 9000, 20000)]), [mint], 'solana');
+  assert.equal(m.get(mint)?.priceUsd, '0.00001');
+  assert.equal(m.has(mint.toLowerCase()), false);
+});
+
 test('保留池身份、秒级采样时间与可信计价币元数据', () => {
   const address = '0XAbCdEf';
   const q = parseBatchQuotes(JSON.stringify([{

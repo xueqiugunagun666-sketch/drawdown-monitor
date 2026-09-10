@@ -8,7 +8,7 @@
  * USDT 的持有人/24h成交量是 13.0，比空投盘 MOONALD 的 2.71 还"差"，
  * 因为稳定币人人持有但人均交易少。
  *
- * 实测四条链（eth / bsc / base / robinhood）都能返回 holder_count。
+ * 链映射包含 eth / bsc / base / sol / robinhood；任一链失败都不会阻塞报价主链路。
  */
 import { randomUUID } from 'node:crypto';
 import { httpGet } from '../lib/http.ts';

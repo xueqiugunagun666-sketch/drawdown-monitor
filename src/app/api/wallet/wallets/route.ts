@@ -34,13 +34,13 @@ export async function GET(req: Request) {
 }
 
 /**
- * 添加一个地址 —— **默认在全部支持的链上都监控**。
+ * 添加一个地址。EVM 默认在四条 EVM 链监控；Solana 只建 solana 一行。
  *
  * 四条链都是 EVM，同一个私钥在每条链上都是同一个地址，绝大多数人
  * 就是同一个钱包多链在用。让人一条链填一次纯属折磨。
  *
- * 底层仍然是每链一行：各链的扫描水位（last_scanned_block）必须分开存，
- * 块高完全不同。这里只是把"建四行"这件事收进一次操作。
+ * 底层仍然是每链一行：EVM 保存块高，Solana 保存 slot。这里只是把
+ * EVM 的“建四行”收进一次操作。
  */
 export async function POST(req: Request) {
   // userId 只从会话推导，绝不从请求体读

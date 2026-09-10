@@ -53,8 +53,9 @@ export default function HowPage() {
       <section>
         <Step n={1} title="找出你有哪些币">
           <p>
-            按你的地址在链上过滤转账记录，找出所有<span className="text-neutral-300">收到过</span>的代币，
-            再逐个读当前余额，为零的移除。四条链一起扫 —— 同一个地址在每条链上都是同一个。
+            EVM 地址会按链上转账记录找出所有<span className="text-neutral-300">收到过</span>的代币，
+            再逐个读当前余额；Solana 地址直接读取经典 SPL Token 与 Token-2022 的完整持仓快照。
+            余额为零的都会移除。
           </p>
           <Why>新加的钱包一分钟内开扫，之后每 {mins(SCAN_INTERVAL_SECONDS)}一轮。余额变化远比价格慢。</Why>
         </Step>

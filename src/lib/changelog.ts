@@ -20,6 +20,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: 'v4.15',
+    date: '2026-09-11',
+    headline: 'Solana 钱包暴涨监控上线',
+    changes: [
+      {
+        kind: 'new',
+        title: 'Solana 地址可以直接加入钱包监控',
+        detail: '钱包页现在同时接受 EVM 0x 地址和 Solana 地址。Solana 每轮完整读取经典 SPL Token 与 Token-2022，多个同币账户会精确合并，持仓进入原有流动性过滤、价格、暴涨与滚动新高链路。',
+      },
+      {
+        kind: 'fix',
+        title: 'RPC 部分失败不再被误判为卖出',
+        detail: '两套 Solana Token 程序必须全部成功才会应用新快照；读取失败会保留旧持仓与旧水位并显示错误。连续异常会通过独立系统通知提醒管理员，不会静默停摆。',
+      },
+    ],
+  },
+  {
     version: 'v4.14',
     date: '2026-09-10',
     headline: '热币报警提速，并修复资源争抢与错误故障提示',

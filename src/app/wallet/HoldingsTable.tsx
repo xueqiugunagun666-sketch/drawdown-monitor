@@ -145,7 +145,7 @@ function Row({ h, alerted }: { h: HoldingRow; alerted: boolean }) {
         </span>
         <span className="meta-label">{h.chain}</span>
         {/* 合约地址，点一下复制 —— 同名假币很多，最终认的是 CA。
-            钱包名不显示：跨四条链就是同一个地址，写出来只是噪音 */}
+            钱包备注会进通知；列表保持紧凑，不在每个币上重复钱包名。 */}
         <CopyAddress address={h.address} tokenId={h.tokenId} />
         <TokenLinks chain={h.chain} address={h.address}
           websiteUrl={h.websiteUrl} twitterUrl={h.twitterUrl} telegramUrl={h.telegramUrl} />
