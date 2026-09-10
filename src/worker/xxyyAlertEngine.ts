@@ -411,11 +411,14 @@ function coverageDropped(
     `SELECT baseline_requested, baseline_covered
        FROM wallet_xxyy_source_baselines WHERE chain = ?`,
   ).get(chain) as CoverageBaseline | undefined;
-  const dropped = !!baseline && baseline.baseline_covered >= 5 && requested > 0
+  // 首轮也不能把 1/100 训练成“健康基线”；有历史后再与历史高水位比较。
+  const droppedFromAbsolute = requested >= 5 && covered * 2 < requested;
+  const droppedFromBaseline = !!baseline && baseline.baseline_covered >= 5 && requested > 0
     && covered * baseline.baseline_requested * 2
       < baseline.baseline_covered * requested;
+  const dropped = droppedFromAbsolute || droppedFromBaseline;
 
-  const shouldRaise = technicalFailures === 0 && covered > 0 && (
+  const shouldRaise = !dropped && technicalFailures === 0 && covered > 0 && (
     !baseline || covered * baseline.baseline_requested
       > baseline.baseline_covered * requested
   );

@@ -185,12 +185,25 @@ export function bootstrapXxyyCandlesFromShadow(
         const old = highs.get(row.token_id);
         if (!old || price.gt(old.price)) highs.set(row.token_id, { price, ts: row.quote_fetched_at });
       }
-      const write = db.prepare(
-        `INSERT OR IGNORE INTO wallet_xxyy_daily_highs
+      const readDay = db.prepare(
+        `SELECT high FROM wallet_xxyy_daily_highs WHERE token_id = ? AND day = ?`,
+      );
+      const insertDay = db.prepare(
+        `INSERT INTO wallet_xxyy_daily_highs
            (token_id, day, high, high_ts, price_regime) VALUES (?, ?, ?, ?, ?)`,
       );
+      const updateDay = db.prepare(
+        `UPDATE wallet_xxyy_daily_highs SET high = ?, high_ts = ?, price_regime = ?
+          WHERE token_id = ? AND day = ?`,
+      );
       for (const [tokenId, high] of highs) {
-        write.run(tokenId, dayStart, high.price.toString(), high.ts, XXYY_PRICE_REGIME);
+        const old = readDay.get(tokenId, dayStart) as { high: string } | undefined;
+        const oldPrice = old ? positiveDecimal(old.high) : null;
+        if (!old) {
+          insertDay.run(tokenId, dayStart, high.price.toString(), high.ts, XXYY_PRICE_REGIME);
+        } else if (!oldPrice || high.price.gt(oldPrice)) {
+          updateDay.run(high.price.toString(), high.ts, XXYY_PRICE_REGIME, tokenId, dayStart);
+        }
       }
     }
     return inserted;
