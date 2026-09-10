@@ -31,6 +31,7 @@ import { fanout } from './pumpEngine.ts';
 import { recordVerdict } from './sourceWatch.ts';
 import { makeLogger } from '../lib/log.ts';
 import { safeErrorMessage } from '../lib/mask.ts';
+import { nowSec } from '../lib/time.ts';
 
 const log = makeLogger('xxyy-alert-engine');
 
@@ -45,6 +46,7 @@ export interface XxyyAlertDeps {
 
 export const realXxyyAlertDeps: XxyyAlertDeps = {
   fetchPricesDetailed: fetchXxyyPricesDetailed,
+  clock: nowSec,
 };
 
 export interface XxyyAlertTickResult {
