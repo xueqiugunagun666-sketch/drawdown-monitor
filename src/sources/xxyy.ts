@@ -60,10 +60,11 @@ export function normalizeMint(chain: string, mint: string): string {
 export const BATCH_SIZE = 500;
 
 /**
- * 各链可并行，单链内仍按 500 个一批。报警目标是 15 秒；若这里串行或允许
- * 单请求等 25 秒，某条慢链就能让下一轮整体迟到。
+ * 生产实测同机 curl 顺序请求 50/100/200 地址均为 0.3–0.9 秒，但四链同时
+ * 打会让 XXYY 连接成批卡到 8 秒超时。因此这里刻意单通道顺序发；当前五链
+ * 正常一轮约 3–5 秒，单次最坏也被 8 秒超时截断。
  */
-const queue = new PQueue({ concurrency: 4, interval: 300, intervalCap: 4 });
+const queue = new PQueue({ concurrency: 1, interval: 100, intervalCap: 1 });
 export const XXYY_REQUEST_TIMEOUT_MS = 8_000;
 
 export interface XxyyQuote {
