@@ -5,6 +5,7 @@ import { mask } from '../../lib/mask.ts';
 import * as repo from '../../db/repo.ts';
 import { currentActor } from '../../lib/accountAuthServer.ts';
 import { canToggleGlobal } from '../../lib/permissions.ts';
+import { sourceHealthPriority, sourceHealthView } from '../../lib/sourceHealthView.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,10 @@ export default async function SettingsPage() {
   const rule = repo.listRules().find((r) => r.id === 'default');
   const cfg = getConfig();
   const s = getSecrets();
-  const health = repo.listSourceHealth();
+  const now = Math.floor(Date.now() / 1000);
+  const health = repo.listSourceHealth()
+    .sort((a, b) => sourceHealthPriority(a.sourceId) - sourceHealthPriority(b.sourceId)
+      || a.sourceId.localeCompare(b.sourceId));
   const canEdit = canToggleGlobal(await currentActor());
 
   return (
@@ -59,16 +63,28 @@ export default async function SettingsPage() {
               <td className="py-1.5 text-neutral-500">注册方式</td>
               <td>邀请码。生成与查看用 <code className="text-neutral-400">npm run invite</code></td>
             </tr>
-            {health.map((h) => (
-              <tr key={h.sourceId} className="border-b border-neutral-900">
-                <td className="py-1.5 text-neutral-500">数据源 {h.sourceId}</td>
-                <td>
-                  {h.consecutiveFailures > 0
-                    ? <span className="text-red-400">连续失败 {h.consecutiveFailures} 次 · {h.lastFailMessage}</span>
-                    : <span>正常</span>}
-                </td>
-              </tr>
-            ))}
+            {health.map((h) => {
+              const view = sourceHealthView(h, now);
+              const tone = view.state === 'outage' ? 'text-red-400'
+                : view.state === 'retrying' || view.state === 'historical'
+                  ? 'text-amber-400' : 'text-neutral-300';
+              return (
+                <tr key={h.sourceId} className="border-b border-neutral-900 align-top">
+                  <td className="py-1.5 pr-3 text-neutral-500">
+                    <span className="block">{h.sourceId}</span>
+                    <span className="block text-[10px] text-neutral-600">{view.purpose}</span>
+                  </td>
+                  <td className={`py-1.5 ${tone}`}>
+                    {view.critical && (
+                      <span className="mr-1.5 rounded border border-red-900/70 px-1 py-0.5 text-[10px] text-red-300">
+                        报警关键
+                      </span>
+                    )}
+                    {view.text}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         <p className="text-xs text-neutral-600 mt-3">
