@@ -16,6 +16,19 @@ export function normalizeWalletLabelDraft(value: string): string | null {
   return trimmed ? trimmed.slice(0, WALLET_LABEL_MAX_LENGTH) : null;
 }
 
+export type WalletScanIssueKind = 'none' | 'partial' | 'failed';
+
+/**
+ * 整次 RPC 失败与少量代币读不到不是一个严重度。
+ * 后者已经保留旧持仓并进入候选重试，必须提示，但不能冒充整钱包扫描失败。
+ */
+export function walletScanIssueKind(error: string | null): WalletScanIssueKind {
+  if (!error) return 'none';
+  return /^\d+ 个代币余额读取失败，已进入候选重试队列$/.test(error)
+    ? 'partial'
+    : 'failed';
+}
+
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 /**
@@ -40,15 +53,19 @@ export function groupByAddress(rows: WalletRow[]): WalletGroup[] {
 }
 
 function ChainChip({ w }: { w: WalletRow }) {
-  const failed = Boolean(w.lastScanError);
+  const issue = walletScanIssueKind(w.lastScanError);
+  const failed = issue === 'failed';
+  const partial = issue === 'partial';
   const scanned = w.lastScanAt !== null;
   return (
     <span
       title={w.lastScanError ?? (scanned ? `${humanAgo(w.lastScanAt!)}扫描` : '排队中')}
-      className={failed ? 'badge-fired' : scanned ? 'badge-quiet' : 'badge-quiet opacity-60'}>
+      className={failed ? 'badge-fired' : partial ? 'badge-warn'
+        : scanned ? 'badge-quiet' : 'badge-quiet opacity-60'}>
       {w.chain}
       {failed && ' ✕'}
-      {!scanned && !failed && ' …'}
+      {partial && ' !'}
+      {!scanned && issue === 'none' && ' …'}
     </span>
   );
 }
@@ -148,13 +165,19 @@ export default function WalletList(
       ) : (
         <ul className="space-y-1.5">
           {groups.map((g) => {
-            const errs = g.chains.filter((c) => c.lastScanError);
+            const issues = g.chains.filter((c) => c.lastScanError);
+            const hardFailures = issues.filter(
+              (c) => walletScanIssueKind(c.lastScanError) === 'failed');
+            const partialFailures = issues.filter(
+              (c) => walletScanIssueKind(c.lastScanError) === 'partial');
             const latest = g.chains.reduce<number | null>(
               (m, c) => (c.lastScanAt && (m === null || c.lastScanAt > m) ? c.lastScanAt : m), null);
             return (
               <li key={g.address}
                 className={`rounded-lg px-3 py-2.5 text-sm border ${
-                  errs.length > 0 ? 'border-[#d03b3b]/50 bg-[#d03b3b]/8' : 'surface'
+                  hardFailures.length > 0 ? 'border-[#d03b3b]/50 bg-[#d03b3b]/8'
+                    : partialFailures.length > 0 ? 'border-[#fab219]/40 bg-[#fab219]/5'
+                      : 'surface'
                 }`}>
                 <div className="flex items-baseline gap-2">
                   <span className="font-mono text-neutral-300 shrink-0">{short(g.address)}</span>
@@ -200,12 +223,16 @@ export default function WalletList(
                     {latest ? `${humanAgo(latest)}扫描` : '排队中'}
                   </span>
                 </div>
-                {/* 扫描失败必须显式暴露，不能只写进日志 */}
-                {errs.map((c) => (
-                  <p key={c.id} className="text-xs text-[#d03b3b] mt-1 break-all">
-                    {c.chain} 扫描失败：{c.lastScanError}
+                {/* 故障与局部缺失都显式暴露，但不能混成同一个严重度。 */}
+                {issues.map((c) => {
+                  const partial = walletScanIssueKind(c.lastScanError) === 'partial';
+                  return (
+                  <p key={c.id}
+                    className={`text-xs mt-1 break-all ${partial ? 'text-[#fab219]' : 'text-[#d03b3b]'}`}>
+                    {c.chain} {partial ? '局部扫描完成' : '扫描失败'}：{c.lastScanError}
                   </p>
-                ))}
+                  );
+                })}
               </li>
             );
           })}
