@@ -310,9 +310,16 @@ function evaluateQuote(tokenId: string, quote: XxyyQuote, now: number): boolean 
           continue;
         }
         const result = evaluatePump(previous, { multiple: window.multiple, level, now });
-        saveState(
-          { tokenId, timeframe: window.timeframe, basis: window.basis, level }, result.next,
-        );
+        // 稳定行情时绝大多数状态没有变化。旧逻辑仍会每 15 秒为每个币写
+        // 24 行 pump_states，线上约 380 币就是每轮九千多次空覆盖。
+        // 穿档、重武装或 lastFiredAt 改变时才需要落库；未被选中的穿档
+        // 仍会从 ARMED 变 FIRED，因此不会破坏“所有档位都消费”的不变量。
+        if (result.next.state !== previous.state
+          || result.next.lastFiredAt !== previous.lastFiredAt) {
+          saveState(
+            { tokenId, timeframe: window.timeframe, basis: window.basis, level }, result.next,
+          );
+        }
         if (result.fire) fires.push({
           tokenId, timeframe: window.timeframe, basis: window.basis,
           level, multiple: window.multiple, at: now,
@@ -400,10 +407,14 @@ function recordTokenCoverage(
     const ok = db.prepare(
       `INSERT INTO wallet_xxyy_token_health (token_id, last_ok_at, last_missing_at)
        VALUES (?, ?, NULL)
-       ON CONFLICT(token_id) DO UPDATE SET last_ok_at=excluded.last_ok_at, last_missing_at=NULL`,
+       ON CONFLICT(token_id) DO UPDATE SET
+         last_ok_at=excluded.last_ok_at, last_missing_at=NULL
+       WHERE wallet_xxyy_token_health.last_missing_at IS NOT NULL
+          OR excluded.last_ok_at - wallet_xxyy_token_health.last_ok_at >= 300`,
     );
     const missing = db.prepare(
-      `UPDATE wallet_xxyy_token_health SET last_missing_at = ? WHERE token_id = ?`,
+      `UPDATE wallet_xxyy_token_health SET last_missing_at = ?
+        WHERE token_id = ? AND last_missing_at IS NULL`,
     );
     for (const address of addresses) {
       const mint = normalizeMint(chain, address);

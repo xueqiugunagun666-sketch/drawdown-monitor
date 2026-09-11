@@ -96,13 +96,15 @@ export const TICK_INTERVAL_SECONDS = 60;
  * 钱包扫描和报警写库真正获得执行窗口。温币仍排在冷币前。
  */
 export const PUMP_BACKGROUND_TOKEN_BUDGET = 300;
+/** 资格慢路每轮总量也封顶；未处理的仍保持 due，下一轮继续。 */
+export const PUMP_TOTAL_TOKEN_BUDGET = 300;
 
 export interface PumpTokenStages {
   hot: string[];
   background: string[];
 }
 
-/** 纯函数单测锁住关键不变量：热币不限量、后台才受预算约束。 */
+/** 在调用方已经给出的本轮集合内，热币优先且不受后台子预算影响。 */
 export function selectPumpTokenStages(
   dueTokenIds: readonly string[], monitoredTokenIds: ReadonlySet<string>,
   backgroundBudget = PUMP_BACKGROUND_TOKEN_BUDGET,
@@ -390,10 +392,16 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   // 只看 monitored=1 会死锁 —— 过滤层永远不执行，币永远不会被提升。
   // 要判断一个币够不够格，本来就得先拿到它的流动性与成交量，也就是先取报价。
   // 成本可接受：批量接口一次 30 个地址，450 个币也只要 15 次请求。
-  // 监控中的每轮都判；已被挡掉的每 30 分钟重查一次 ——
-  // 一千多个粉尘币每轮都拉报价，光请求就占掉 20 秒
+  // 生产资格慢路里，监控中每 5 分钟复核；已被挡掉的按温/冷车道重查。
+  // 旧报警测试仍保留“热币每轮”语义，确保安全回滚实现没有失真。
   const monitored = new Set(wr.monitoredTokenIds());
-  const stages = selectPumpTokenStages(wr.tokenIdsDueForEval(now), monitored);
+  const eligibilityOnly = deps.evaluateAlerts === false;
+  const dueTokenIds = eligibilityOnly
+    ? wr.tokenIdsDueForEval(now, PUMP_TOTAL_TOKEN_BUDGET, {
+      hotRecheckSeconds: wr.HOT_ELIGIBILITY_RECHECK_SECONDS,
+    })
+    : wr.tokenIdsDueForEval(now);
+  const stages = selectPumpTokenStages(dueTokenIds, monitored);
   const tokenIds = [...stages.hot, ...stages.background];
   const runId = now;
   pumpHealth.beginPumpRun(runId, now, tokenIds.length);
@@ -430,7 +438,7 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
   }
   const chainHealth = new Map<string, ChainHealth>();
 
-  // 第一段只跑全部热币并完成判定，第二段才跑有上限的后台发现。这样同一条链
+  // 第一段只跑本轮到期热币并完成判定，第二段才跑有上限的后台发现。这样同一条链
   // 的冷币批次、超时或空响应都不能排在关键报警前面。
   for (const stageTokenIds of [stages.hot, stages.background]) {
     const stageByChain = new Map<string, string[]>();

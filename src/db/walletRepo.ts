@@ -660,6 +660,13 @@ export const REJECTED_RECHECK_SECONDS = 1800;
 export const WARM_RECHECK_SECONDS = 180;
 
 /**
+ * 已经进入监控的币由 XXYY 每 15 秒负责价格报警；DexScreener 只需每 5 分钟
+ * 复核一次流动性/成交量资格。退出还要求持续低于门槛 30 分钟，5 分钟采样
+ * 仍有 6 次确认，不会因一次抖动把币踢掉。
+ */
+export const HOT_ELIGIBILITY_RECHECK_SECONDS = 300;
+
+/**
  * 快车道的流动性门槛。
  *
  * 原先与 holdingsFilter 的进入线一致（$5,000），但那条线管的是"值不值得
@@ -696,21 +703,31 @@ export function tokenRetryDelaySeconds(tokenId: string, failureCount: number): n
 }
 
 function normalScheduleJitter(tokenId: string, interval: number): number {
-  const spread = interval === WARM_RECHECK_SECONDS ? 30 : 300;
+  const spread = interval === WARM_RECHECK_SECONDS ? 30
+    : interval === HOT_ELIGIBILITY_RECHECK_SECONDS ? 60 : 300;
   return stableTokenHash(tokenId) % spread;
+}
+
+export interface TokenEvalScheduleOptions {
+  /** 0 保留旧报警引擎的每轮热币语义；生产资格慢路传 300 秒。 */
+  hotRecheckSeconds?: number;
 }
 
 /**
  * 本轮该判定哪些币。
  *
- * 三档：监控中的每轮都判；流动性够但成交量不够的 3 分钟一次；
- * 其余（流动性不够、或压根没有报价的粉尘）30 分钟一次 ——
+ * 三档：旧报警调用默认每轮判热币，生产资格慢路可指定 5 分钟复核；
+ * 流动性够但成交量不够的 3 分钟一次；其余（流动性不够、或压根没有
+ * 报价的粉尘）30 分钟一次 ——
  * 线上 8,188 个去重代币里六千多个是 DexScreener 根本查不到的空投垃圾，
  * 每轮都给它们拉报价光请求就要几分钟，而它们的状态不会分分钟变化。
  *
  * 从未判定过的（last_eval_at 为空）一律要判，否则新扫到的币进不来。
  */
-export function tokenIdsDueForEval(now: number, limit = Number.POSITIVE_INFINITY): string[] {
+export function tokenIdsDueForEval(
+  now: number, limit = Number.POSITIVE_INFINITY, options: TokenEvalScheduleOptions = {},
+): string[] {
+  const hotRecheckSeconds = Math.max(0, Math.floor(options.hotRecheckSeconds ?? 0));
   const rows = getDb().all<{
     token_id: string;
     hot: number;
@@ -733,13 +750,14 @@ export function tokenIdsDueForEval(now: number, limit = Number.POSITIVE_INFINITY
   const due = rows.map((row) => {
     const lane = row.hot === 1 ? 0 : row.last_ok_at === null
       ? 1 : (row.last_liquidity_usd ?? 0) >= WARM_MIN_LIQUIDITY_USD ? 2 : 3;
-    const interval = lane === 2 ? WARM_RECHECK_SECONDS : REJECTED_RECHECK_SECONDS;
+    const interval = lane === 0 ? hotRecheckSeconds
+      : lane === 2 ? WARM_RECHECK_SECONDS : REJECTED_RECHECK_SECONDS;
     const normalDueAt = row.last_ok_at === null
       ? 0 : row.last_ok_at + interval + normalScheduleJitter(row.token_id, interval);
     return { ...row, lane, dueAt: row.next_retry_at ?? normalDueAt };
   }).filter((row) => {
     if (row.next_retry_at !== null) return row.next_retry_at <= now;
-    return row.lane === 0 || row.dueAt <= now;
+    return (row.lane === 0 && hotRecheckSeconds === 0) || row.dueAt <= now;
   }).sort((a, b) => a.lane - b.lane || a.dueAt - b.dueAt
     || a.token_id.localeCompare(b.token_id))
     .map((row) => row.token_id);

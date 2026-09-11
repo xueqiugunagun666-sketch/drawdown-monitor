@@ -49,6 +49,20 @@ test('同一 5m 格用 Decimal 合并 OHLC，市值保留文本', () => {
   });
 });
 
+test('低于日高的后续报价不覆盖日高时刻，首次观察时间也保持不变', () => {
+  const db = getRawDb();
+  upsertXxyyCandle('bsc:0xstable-high', '2', 200, 1000);
+  upsertXxyyCandle('bsc:0xstable-high', '1.5', 150, 1020);
+  const high = db.prepare(
+    `SELECT high, high_ts FROM wallet_xxyy_daily_highs WHERE token_id = ?`,
+  ).get('bsc:0xstable-high');
+  const history = db.prepare(
+    `SELECT first_observed_at FROM wallet_xxyy_history_meta WHERE token_id = ?`,
+  ).get('bsc:0xstable-high');
+  assert.deepEqual(high, { high: '2', high_ts: 1000 });
+  assert.deepEqual(history, { first_observed_at: 1000 });
+});
+
 test('超过 1000x 的跳变只延迟一轮，相邻两次一致后接受', () => {
   upsertXxyyCandle('bsc:0xjump', '1', null, 1000);
   const first = upsertXxyyCandle('bsc:0xjump', '2000', null, 1300);

@@ -60,19 +60,20 @@ function writeAccepted(
   const old = db.prepare(
     `SELECT high, high_ts FROM wallet_xxyy_daily_highs WHERE token_id = ? AND day = ?`,
   ).get(tokenId, day) as { high: string; high_ts: number | null } | undefined;
-  const dayHigh = old ? Decimal.max(new Decimal(old.high), price).toString() : raw;
-  const highTs = !old || price.gt(new Decimal(old.high)) ? fetchedAt : (old.high_ts ?? fetchedAt);
+  if (!old) {
+    db.prepare(
+      `INSERT INTO wallet_xxyy_daily_highs (token_id, day, high, high_ts, price_regime)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(tokenId, day, raw, fetchedAt, XXYY_PRICE_REGIME);
+  } else if (price.gt(new Decimal(old.high))) {
+    db.prepare(
+      `UPDATE wallet_xxyy_daily_highs
+          SET high = ?, high_ts = ?, price_regime = ?
+        WHERE token_id = ? AND day = ?`,
+    ).run(raw, fetchedAt, XXYY_PRICE_REGIME, tokenId, day);
+  }
   db.prepare(
-    `INSERT INTO wallet_xxyy_daily_highs (token_id, day, high, high_ts, price_regime)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(token_id, day) DO UPDATE SET
-       high = excluded.high, high_ts = excluded.high_ts,
-       price_regime = excluded.price_regime`,
-  ).run(tokenId, day, dayHigh, highTs, XXYY_PRICE_REGIME);
-  db.prepare(
-    `INSERT INTO wallet_xxyy_history_meta (token_id, first_observed_at) VALUES (?, ?)
-     ON CONFLICT(token_id) DO UPDATE SET
-       first_observed_at = MIN(first_observed_at, excluded.first_observed_at)`,
+    `INSERT OR IGNORE INTO wallet_xxyy_history_meta (token_id, first_observed_at) VALUES (?, ?)`,
   ).run(tokenId, fetchedAt);
   db.prepare(`DELETE FROM wallet_xxyy_pending_quotes WHERE token_id = ?`).run(tokenId);
 }

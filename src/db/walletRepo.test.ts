@@ -406,6 +406,21 @@ test('监控中的币每轮都要判', () => {
   assert.ok(wr.tokenIdsDueForEval(1001).includes(id), '刚判过也要继续判');
 });
 
+test('生产资格慢路的热币每 5 分钟复核，不与 15 秒 XXYY 报警争写锁', () => {
+  const u = wr.createUser(`dueelig${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xdueelig${seq}`, null)!;
+  const id = `bsc:0xmonelig${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, null, null);
+  wr.markTokenEvaluated(id, 1000);
+  const options = { hotRecheckSeconds: wr.HOT_ELIGIBILITY_RECHECK_SECONDS };
+  assert.ok(!wr.tokenIdsDueForEval(1000 + 60, Number.POSITIVE_INFINITY, options).includes(id));
+  assert.ok(wr.tokenIdsDueForEval(
+    1000 + wr.HOT_ELIGIBILITY_RECHECK_SECONDS + 60,
+    Number.POSITIVE_INFINITY, options,
+  ).includes(id));
+});
+
 test('被挡掉的币 30 分钟内不重复判', () => {
   const u = wr.createUser(`due2${++seq}`, 'h')!;
   const w = wr.addWallet(u.id, 'bsc', `0xdue2${seq}`, null)!;
