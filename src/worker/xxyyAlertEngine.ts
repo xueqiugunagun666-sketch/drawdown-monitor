@@ -278,7 +278,7 @@ function evaluateQuote(tokenId: string, quote: XxyyQuote, now: number): boolean 
   if (!price.isFinite() || price.lte(0)) return false;
 
   const holders = wr.usersHoldingToken(tokenId);
-  if (!holders.some((holder) => wr.getHolding(holder.walletId, tokenId)?.monitored === 1)) return false;
+  if (!holders.some((holder) => holder.monitored === 1)) return false;
 
   // ATH 必须先拿旧高点，再把 current 写进去；顺序反过来会让新高永远追不上自己。
   const highsBefore = xxyyWindowHighsBefore(tokenId, ATH_WINDOWS, now);
@@ -358,6 +358,24 @@ function evaluateQuote(tokenId: string, quote: XxyyQuote, now: number): boolean 
     log.info(`${tokenId} XXYY 报警已落库，通知 ${delivered.notified} 人`);
   }
   return true;
+}
+
+/**
+ * 一次写事务最多处理这么多币。
+ *
+ * 把整轮约 380 个币包成一个事务虽然省 fsync，却会连续占住 SQLite 唯一写锁
+ * 约 10 秒；主 worker、钱包扫描和网页写入只能排队，最终一起报 database is locked。
+ * 小批事务仍保留批量收益，同时在批次间释放锁给其它进程。
+ */
+export const XXYY_EVAL_TRANSACTION_BATCH_SIZE = 25;
+
+function isSqliteBusy(error: unknown): boolean {
+  const message = safeErrorMessage(error).toLowerCase();
+  return message.includes('database is locked') || message.includes('database is busy');
+}
+
+async function yieldToOtherWriters(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function isTechnicalFailure(kind: string): boolean {
@@ -518,24 +536,53 @@ export async function runXxyyAlertTick(
 
     // 所有 HTTP 必须先彻底结束，再开始同步 SQLite。否则等待写锁会堵住 Node
     // 事件循环，让已经发出的下一条链请求在响应到达后仍被本地超时器杀掉。
-    const evaluateAll = getRawDb().transaction(() => {
-      for (const { tokenId, quote } of quotesToEvaluate) {
-        try {
-          const evaluated = evaluateQuote(tokenId, quote, deps.clock?.() ?? now);
-          if (evaluated) result.evaluated++;
-          else {
-            const pending = getRawDb().prepare(
-              `SELECT 1 AS yes FROM wallet_xxyy_pending_quotes WHERE token_id = ?`,
-            ).get(tokenId);
-            if (pending) result.pendingConfirmation++;
+    //
+    // 但也不能把整轮都包进一个事务：线上约 380 个币会连续占住唯一写锁
+    // 约 10 秒。分成小批后，每批结束都会提交并释放锁；遇到 SQLITE_BUSY
+    // 时整批回滚重试，不能像旧逻辑那样把后面几百个币逐个吞成失败。
+    for (let offset = 0; offset < quotesToEvaluate.length;
+      offset += XXYY_EVAL_TRANSACTION_BATCH_SIZE) {
+      const batch = quotesToEvaluate.slice(offset, offset + XXYY_EVAL_TRANSACTION_BATCH_SIZE);
+      let retries = 0;
+      while (true) {
+        let evaluatedInBatch = 0;
+        let pendingInBatch = 0;
+        let errorsInBatch = 0;
+        const evaluateBatch = getRawDb().transaction(() => {
+          for (const { tokenId, quote } of batch) {
+            try {
+              const evaluated = evaluateQuote(tokenId, quote, deps.clock?.() ?? now);
+              if (evaluated) evaluatedInBatch++;
+              else {
+                const pending = getRawDb().prepare(
+                  `SELECT 1 AS yes FROM wallet_xxyy_pending_quotes WHERE token_id = ?`,
+                ).get(tokenId);
+                if (pending) pendingInBatch++;
+              }
+            } catch (error) {
+              // 写锁失败时继续循环只会把整批都记成失败；抛出让事务回滚，
+              // 等其它 writer 提交后原样重试，保证不会漏过状态穿越。
+              if (isSqliteBusy(error)) throw error;
+              errorsInBatch++;
+              log.warn(`${tokenId} XXYY 判定失败，本轮其他币继续: ${safeErrorMessage(error)}`);
+            }
           }
+        });
+        try {
+          evaluateBatch();
+          result.evaluated += evaluatedInBatch;
+          result.pendingConfirmation += pendingInBatch;
+          result.evalErrors += errorsInBatch;
+          break;
         } catch (error) {
-          result.evalErrors++;
-          log.warn(`${tokenId} XXYY 判定失败，本轮其他币继续: ${safeErrorMessage(error)}`);
+          if (!isSqliteBusy(error) || retries >= 2) throw error;
+          retries++;
+          log.warn(`XXYY 判定批次等待 SQLite 写锁，第 ${retries} 次重试`);
+          await new Promise((resolve) => setTimeout(resolve, 250 * retries));
         }
       }
-    });
-    evaluateAll();
+      if (offset + batch.length < quotesToEvaluate.length) await yieldToOtherWriters();
+    }
 
     if (now % 3600 < XXYY_ALERT_INTERVAL_SECONDS) {
       try { pruneXxyyCandles(now); }

@@ -144,9 +144,10 @@ async function main(): Promise<void> {
       }
       // 补足到周期而不是固定 sleep —— 固定 sleep 会让实际周期变成
       // "tick 耗时 + 间隔"。当年间隔还是 120 秒时实测被拖到过 165 秒。
-      // wait 为负说明这一轮超了周期，直接背靠背跑下一轮
-      const wait = TICK_INTERVAL_SECONDS * 1000 - (Date.now() - t0);
-      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      // 超预算时也至少让出 15 秒。旧写法会背靠背再开一轮，线上一次已经要
+      // 4–6 分钟，结果主 worker 永久满载，并持续与报警/钱包扫描争 SQLite 写锁。
+      const wait = Math.max(15_000, TICK_INTERVAL_SECONDS * 1000 - (Date.now() - t0));
+      await new Promise((r) => setTimeout(r, wait));
     }
   };
   void pumpLoop();

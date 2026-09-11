@@ -653,6 +653,31 @@ test('usersHoldingToken 带出各自的阈值 —— 扇出要按人判', () => 
   assert.equal(rows.find((r) => r.userId === b.id)?.minAlertValueUsd, null);
 });
 
+test('usersHoldingToken 同批带出过滤状态，避免报警轮次逐币二次查库', () => {
+  const u = wr.createUser(`uhtstate${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xuhtstate${seq}`, null)!;
+  const id = `bsc:0xuhtstate-token${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, true, '低于退出线，观察中', 777);
+
+  const row = wr.usersHoldingToken(id)[0];
+  assert.equal(row?.monitored, 1);
+  assert.equal(row?.filterReason, '低于退出线，观察中');
+  assert.equal(row?.belowSinceTs, 777);
+});
+
+test('setHoldingMonitored 状态不变时不制造空写入', () => {
+  const u = wr.createUser(`noemptywrite${++seq}`, 'h')!;
+  const w = wr.addWallet(u.id, 'bsc', `0xnoemptywrite${seq}`, null)!;
+  const id = `bsc:0xnoemptywrite-token${seq}`;
+  wr.upsertHolding(w.id, id, '1', 18, 100);
+  wr.setHoldingMonitored(w.id, id, false, '流动性不足', null);
+  const before = getRawDb().prepare('SELECT total_changes() AS n').get() as { n: number };
+  wr.setHoldingMonitored(w.id, id, false, '流动性不足', null);
+  const after = getRawDb().prepare('SELECT total_changes() AS n').get() as { n: number };
+  assert.equal(after.n, before.n);
+});
+
 /* ---------- 推送游标：必须按写入顺序，不能按 fired_at ---------- */
 
 function alertRow(userId: string, tokenId: string, firedAt: number, level = 2) {

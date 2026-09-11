@@ -90,11 +90,12 @@ export const TICK_INTERVAL_SECONDS = 60;
 /**
  * 每轮在全部热币之外最多发现这么多后台币。
  *
- * 900 个约 30 个 DexScreener 批次；热币先独立跑完，后台源即使变慢也不会
- * 把同一轮的关键报警压到几千个冷币之后。按当前约一万币，冷队列约 11 轮
- * 覆盖一次；温币排在冷币前，仍可维持约 3 分钟复查。
+ * 300 个约 10 个 DexScreener 批次。XXYY 已独立承担 15 秒价格报警后，这条
+ * 慢路只维护资格与元数据，不值得为了理论吞吐把 2G 服务器和 SQLite 写锁打满。
+ * 线上 900 后台币加热币的一轮已实测膨胀到 4–6 分钟；缩短单轮才能让调度、
+ * 钱包扫描和报警写库真正获得执行窗口。温币仍排在冷币前。
  */
-export const PUMP_BACKGROUND_TOKEN_BUDGET = 900;
+export const PUMP_BACKGROUND_TOKEN_BUDGET = 300;
 
 export interface PumpTokenStages {
   hot: string[];
@@ -377,11 +378,9 @@ function load5mCandles(tokenId: string, sinceTs: number) {
 
 function noteQuoteMissing(tokenId: string): void {
   for (const holder of wr.usersHoldingToken(tokenId)) {
-    const row = wr.getHolding(holder.walletId, tokenId);
-    if (!row) continue;
     wr.setHoldingMonitored(
-      holder.walletId, tokenId, row.monitored === 1,
-      '报价缺失，判定暂缓', row.belowSinceTs,
+      holder.walletId, tokenId, holder.monitored === 1,
+      '报价缺失，判定暂缓', holder.belowSinceTs,
     );
   }
 }
@@ -659,9 +658,6 @@ async function evaluateToken(
   let holderCount = cachedMeta?.holderCount ?? null;
   // ---- 过滤：每个持有者各自维护滞回状态（below_since_ts 在 holdings 上）----
   const holders = wr.usersHoldingToken(tokenId);
-  const rows = holders.map((h) => ({
-    h, row: wr.getHolding(h.walletId, tokenId),
-  })).filter((x) => x.row !== undefined);
 
   const quoteIn = {
     liquidityUsd: quote?.liquidityUsd ?? null,
@@ -677,8 +673,8 @@ async function evaluateToken(
    * 其中绝大多数早被流动性门槛挡掉，根本用不着知道持有人数 ——
    * 先跑前面的筛选，只有会进监控的才值得花一次 GMGN 请求。
    */
-  const wouldPass = rows.some(({ h, row }) => evaluateFilter(
-    { monitored: row!.monitored === 1, belowSinceTs: row!.belowSinceTs },
+  const wouldPass = holders.some((h) => evaluateFilter(
+    { monitored: h.monitored === 1, belowSinceTs: h.belowSinceTs },
     quoteIn, now, DEFAULT_THRESHOLDS,
   ).monitored);
 
@@ -698,8 +694,8 @@ async function evaluateToken(
   }
 
   let stillMonitored = false;
-  for (const { h, row } of rows) {
-    const prev: FilterState = { monitored: row!.monitored === 1, belowSinceTs: row!.belowSinceTs };
+  for (const h of holders) {
+    const prev: FilterState = { monitored: h.monitored === 1, belowSinceTs: h.belowSinceTs };
     const r = evaluateFilter(prev, { ...quoteIn, holderCount }, now, DEFAULT_THRESHOLDS);
     wr.setHoldingMonitored(h.walletId, tokenId, r.monitored, r.reason, r.belowSinceTs);
     if (r.monitored) stillMonitored = true;

@@ -307,9 +307,18 @@ export function setHoldingMonitored(
   walletId: string, tokenId: string, monitored: boolean,
   reason: string | null, belowSinceTs: number | null,
 ): void {
-  getDb().update(holdings)
-    .set({ monitored: monitored ? 1 : 0, filterReason: reason, belowSinceTs })
-    .where(and(eq(holdings.walletId, walletId), eq(holdings.tokenId, tokenId))).run();
+  const nextMonitored = monitored ? 1 : 0;
+  // 慢资格轮次会反复检查同一批币。状态完全没变时不要制造一次 WAL 写入；
+  // 线上数据库已经 2.6G，这类空更新会与 15 秒报警进程争写锁，却没有任何业务价值。
+  getRawDb().prepare(
+    `UPDATE holdings
+        SET monitored = ?, filter_reason = ?, below_since_ts = ?
+      WHERE wallet_id = ? AND token_id = ?
+        AND (monitored IS NOT ? OR filter_reason IS NOT ? OR below_since_ts IS NOT ?)`,
+  ).run(
+    nextMonitored, reason, belowSinceTs, walletId, tokenId,
+    nextMonitored, reason, belowSinceTs,
+  );
 }
 
 /** 报警扇出用：谁持有这个币 */
@@ -320,11 +329,15 @@ export function setHoldingMonitored(
 export function usersHoldingToken(tokenId: string): Array<{
   userId: string; walletId: string; balance: string; decimals: number | null;
   minAlertValueUsd: number | null; firstSeenAt: number;
+  monitored: number; filterReason: string | null; belowSinceTs: number | null;
 }> {
   return getDb().select({
     userId: wallets.userId, walletId: holdings.walletId,
     balance: holdings.balance, decimals: holdings.decimals,
     minAlertValueUsd: users.minAlertValueUsd,
+    // 把过滤状态一起带出，避免慢资格与 XXYY 快轮次每个币再查一次 holdings。
+    monitored: holdings.monitored, filterReason: holdings.filterReason,
+    belowSinceTs: holdings.belowSinceTs,
     /** 这个持仓什么时候第一次被扫到 —— 冷启动要靠它分清"新加的钱包"与"沉睡的币醒了" */
     firstSeenAt: holdings.firstSeenAt,
   })
@@ -830,9 +843,15 @@ export function markTokensAttempted(tokenIds: readonly string[], now: number): v
      VALUES (?, NULL, NULL, 0, ?)
      ON CONFLICT(token_id) DO UPDATE SET last_attempt_at=excluded.last_attempt_at`,
   );
-  db.transaction((ids: readonly string[]) => {
+  // 一千多行放在一个事务里会长时间占住 SQLite 的唯一写锁；分段提交让
+  // 15 秒报警进程和钱包扫描可以在段间落库，同时仍远快于逐行 autocommit。
+  const chunkSize = 100;
+  const writeChunk = db.transaction((ids: readonly string[]) => {
     for (const id of ids) statement.run(id, now);
-  })(tokenIds);
+  });
+  for (let offset = 0; offset < tokenIds.length; offset += chunkSize) {
+    writeChunk(tokenIds.slice(offset, offset + chunkSize));
+  }
 }
 
 export function markTokenQuoteSucceeded(tokenId: string, now: number, liquidityUsd?: number): void {
