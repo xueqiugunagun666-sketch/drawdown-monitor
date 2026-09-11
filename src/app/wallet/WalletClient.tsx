@@ -5,7 +5,7 @@ import SoundToggle from '../../components/SoundToggle.tsx';
 import WalletList, { type WalletRow } from './WalletList.tsx';
 import HoldingsTable, { type HoldingRow } from './HoldingsTable.tsx';
 import AlertFeed, {
-  LatestAlertBanner, alertName, type AlertRow,
+  LatestAlertBanner, alertName, isSystemAlert, type AlertRow,
 } from './AlertFeed.tsx';
 import HealthWatch from './HealthWatch.tsx';
 import AlarmTest from './AlarmTest.tsx';
@@ -16,7 +16,9 @@ import {
 } from '../../lib/pumpSound.ts';
 import { CURRENT_VERSION } from '../../lib/changelog.ts';
 import { shouldPromptReload } from '../../lib/staleClient.ts';
-import { alertStreamUrl, mergeAlertRows } from './alertStreamState.ts';
+import {
+  alertStreamUrl, filterInactiveSourceAlerts, mergeAlertRows,
+} from './alertStreamState.ts';
 import {
   buildAlertBatch, buildNotificationSpecs,
   type AlertSoundKind, type NotificationSpec,
@@ -129,7 +131,7 @@ export default function WalletClient() {
       ]) as [
         { wallets?: WalletRow[]; chains?: string[]; error?: string },
         { holdings?: HoldingRow[] },
-        { alerts?: AlertRow[]; snapshotSeq?: number },
+        { alerts?: AlertRow[]; snapshotSeq?: number; activeSourceFailures?: string[] },
         { minAlertValueUsd?: number | null; defaultValue?: number },
       ];
       if (w.error) { setErr(w.error); return; }
@@ -137,7 +139,8 @@ export default function WalletClient() {
       setChains(w.chains ?? []);
       setHoldings(h.holdings ?? []);
       setMinValue(st.minAlertValueUsd ?? st.defaultValue ?? 0);
-      const list = a.alerts ?? [];
+      const activeSourceFailures = a.activeSourceFailures ?? [];
+      const list = filterInactiveSourceAlerts(a.alerts ?? [], activeSourceFailures);
       if (!seeded.current) {
         if (!Number.isInteger(a.snapshotSeq) || (a.snapshotSeq ?? -1) < 0) {
           throw new Error('报警历史缺少快照游标');
@@ -147,7 +150,9 @@ export default function WalletClient() {
         seeded.current = true;
         setSnapshotReady(true);
       }
-      setAlerts((prev) => mergeAlertRows(prev, list));
+      setAlerts((prev) => filterInactiveSourceAlerts(
+        mergeAlertRows(prev, list), activeSourceFailures,
+      ));
       setErr(null);
     } catch {
       setErr('加载失败，检查网络');
@@ -184,6 +189,24 @@ export default function WalletClient() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const hasSourceFailureBanner = alerts.some((alert) => isSystemAlert(alert.kind));
+  useEffect(() => {
+    if (!hasSourceFailureBanner) return;
+    let stopped = false;
+    const refresh = async () => {
+      try {
+        const response = await fetch('/api/wallet/alerts?source_health=1');
+        const body = await response.json() as { activeSourceFailures?: string[] };
+        if (!response.ok || !Array.isArray(body.activeSourceFailures) || stopped) return;
+        setAlerts((prev) => filterInactiveSourceAlerts(prev, body.activeSourceFailures!));
+      } catch {
+        // 查不到当前状态时保留警告；宁可多挂一会儿，也不能把真故障静默清掉。
+      }
+    };
+    const timer = setInterval(() => { void refresh(); }, 30_000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [hasSourceFailureBanner]);
 
   const portfolioPending = needsPortfolioRefresh(wallets, holdings);
   useEffect(() => {

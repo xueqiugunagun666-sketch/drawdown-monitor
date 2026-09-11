@@ -30,6 +30,14 @@ const log = makeLogger('wallet-scanner');
 
 /** 扫描间隔：余额变化远比价格慢，12 分钟一轮足够 */
 export const SCAN_INTERVAL_SECONDS = 12 * 60;
+/** 网络瞬断后不必把红字挂满一整轮；两分钟后进入高优先级重试。 */
+export const FAILED_SCAN_RETRY_SECONDS = 2 * 60;
+/**
+ * 生产每个 sweep 最多处理这些去重钱包组，然后让出一分钟并重建优先队列。
+ * 否则 100 多个到期钱包可能让一个 sweep 跑几十分钟，早期失败的钱包在
+ * processed 集合里永远等不到重试。
+ */
+export const PRODUCTION_SCAN_SWEEP_GROUP_BUDGET = 12;
 export const CANDIDATE_RETRY_MAX_SECONDS = 6 * 3600;
 
 /** 首次失败 12 分钟后重试，随后指数退避，最高每 6 小时一次。 */
@@ -79,10 +87,13 @@ export function nextWalletGroup(
   const ranked = [...groups.entries()].filter(([, group]) =>
     group.some((wallet) => isScanDue(wallet, now))).map(([key, group]) => {
     const neverScanned = group.some((wallet) => wallet.lastScanAt === null);
+    const retryingFailure = group.some((wallet) =>
+      wallet.lastScanError !== null && isScanDue(wallet, now));
     const oldestScan = neverScanned ? -1 : Math.min(...group.map((wallet) => wallet.lastScanAt!));
     const oldestCreated = Math.min(...group.map((wallet) => wallet.createdAt));
-    return { key, group, neverScanned, oldestScan, oldestCreated };
+    return { key, group, neverScanned, retryingFailure, oldestScan, oldestCreated };
   }).sort((a, b) => Number(b.neverScanned) - Number(a.neverScanned)
+    || Number(b.retryingFailure) - Number(a.retryingFailure)
     || a.oldestScan - b.oldestScan
     || a.oldestCreated - b.oldestCreated
     || a.key.localeCompare(b.key));
@@ -291,18 +302,23 @@ export async function scanWallet(
  */
 export function isScanDue(w: wr.WalletRow, now: number): boolean {
   if (w.lastScanAt === null) return true;
-  return now - w.lastScanAt >= SCAN_INTERVAL_SECONDS;
+  const interval = w.lastScanError === null ? SCAN_INTERVAL_SECONDS : FAILED_SCAN_RETRY_SECONDS;
+  return now - w.lastScanAt >= interval;
 }
 
-export async function scanAllWallets(now: number, deps: ScanDeps = realDeps): Promise<void> {
+export async function scanAllWallets(
+  now: number, deps: ScanDeps = realDeps, maxGroups = Number.POSITIVE_INFINITY,
+): Promise<number> {
   const processed = new Set<string>();
   let scanNow = now;
-  while (true) {
+  const limit = Math.max(0, Math.floor(maxGroups));
+  while (processed.size < limit) {
     // 每处理完一组重新读库：循环中途新加的钱包也能立即以最高优先级被领取。
     const group = nextWalletGroup(wr.listAllEnabledWallets(), scanNow, processed);
-    if (!group) return;
+    if (!group) return processed.size;
     processed.add(walletScanKey(group[0]!));
     await scanWalletGroup(group, scanNow, deps, nowSec);
     scanNow = nowSec();
   }
+  return processed.size;
 }

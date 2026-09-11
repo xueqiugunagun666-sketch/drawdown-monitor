@@ -90,14 +90,21 @@ export const TICK_INTERVAL_SECONDS = 60;
 /**
  * 每轮在全部热币之外最多发现这么多后台币。
  *
- * 300 个约 10 个 DexScreener 批次。XXYY 已独立承担 15 秒价格报警后，这条
+ * 120 个约 4 个 DexScreener 批次。XXYY 已独立承担 15 秒价格报警后，这条
  * 慢路只维护资格与元数据，不值得为了理论吞吐把 2G 服务器和 SQLite 写锁打满。
  * 线上 900 后台币加热币的一轮已实测膨胀到 4–6 分钟；缩短单轮才能让调度、
  * 钱包扫描和报警写库真正获得执行窗口。温币仍排在冷币前。
  */
-export const PUMP_BACKGROUND_TOKEN_BUDGET = 300;
-/** 资格慢路每轮总量也封顶；未处理的仍保持 due，下一轮继续。 */
-export const PUMP_TOTAL_TOKEN_BUDGET = 300;
+export const PUMP_BACKGROUND_TOKEN_BUDGET = 120;
+/**
+ * 资格慢路每轮总量也封顶；未处理的仍保持 due，下一轮继续。
+ *
+ * 线上 300 个币仍需 87–133 秒，并让主 worker 长时间维持约 38% CPU，
+ * 期间钱包 RPC、GMGN 元数据与普通 poller 都出现过超时/锁等待。降到 120
+ * 不是减少吞吐：单轮缩回一分钟内后能更快开启下一轮，也会给独立 XXYY
+ * 报警和钱包扫描留下事件循环与 SQLite 写锁窗口。
+ */
+export const PUMP_TOTAL_TOKEN_BUDGET = 120;
 
 export interface PumpTokenStages {
   hot: string[];
@@ -171,6 +178,21 @@ function isTechnicalQuoteFailure(f: QuoteBatchFailure): boolean {
 /** HTTP 200 空数组通常只是无池粉尘；其它失败（含部分缺失）应短退避重试。 */
 function isRetryableQuoteFailure(f: QuoteBatchFailure): boolean {
   return f.kind !== 'empty_response';
+}
+
+/**
+ * 少数单币缺价不等于整条 DexScreener 链路停摆。
+ *
+ * `/tokens/v1` 会因为单币无池、响应上限或临时缺字段漏掉个别地址；这些币
+ * 仍保留“报价缺失，判定暂缓”，pump_health 也会记录，但只有本轮至少四分
+ * 之一的监控币缺价，才把整条链判成不可用。任何技术失败批次仍立即算异常。
+ */
+export function dexScreenerChainUnavailable(
+  technicalFailures: number, missingMonitored: number, criticalRequested: number,
+): boolean {
+  if (technicalFailures > 0) return true;
+  if (criticalRequested <= 0 || missingMonitored <= 0) return false;
+  return missingMonitored * 4 >= criticalRequested;
 }
 
 // 上游额度是按请求数算的；压到 60/min，给其它 GMGN 路径留余量。
@@ -604,13 +626,17 @@ export async function runPumpTick(now: number, deps: PumpDeps = realPumpDeps): P
       errorMessage: healthMessage ?? (errorKind === 'no-valid-price'
         ? `${health.criticalRequested} 个监控中代币全部缺少有效报价` : null),
     });
+    const sourceUnavailable = dexScreenerChainUnavailable(
+      health.technicalFailures, health.missingMonitored, health.criticalRequested,
+    );
     recordVerdict(
       `dexscreener:${chain}`,
-      errorKind
+      sourceUnavailable
         ? { ok: false, reason: healthMessage ?? '监控中代币无有效报价' }
         : { ok: true, reason: null },
       deps.clock?.() ?? now,
-      `请求 ${health.requested}，有效 ${health.covered}，技术失败批次 ${health.technicalFailures}`,
+      `请求 ${health.requested}，有效 ${health.covered}，技术失败批次 ${health.technicalFailures}`
+        + `，监控中缺价 ${health.missingMonitored}`,
     );
   }
   const parallelMs = Date.now() - t0;

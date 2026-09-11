@@ -6,7 +6,8 @@ import { runMigrations } from '../db/migrate.ts';
 import { getRawDb } from '../db/index.ts';
 import * as wr from '../db/walletRepo.ts';
 import {
-  runPumpTick, selectPumpTokenStages, waitForPumpSlowTasks, type PumpDeps,
+  dexScreenerChainUnavailable, runPumpTick, selectPumpTokenStages,
+  waitForPumpSlowTasks, type PumpDeps,
 } from './pumpEngine.ts';
 import { Decimal } from '../lib/decimal.ts';
 import type { BatchQuote } from '../sources/dexscreenerBatch.ts';
@@ -78,6 +79,14 @@ function guardedDeps(
 function clearXxyyHealth(): void {
   getRawDb().prepare(`DELETE FROM source_health WHERE source_id = 'xxyy'`).run();
 }
+
+test('DexScreener 少量单币缺价不冒充整链停摆，覆盖显著塌陷仍判异常', () => {
+  assert.equal(dexScreenerChainUnavailable(0, 2, 139), false);
+  assert.equal(dexScreenerChainUnavailable(0, 7, 145), false);
+  assert.equal(dexScreenerChainUnavailable(0, 25, 100), true);
+  assert.equal(dexScreenerChainUnavailable(0, 1, 1), true, '整条小链唯一监控币消失也要报');
+  assert.equal(dexScreenerChainUnavailable(1, 0, 139), true, '技术批次失败始终算异常');
+});
 
 test('新币首次进入监控当轮不产生报警，即使已经在 6 倍', async () => {
   const id = 'bsc:0xseed';

@@ -20,6 +20,28 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: 'v4.18',
+    date: '2026-09-11',
+    headline: '钱包扫描恢复提速，数据源状态不再误报',
+    changes: [
+      {
+        kind: 'fix',
+        title: '失败的钱包两分钟后优先重试',
+        detail: '钱包扫描改成小批次轮转，网络瞬断不再被一整轮旧钱包卡住几十分钟；首次钱包仍保持最高优先级。',
+      },
+      {
+        kind: 'fix',
+        title: '少量单币缺价不再误报整条链异常',
+        detail: 'DexScreener 只漏掉少数无池或无有效报价的币时，仅保留单币待评估状态；技术批次失败或大面积缺价才显示整链故障。',
+      },
+      {
+        kind: 'fix',
+        title: '数据源恢复后自动撤下旧故障横幅',
+        detail: '页面每 30 秒核对当前故障集合，历史故障仍保留在审计记录中，但不会继续伪装成当前暂停。',
+      },
+    ],
+  },
+  {
     version: 'v4.17',
     date: '2026-09-11',
     headline: '暴涨与 ATH 切换到 XXYY 15 秒快报价',

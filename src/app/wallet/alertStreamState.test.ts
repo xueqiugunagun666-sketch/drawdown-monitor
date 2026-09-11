@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alertStreamUrl, mergeAlertRows } from './alertStreamState.ts';
+import {
+  alertStreamUrl, filterInactiveSourceAlerts, mergeAlertRows,
+} from './alertStreamState.ts';
 import type { AlertRow } from './AlertFeed.tsx';
 
 function row(id: string, seq: number, firedAt = 100): AlertRow {
@@ -26,4 +28,18 @@ test('同秒多条按 seq 保留并排序，重复 id 只留一条', () => {
 test('空库快照也明确从 since=0 建立 SSE', () => {
   assert.equal(alertStreamUrl(0), '/api/wallet/stream?since=0');
   assert.equal(alertStreamUrl(101), '/api/wallet/stream?since=101');
+});
+
+test('已恢复的数据源不再显示旧故障横幅，行情和当前故障保留', () => {
+  const market = row('market', 103);
+  const oldSource = {
+    ...row('old-source', 102), kind: 'source-down', tokenId: 'system:dexscreener:bsc',
+  };
+  const activeSource = {
+    ...row('active-source', 101), kind: 'source-down', tokenId: 'system:xxyy-alerts:bsc',
+  };
+  const filtered = filterInactiveSourceAlerts(
+    [market, oldSource, activeSource], ['xxyy-alerts:bsc'],
+  );
+  assert.deepEqual(filtered.map((item) => item.id), ['market', 'active-source']);
 });

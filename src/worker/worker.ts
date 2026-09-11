@@ -13,7 +13,9 @@ import { dueReminders, confirmSent } from './reminders.ts';
 import { notifyPlain } from './notifier.ts';
 import { backfillNativePrices } from '../sources/nativeHistory.ts';
 import * as repo from '../db/repo.ts';
-import { scanAllWallets, SCAN_INTERVAL_SECONDS } from './walletScanner.ts';
+import {
+  scanAllWallets, SCAN_INTERVAL_SECONDS, PRODUCTION_SCAN_SWEEP_GROUP_BUDGET,
+} from './walletScanner.ts';
 import { runPumpTick, TICK_INTERVAL_SECONDS } from './pumpEngine.ts';
 import { startTrashLoop } from './trashPoller.ts';
 import { nowSec } from '../lib/time.ts';
@@ -120,7 +122,7 @@ async function main(): Promise<void> {
   const walletScanLoop = async () => {
     while (!stopping) {
       try {
-        await scanAllWallets(nowSec());
+        await scanAllWallets(nowSec(), undefined, PRODUCTION_SCAN_SWEEP_GROUP_BUDGET);
       } catch (err) {
         log.exception('钱包扫描轮次异常', err);
       }

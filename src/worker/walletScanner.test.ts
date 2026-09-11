@@ -6,7 +6,8 @@ import { runMigrations } from '../db/migrate.ts';
 import * as wr from '../db/walletRepo.ts';
 import {
   scanWallet, scanWalletGroup, nextWalletGroup, walletScanKey, isScanDue,
-  candidateRetryDelay, SCAN_INTERVAL_SECONDS, CANDIDATE_RETRY_MAX_SECONDS, type ScanDeps,
+  candidateRetryDelay, SCAN_INTERVAL_SECONDS, FAILED_SCAN_RETRY_SECONDS,
+  CANDIDATE_RETRY_MAX_SECONDS, scanAllWallets, type ScanDeps,
 } from './walletScanner.ts';
 
 before(() => { runMigrations(); });
@@ -241,13 +242,13 @@ test('刚扫过的钱包不会被重复扫', async () => {
   assert.equal(isScanDue(w, 1000 + SCAN_INTERVAL_SECONDS), true, '满一轮才该再扫');
 });
 
-test('上次扫描失败的钱包按正常间隔重试，不做退避风暴', async () => {
+test('上次扫描失败的钱包两分钟后重试，不等完整 12 分钟', async () => {
   const u = wr.createUser(`due3${++seq}`, 'h')!;
   const added = wr.addWallet(u.id, 'bsc', `0xdue3${seq}`, null)!;
   wr.updateWalletScanState(added.id, null, 1000, '节点超时');
   const w = wr.listWallets(u.id)[0]!;
   assert.equal(isScanDue(w, 1000 + 60), false);
-  assert.equal(isScanDue(w, 1000 + SCAN_INTERVAL_SECONDS), true);
+  assert.equal(isScanDue(w, 1000 + FAILED_SCAN_RETRY_SECONDS), true);
 });
 
 test('从未扫描的钱包组优先于大量到期旧钱包', () => {
@@ -262,6 +263,23 @@ test('从未扫描的钱包组优先于大量到期旧钱包', () => {
 
   const selected = nextWalletGroup([old, fresh], 1000, new Set());
   assert.equal(selected?.[0]?.id, fresh.id, '新钱包不能排在旧钱包整轮之后');
+});
+
+test('已到重试时间的失败钱包优先于普通到期钱包', () => {
+  const oldUser = wr.createUser(`priority-normal${++seq}`, 'h')!;
+  const oldId = wr.addWallet(oldUser.id, 'bsc', `0xprioritynormal${seq}`, null)!.id;
+  wr.updateWalletScanState(oldId, 100, 100, null);
+  const old = wr.listWallets(oldUser.id)[0]!;
+
+  const failedUser = wr.createUser(`priority-failed${++seq}`, 'h')!;
+  const failedId = wr.addWallet(failedUser.id, 'base', `0xpriorityfailed${seq}`, null)!.id;
+  wr.updateWalletScanState(failedId, 100, 800, 'fetch failed');
+  const failed = wr.listWallets(failedUser.id)[0]!;
+
+  const selected = nextWalletGroup(
+    [old, failed], 800 + FAILED_SCAN_RETRY_SECONDS, new Set(),
+  );
+  assert.equal(selected?.[0]?.id, failed.id);
 });
 
 test('同链同地址只请求一次并把结果写给多个用户', async () => {
@@ -311,4 +329,23 @@ test('动态领取时能看见本轮中途新加的钱包', () => {
   const fresh = wr.listWallets(freshUser.id)[0]!;
   const selected = nextWalletGroup([old, fresh], 1000, processed);
   assert.equal(selected?.[0]?.id, fresh.id);
+});
+
+test('扫描 sweep 遵守钱包组预算，避免 processed 集合几十分钟不重建', async () => {
+  const u = wr.createUser(`bounded${++seq}`, 'h')!;
+  wr.addWallet(u.id, 'bsc', `0xbounded-a${seq}`, null);
+  wr.addWallet(u.id, 'base', `0xbounded-b${seq}`, null);
+  let groups = 0;
+  const limitedDeps = deps({
+    blockNumber: async () => { groups++; return 1000; },
+    scanTokens: async () => new Set(),
+    readBalances: async () => new Map(),
+    solanaSnapshot: async () => {
+      groups++;
+      return { slot: 2000, balances: new Map() };
+    },
+  });
+  const processed = await scanAllWallets(999999, limitedDeps, 1);
+  assert.equal(processed, 1);
+  assert.equal(groups, 1);
 });
